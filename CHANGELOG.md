@@ -11,3 +11,5 @@ First files committed to the repo. All three were installed to their cloud routi
 - **Reconciler Fix — new I1 pass.** New **PASS 6.5** (no renumbering) auto-writes Google's authoritative `job_title` / `company_name` / `email_addresses` (primary-only, reorder-to-primary + keep secondaries; uniqueness-conflict → NEEDS_MANUAL) onto Attio, gated by the reused Step 1.5 name-verification check. Scope + Non-negotiable #1 widened beyond `bhc_contact_id`; new Non-negotiable added. **Name is never auto-written here** — it only ever routes through the `Name_Conflicts` review card.
 
 Companion repo work (BHC-Aida) shipped earlier in commit `88c3840`: `Pipeline_Cache` (A:R) and `Name_Conflicts` (A:M) tabs, reader routes, commit actions, and the NameConflicts review card — build-green and a safe no-op until these routines populate the tabs.
+
+2026-07-13 — All 8 routines migrated to this repo; Repositories field for all 8 repointed here from bhc-aida/bhc-orbit to fix self-refusal bug (routines were misreading their own scheduled runs as injected build-session instructions via bhc-aida's AGENTS.md).
