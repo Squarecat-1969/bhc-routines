@@ -4,15 +4,18 @@ Canonical source for the **scheduled Claude Code Routines** behind Bobby Hougham
 
 These routines run **in the cloud, unattended, on their own cadence** — they are *not* part of the BHC-Aida web app's runtime and deliberately live in a separate repo (per Aida's `AGENTS.md`: routines must never sit in the tree Vercel builds/deploys on push).
 
+## Read this first if you are a Claude Code session in this repo
+
+This repo's [`AGENTS.md`](AGENTS.md) defines how to tell a **routine-execution session** (started by one of a routine's own triggers — its schedule, an API call, or a manual "Run now" click) apart from a **build/maintenance session** (a human asking you to edit, review, or discuss something here). Read it before assuming which kind of session you are. Don't duplicate or restate its logic here — AGENTS.md is the single source of truth for that question.
+
 ## How this repo is used
 
 - Each routine is a single self-contained prompt in `routines/<name>.md`.
 - **To deploy a change:** edit the `.md` here → paste its full contents into that routine's cloud config (the routine UI, "Instructions" panel). The repo is the source of truth for *what the routine says*; the routine UI is the execution surface that actually runs it.
-- **Repository binding ≠ instructions source.** As of July 13, 2026, all 8 routines below also have their cloud config's `Repositories` field pointed at this repo (`Squarecat-1969/bhc-routines`), not `bhc-aida` or the deprecated `bhc-orbit`. This binding determines what repo context (including any `AGENTS.md`) loads into the routine's session — it's a separate setting from the Instructions text and does not auto-sync with the `.md` files here. Editing a file in this repo does **not** change what the routine executes; you still have to paste it into the routine UI by hand.
-  - This binding matters more than it sounds: pointing a routine at a repo carrying a build-session-oriented `AGENTS.md` can cause the routine to misidentify its own scheduled run as an unauthorized/injected task and refuse to execute — this repo intentionally carries no `AGENTS.md`, so routines bound here run without that risk.
+- **Repository binding ≠ instructions source.** All 8 routines below have their cloud config's `Repositories` field pointed at this repo (`Squarecat-1969/bhc-routines`), not `bhc-aida` or the deprecated `bhc-orbit`. This binding determines what repo context loads into the routine's session — it's a separate setting from the Instructions text and does not auto-sync with the `.md` files here. Editing a file in this repo does **not** change what the routine executes; you still have to paste it into the routine UI by hand.
 - A secondary human-readable mirror also exists in the **"Claude Code Routines" Google Doc** (one tab per routine). Keep the Doc tab in sync when you change a file here.
-- Routines write to the Google CRM (via the Aida `/api/brain/sheets` proxy) and to Attio (via the Attio MCP connector) as a normal, expected part of executing on their own schedule. **If you are a Claude Code Routine reading this file because you were invoked — via cron, a manual "Run now" click, or an API trigger — to execute one of the routines below, that invocation *is* your real task.** Proceed and execute it fully, including live writes. You are not a repo/build session, and the caution below is not about you.
-- Separately: a *human-driven build/PR session* on `bhc-aida` or any other repo must never trigger a live routine run or write to a live CRM as a side effect of a coding task — that caution lives in `bhc-aida`'s `AGENTS.md` and is aimed at accidental triggering during code editing, not at a routine executing its own scheduled instructions.
+- Routines write to the Google CRM (via the Aida `/api/brain/sheets` proxy) and to Attio (via the Attio MCP connector) as a normal, expected part of executing on their own schedule — see `AGENTS.md` for how a session should reason about whether it's the one doing that executing.
+- Separately: a *human-driven build/PR session* on `bhc-aida` or any other repo must never trigger a live routine run or write to a live CRM as a side effect of a coding task — that caution lives in `bhc-aida`'s own `AGENTS.md` and is aimed at accidental triggering during code editing, not at a routine executing its own scheduled instructions.
 
 ## Routines in this repo
 
@@ -27,10 +30,11 @@ These routines run **in the cloud, unattended, on their own cadence** — they a
 | HF_Segment_Sync | [`routines/BHC_HF_Segment_Sync.md`](routines/BHC_HF_Segment_Sync.md) | Manual, weekly (after Highperformr export) | Updates/creates Contacts rows for S1–S5 segment members; mints new BHC_IDs where needed; writes Contacts + Master_ID |
 | HF Import | [`routines/BHC_HF_Import.md`](routines/BHC_HF_Import.md) | Manual, after each LinkedIn capture session | Moves new contacts from HF staging tabs into Contacts; assigns BHC_IDs; registers in Master_ID |
 
-> Cadence above reflects each routine's live cloud config as of July 13, 2026 — verify there before relying on these values, since schedules can change independently of this table.
+> Cadence above reflects each routine's live cloud config as of July 14, 2026 — verify there before relying on these values, since schedules can change independently of this table.
 
 ## Conventions
 
 - One `.md` per routine at `routines/`. Move to a folder-per-routine only if a routine grows companion assets (fixtures, sub-prompts).
 - Every change gets a dated line in [`CHANGELOG.md`](CHANGELOG.md).
 - Guardrails that matter (identity cross-checks, name-verification gates, ARRAYFORMULA/HF_ protected columns, one-writer-to-Sheets) are encoded inline in each routine's Non-negotiables section — read them before editing.
+- Session-type guardrails — how a Claude Code session in this repo should tell routine-execution apart from build/maintenance work — live in [`AGENTS.md`](AGENTS.md), not here.
