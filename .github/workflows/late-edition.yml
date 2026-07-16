@@ -1,0 +1,83 @@
+name: Late Edition
+
+# STUB — manual dispatch only. The cron trigger is intentionally commented out
+# until PASS 4's dry-run output has been reviewed against real data.
+#
+# When it is time to wire the schedule, read docs/pass4-notes.md #1 first:
+# GitHub Actions cron is always UTC and does NOT observe DST, so a single
+# expression cannot hold "11:00 PM PDT/PST, Sunday-Thursday" year-round.
+#
+#   11:00 PM PDT (UTC-7, ~Mar-Nov) = 06:00 UTC the NEXT day  -> '0 6 * * 1-5'
+#   11:00 PM PST (UTC-8, ~Nov-Mar) = 07:00 UTC the NEXT day  -> '0 7 * * 1-5'
+#
+# Note the day shift: a Sunday-Thursday run in Los Angeles is Monday-Friday in
+# UTC. Using '* * 0-4' would fire on the wrong days.
+#
+# on:
+#   schedule:
+#     - cron: '0 6 * * 1-5'   # 11pm PDT Sun-Thu (summer)
+#     - cron: '0 7 * * 1-5'   # 11pm PST Sun-Thu (winter)
+#   Both fire year-round unless the job itself checks the local hour and exits.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'dry-run computes and logs without writing; live writes cadence to Attio'
+        required: true
+        default: 'dry-run'
+        type: choice
+        options:
+          - dry-run
+          - live
+      limit:
+        description: 'Optional cap on contacts processed (blank = all)'
+        required: false
+        type: string
+
+concurrency:
+  # Never let two runs write cadence to the same records at once.
+  group: late-edition
+  cancel-in-progress: false
+
+jobs:
+  pass4:
+    name: PASS 4 — Attio cadence engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      - name: Run PASS 4
+        env:
+          BRAIN_API_TOKEN: ${{ secrets.BRAIN_API_TOKEN }}
+          ATTIO_API_KEY: ${{ secrets.ATTIO_API_KEY }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          RUN_TIMEZONE: America/Los_Angeles
+        run: |
+          FLAGS="--json-out out/pass4-report.json"
+          if [ "${{ inputs.mode }}" = "live" ]; then FLAGS="$FLAGS --live"; else FLAGS="$FLAGS --dry-run"; fi
+          if [ -n "${{ inputs.limit }}" ]; then FLAGS="$FLAGS --limit ${{ inputs.limit }}"; fi
+          npx tsx src/cli/run-pass4.ts $FLAGS
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pass4-report-${{ github.run_id }}
+          path: out/pass4-report.json
+          # Contains contact names — keep the retention window short.
+          retention-days: 7
+          if-no-files-found: warn
