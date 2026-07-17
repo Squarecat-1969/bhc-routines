@@ -65,7 +65,7 @@ jobs:
           BRAIN_API_TOKEN: ${{ secrets.BRAIN_API_TOKEN }}
           ATTIO_API_KEY: ${{ secrets.ATTIO_API_KEY }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          RUN_TIMEZONE: America/Los_Angeles
+          RUN_TIMEZONE: UTC
         run: |
           FLAGS="--json-out out/pass4-report.json"
           if [ "${{ inputs.mode }}" = "live" ]; then FLAGS="$FLAGS --live"; else FLAGS="$FLAGS --dry-run"; fi
