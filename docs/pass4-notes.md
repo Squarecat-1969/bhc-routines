@@ -2,8 +2,10 @@
 
 Companion to `src/passes/pass4/`. Everything here is a place where the spec
 (`routines/BHC_Late_Edition.md`) was ambiguous, self-contradictory, or silent, and
-I had to make a call. Items 1, 2, and 3 are decided (2026-07-17). **Item 4 is still
-open and is the live-verification gate before PASS 4 can go `--live`.**
+I had to make a call. Items 1, 2, 3, and 5 are decided (2026-07-17). **Item 4 is
+partially verified** — the dangerous `last_interaction` bug is confirmed and fixed,
+but the pipeline-entry and write-path assumptions are still unchecked before PASS 4
+can go `--live`.
 
 ---
 
@@ -84,56 +86,53 @@ Covered by `tests/identity-gate.test.ts`.
 
 ---
 
-## 4. Attio: MCP → REST, and `last_interaction_at` is unverified ⚠ NEEDS A LIVE CHECK
+## 4. Attio: MCP → REST — ⚠ PARTIALLY VERIFIED 2026-07-17 (live `--dump-shapes` run)
 
 The spec says "Attio MCP connector". GitHub Actions has no MCP host, so
 `src/lib/attio.ts` uses the Attio REST API with `ATTIO_API_KEY`. Same data, different
 transport.
 
-**Unverified assumptions** — I could not check these without a live key:
+**✅ Confirmed and fixed — the dangerous one.** `last_interaction_at` was wrong. Bobby
+ran `npm run pass4 -- --dump-shapes` against a real record: the actual field is
+Attio's built-in `last_interaction` attribute (`attribute_type: 'interaction'`), with
+the timestamp nested under `interacted_at`, not a plain `value`. `PERSON_SLUGS.lastInteractionAt`
+now reads `'last_interaction'`; `dateOf` still accepts a plain `value` shape too, for
+other date-typed slugs. Regression test in `tests/attio.test.ts` pins the real shape.
+This would have failed exactly as predicted: every contact reading "last touch
+unknown," `stalled` universally false, cadence dates all looking plausible while
+being silently wrong.
+
+**✅ Also found and fixed via the same run:** the Contacts read range was too narrow
+(`A1:V1`/`A3:V`) — the tier column sits well past V in the live 113+-column sheet.
+Widened to `A1:EZ1`/`A3:EZ`, still resolved by header title. `load.ts` now logs the
+full header row and the resolved tier column's letter/index on every run, so this
+class of bug is visible in the log instead of silently finding nothing. Folds in
+item #5 below — same root cause, same fix.
+
+**Still open — not yet checked against live data:**
 
 | Assumption | Where | Risk if wrong |
 |---|---|---|
 | `POST /v2/lists/{id}/entries/query`, entries carry `parent_record_id` + `entry_values` | `listEntries` | 0 entries → pass no-ops |
 | Select values read as `entry_values.<slug>[0].option.title` | `selectTitleOf` | every stage reads as 0 → everyone falls to tier cadence |
-| `last_interaction_at` is a plain date attr at `values.<slug>[0].value` | `dateOf` | **every contact reads "last touch unknown"** → no one is ever stalled, all dates become today+cadence |
 | Writing a select by its title string (`"Context"`) is accepted | `updatePersonRecord` | writes 400 |
 | `PATCH /v2/objects/people/records/{id}` with `{data:{values:{…}}}` | `updatePersonRecord` | writes fail |
 
-`dateOf` also accepts `interacted_at`, because Attio's built-in interaction-typed
-attribute nests the timestamp that way — but I don't know which one this workspace uses.
-
-**The `last_interaction_at` row is the dangerous one:** if that slug is wrong, PASS 4
-fails *silently and plausibly*. Nothing errors. Every contact just quietly reads as
-"never touched", `stalled` becomes universally false, and the cadence dates all still
-look reasonable. Read the dry-run's LAST TOUCH column before trusting anything else —
-if it says `unknown` for everyone, the slug is wrong.
-
-**Verify first:**
-```bash
-npm run pass4 -- --dump-shapes   # prints one raw entry + one raw person record
-```
+The pipeline-entries and select-title assumptions are checkable from the same
+`--dump-shapes` output already captured (it prints raw `entry_values` too) — worth a
+second look at that same terminal output rather than a new run. The two write-path
+assumptions (`updatePersonRecord`) can only be checked by an actual `--live` write,
+which is the next gate after these are reviewed.
 
 ---
 
-## 5. `Contacts!A3:V` cannot contain the header row
+## 5. `Contacts!A3:V` cannot contain the header row — ✅ RESOLVED, see #4
 
-**Spec 4b:** "Read `Contacts!A3:V` once... Parse header row 1 to find the column titled
-Relationship_Tier or Tier."
-
-Row 1 is not inside `A3:V`. As literally written this is impossible.
-
-**Chosen:** two reads — `Contacts!A1:V1` for the header, then `Contacts!A3:V` for data
-(`loadTierIndex`). The column is resolved **by title, never by letter**, so the index
-survives a column insert. Costs one extra Sheets call; the "zero extra Sheets calls"
-rule in the spec's Contacts schema note is about per-contact reads, which this isn't.
-
-Data starts at row 3 because row 2 is the ARRAYFORMULA spill row.
-
-> Note: the tier column landed at **V** in the sample fixture, the last column of the
-> range. If `Relationship_Tier` actually sits beyond V in the live sheet, the read
-> silently finds nothing and `loadTierIndex` throws with the header list it did find.
-> That's a loud failure, not a silent one — but the range may need widening.
+Folded into #4 above: the range was widened to `A1:EZ1`/`A3:EZ` as part of the same
+live-verification pass, for the same reason (tier column sits past V). Two-read
+approach (header, then data) is unchanged and still correct — row 1 was never inside
+`A3:V` to begin with, and now isn't inside `A3:EZ` either. Data still starts at row 3
+because row 2 is the ARRAYFORMULA spill row.
 
 ---
 
