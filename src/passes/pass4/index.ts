@@ -240,7 +240,7 @@ export async function runPass4(opts: Pass4Options): Promise<Pass4Report> {
 
   // 4b — Sheets side: pointers + tiers.
   logger.info('4b — loading Master_ID and tier index');
-  const [master, tiers] = await Promise.all([loadMasterId(sheets), loadTierIndex(sheets)]);
+  const [master, tiers] = await Promise.all([loadMasterId(sheets), loadTierIndex(sheets, logger)]);
   logger.info(`  Master_ID rows      : ${master.rowCount}`);
   logger.info(`  tier index entries  : ${tiers.byBhcId.size} (from "${tiers.headerTitle}")`);
   if (master.duplicateAttioRecordIds.length > 0) {

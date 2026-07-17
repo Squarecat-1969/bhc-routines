@@ -4,8 +4,20 @@
 
 import { RANGES, TIER_HEADER_CANDIDATES } from '../../config/constants.js';
 import { cell, type SheetsClient } from '../../lib/sheets.js';
+import { silentLogger, type Logger } from '../../lib/logger.js';
 import { normalizeTier } from './cadence.js';
 import type { Tier } from '../../config/constants.js';
+
+/** 0-based column index → A1 letter (0→A, 25→Z, 26→AA). */
+export function columnLetter(index: number): string {
+  let n = index;
+  let letter = '';
+  do {
+    letter = String.fromCharCode(65 + (n % 26)) + letter;
+    n = Math.floor(n / 26) - 1;
+  } while (n >= 0);
+  return letter;
+}
 
 export interface MasterIdEntry {
   readonly bhcId: string;
@@ -87,11 +99,12 @@ export interface TierIndex {
  * Build bhc_id → tier from Contacts.
  *
  * SPEC NOTE: 4b says "Read Contacts!A3:V once... Parse header row 1" — but row 1
- * is not inside A3:V. We issue a separate 1-row header read (Contacts!A1:V1) and
- * resolve the tier column by title, never by a hardcoded letter. Two reads, not
- * one. See docs/pass4-notes.md #5.
+ * is not inside A3:V, and the tier column sits far past V (the real tab has 113+
+ * columns). We issue a separate wide 1-row header read and resolve the tier
+ * column by title, never by a hardcoded letter. Two reads, not one.
+ * See docs/pass4-notes.md #5.
  */
-export async function loadTierIndex(sheets: SheetsClient): Promise<TierIndex> {
+export async function loadTierIndex(sheets: SheetsClient, logger: Logger = silentLogger): Promise<TierIndex> {
   const headerRows = await sheets.read(RANGES.contactsHeader, 'FORMATTED_VALUE');
   const header = headerRows[0];
   if (!header) {
@@ -99,6 +112,14 @@ export async function loadTierIndex(sheets: SheetsClient): Promise<TierIndex> {
   }
 
   const titles = header.map((h) => String(h ?? '').trim());
+
+  // Dump the header row so the tier column's real position is visible in the
+  // log — the range assumption above was wrong once and this is how we catch it.
+  const dump = titles
+    .map((t, i) => (t === '' ? null : `${columnLetter(i)}[${i}] ${t}`))
+    .filter((s): s is string => s !== null);
+  logger.info(`  Contacts header (${dump.length} non-blank of ${titles.length}): ${dump.join(' | ')}`);
+
   let columnIndex = -1;
   let headerTitle = '';
   for (const candidate of TIER_HEADER_CANDIDATES) {
@@ -116,6 +137,8 @@ export async function loadTierIndex(sheets: SheetsClient): Promise<TierIndex> {
         `found: ${titles.filter((t) => t !== '').join(', ') || '(all blank)'}`,
     );
   }
+
+  logger.info(`  tier column resolved: "${headerTitle}" at ${columnLetter(columnIndex)}[${columnIndex}]`);
 
   const rows = await sheets.read(RANGES.contactsData, 'FORMATTED_VALUE');
   const byBhcId = new Map<string, Tier>();

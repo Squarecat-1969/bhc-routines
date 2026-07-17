@@ -66,7 +66,7 @@ export const PIPELINE_STAGE_SLUGS = {
 export const PERSON_SLUGS = {
   name: 'name',
   bhcContactId: 'bhc_contact_id',
-  lastInteractionAt: 'last_interaction_at',
+  lastInteractionAt: 'last_interaction',
   nextCheckInDate: 'next_check_in_date',
   nextTouchModePlanned: 'next_touch_mode_planned',
   followUpReason: 'follow_up_reason',
@@ -76,8 +76,12 @@ export const PERSON_SLUGS = {
 
 export const RANGES = {
   masterId: 'Master_ID!A2:F',
-  contactsHeader: 'Contacts!A1:V1',
-  contactsData: 'Contacts!A3:V',
+  // The tier column sits well past V — the real Contacts tab has 113+ columns —
+  // so read wide and resolve the tier column by header title, never by letter.
+  // Header and data ranges must share the same start column (A) so a title's
+  // index in the header row is the same index into each data row.
+  contactsHeader: 'Contacts!A1:EZ1',
+  contactsData: 'Contacts!A3:EZ',
 } as const;
 
 /** Header titles accepted for the tier column, in preference order (spec 4b). */

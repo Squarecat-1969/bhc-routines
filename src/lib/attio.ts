@@ -60,10 +60,11 @@ export function textOf(values: AttioValues | undefined, slug: string): string | 
 /**
  * Date / timestamp attribute → CivilDate.
  *
- * ASSUMPTION: `last_interaction_at` is read as a plain date/timestamp attribute
- * (`value`). Attio also ships a built-in "interaction"-typed attribute whose
- * payload nests the timestamp under `interacted_at`, so both are accepted.
- * Verify against a real dry run before trusting either. See docs/pass4-notes.md #4.
+ * The cadence "last touch" reads Attio's built-in `last_interaction` attribute,
+ * an "interaction"-typed value whose payload nests the timestamp under
+ * `interacted_at` (confirmed via `--dump-shapes` on a real record). A plain
+ * date/timestamp `value` shape is still accepted for other date slugs.
+ * See docs/pass4-notes.md #4.
  */
 export function dateOf(values: AttioValues | undefined, slug: string): CivilDate | null {
   const v = firstValue(values, slug);

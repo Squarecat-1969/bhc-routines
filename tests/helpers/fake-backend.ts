@@ -11,6 +11,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
+import { RANGES } from '../../src/config/constants.js';
+
 export interface FakePerson {
   name?: string;
   bhcContactId?: string;
@@ -34,7 +36,7 @@ export interface FakeBackendConfig {
   /** Rows for Master_ID!A2:F — [BHC_ID, Full_Name, Location, Google_Row, Attio_Record_ID, Notes] */
   masterId: unknown[][];
   contactsHeader: unknown[];
-  /** Rows for Contacts!A3:V */
+  /** Rows for RANGES.contactsData (Contacts data starting at row 3) */
   contacts: unknown[][];
 }
 
@@ -91,7 +93,7 @@ export class FakeBackend {
       const { action, range } = (body ?? {}) as { action?: string; range?: string };
       if (action !== 'read') return send(200, {});
       if (range?.startsWith('Master_ID')) return send(200, { values: this.config.masterId });
-      if (range === 'Contacts!A1:V1') return send(200, { values: [this.config.contactsHeader] });
+      if (range === RANGES.contactsHeader) return send(200, { values: [this.config.contactsHeader] });
       if (range?.startsWith('Contacts')) return send(200, { values: this.config.contacts });
       return send(200, { values: [] });
     }
@@ -132,7 +134,14 @@ export class FakeBackend {
         const values: Record<string, unknown> = {};
         if (person.name !== undefined) values['name'] = [{ full_name: person.name }];
         if (person.bhcContactId !== undefined) values['bhc_contact_id'] = [{ value: person.bhcContactId }];
-        if (person.lastInteraction !== undefined) values['last_interaction_at'] = [{ value: person.lastInteraction }];
+        if (person.lastInteraction !== undefined)
+          values['last_interaction'] = [
+            {
+              interaction_type: 'email',
+              interacted_at: person.lastInteraction,
+              attribute_type: 'interaction',
+            },
+          ];
 
         const written = this.patched.get(id);
         if (written) {

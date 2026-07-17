@@ -40,7 +40,10 @@ function person(opts: { name?: string; bhcContactId?: string; lastInteraction?: 
   const values: Record<string, unknown> = {};
   if (opts.name !== undefined) values['name'] = [{ full_name: opts.name }];
   if (opts.bhcContactId !== undefined) values['bhc_contact_id'] = [{ value: opts.bhcContactId }];
-  if (opts.lastInteraction !== undefined) values['last_interaction_at'] = [{ value: opts.lastInteraction }];
+  if (opts.lastInteraction !== undefined)
+    values['last_interaction'] = [
+      { interaction_type: 'email', interacted_at: opts.lastInteraction, attribute_type: 'interaction' },
+    ];
   return { recordId: RECORD_ID, values };
 }
 
