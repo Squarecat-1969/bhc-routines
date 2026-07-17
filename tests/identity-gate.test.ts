@@ -156,6 +156,29 @@ describe('evaluateContact — identity gate', () => {
     expect(row.withheld).toBe('FETCH_FAILED');
   });
 
+  it('withholds when a track shows a stage beyond the known ladder (Stage 6+) — data integrity, not identity', () => {
+    const row = evaluateContact({
+      entry: entry({ tnb_stage: 'Stage 7' }),
+      record: person({ name: 'Alice Nguyen', bhcContactId: 'BHC-00001' }),
+      master,
+      tiers,
+      today: TODAY,
+    });
+    expect(row.withheld).toBe('STAGE_OUT_OF_RANGE');
+    expect(row.activeStageNum).toBe(7);
+  });
+
+  it('checks stage range before the identity gate — fires even when the record fetch failed', () => {
+    const row = evaluateContact({
+      entry: entry({ tnb_stage: 'Stage 9' }),
+      record: null,
+      master,
+      tiers,
+      today: TODAY,
+    });
+    expect(row.withheld).toBe('STAGE_OUT_OF_RANGE');
+  });
+
   it('passes a record with no bhc_contact_id set, provided the name matches', () => {
     // A blank bhc_contact_id is an un-backfilled record, not a wrong pointer.
     const row = evaluateContact({

@@ -122,9 +122,12 @@ export function computeCadence(input: CadenceInput): CadenceResult {
     rule = stageRule;
     reasonBase = `${activeTrack} Stage ${activeStageNum}`;
   } else {
-    // SPEC NOTE: a stage integer above the known table (>5) is undefined in the
-    // spec. We fall back to tier cadence and warn rather than invent a rule.
-    // See docs/pass4-notes.md #3.
+    // SPEC NOTE: a stage integer above the known table (>5) has no cadence rule.
+    // Bobby confirmed there's no mechanism to advance a track past Stage 5, so
+    // this is a data-integrity problem, not an ambiguous spec case — the caller
+    // (evaluateContact, see docs/pass4-notes.md #3) withholds the write and flags
+    // it for correction. The tier-cadence values computed below are filler for
+    // the withheld row's display fields only; they are never written to Attio.
     if (activeStageNum >= 1) {
       warnings.push(
         `Stage ${activeStageNum} has no entry in STAGE_CADENCE (known 1-5); fell back to tier cadence`,

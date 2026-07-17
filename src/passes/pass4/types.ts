@@ -8,7 +8,8 @@ export type WithholdReason =
   | 'NAME_MISMATCH'
   | 'NAME_UNVERIFIABLE'
   | 'MASTER_ID_DUPLICATE_POINTER'
-  | 'FETCH_FAILED';
+  | 'FETCH_FAILED'
+  | 'STAGE_OUT_OF_RANGE';
 
 export interface CadenceRow {
   readonly recordId: string;

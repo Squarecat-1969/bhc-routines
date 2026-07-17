@@ -16,6 +16,7 @@ import {
   ATTIO_FETCH_BATCH_SIZE,
   ATTIO_PIPELINE_LIST,
   DEFAULT_TIER,
+  MAX_KNOWN_STAGE,
   PERSON_SLUGS,
   PIPELINE_STAGE_SLUGS,
 } from '../../config/constants.js';
@@ -116,6 +117,16 @@ export function evaluateContact(args: {
     overdueCatchUp: cadence.overdueCatchUp,
     attioBhcContactId,
   };
+
+  if (base.activeStageNum > MAX_KNOWN_STAGE) {
+    notes.push(
+      `${base.activeTrack ?? 'unknown track'} shows Stage ${base.activeStageNum} ` +
+        `("${base.activeStageLabel}") — no mechanism advances a track beyond Stage ` +
+        `${MAX_KNOWN_STAGE}. This is a data-integrity issue, not a cadence question: ` +
+        `flag the Attio pipeline stage value for correction. Cadence withheld pending fix.`,
+    );
+    return { ...base, nameVerdict: null, withheld: 'STAGE_OUT_OF_RANGE', notes };
+  }
 
   if (!record) {
     return { ...base, nameVerdict: null, withheld: 'FETCH_FAILED', notes };

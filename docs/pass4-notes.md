@@ -2,8 +2,8 @@
 
 Companion to `src/passes/pass4/`. Everything here is a place where the spec
 (`routines/BHC_Late_Edition.md`) was ambiguous, self-contradictory, or silent, and
-I had to make a call. **Each numbered item needs a yes/no from Bobby.** Items 1, 2
-and 4 can change what gets written to production.
+I had to make a call. Items 1, 2, and 3 are decided (2026-07-17). **Item 4 is still
+open and is the live-verification gate before PASS 4 can go `--live`.**
 
 ---
 
@@ -60,15 +60,27 @@ Confirmed by Bobby: Social, no code change needed — `DEFAULT_TIER` in
 
 ---
 
-## 3. Stage numbers above 5 are undefined
+## 3. Stage numbers above 5 are undefined — ✅ DECIDED 2026-07-17: withhold + flag, never a rule to invent
 
 `STAGE_CADENCE` covers Stages 1–5. The spec says nothing about a Stage 6+.
 
-**Chosen:** fall back to tier cadence and attach a warning to the row, rather than
-invent a rule or crash. Visible in the report's NOTES section.
+**Bobby's call:** there is no mechanism in Attio for a track to advance beyond Stage
+5 — if a record shows one, that's a data-integrity problem, not an ambiguous cadence
+case. Treating it as "fall back to tier cadence" was wrong: it would silently compute
+and (eventually) write a plausible-looking cadence for a contact whose underlying
+pipeline data is broken, the same failure shape as the June corruption (a quietly
+wrong value, no error, nothing visibly off).
 
-> **Decision needed:** can a track ever reach Stage 6+? If not, this is dead code and
-> the fallback should probably become a withhold instead.
+**Implemented:** `STAGE_OUT_OF_RANGE` added to `WithholdReason`. `evaluateContact`
+now withholds the write entirely — checked first, ahead of the identity gate, since
+it only needs the pipeline entry's stage value, not the person record. The dry-run
+table, report, and Slack addendum all surface it with its own guidance ("correct the
+Attio pipeline stage value"), separate from the identity-check message ("run the
+Reconciler") since that's the wrong fix for this class of issue. `cadence.ts` still
+computes filler tier-cadence values for the row's display fields — they're never
+written, since the row is withheld.
+
+Covered by `tests/identity-gate.test.ts`.
 
 ---
 

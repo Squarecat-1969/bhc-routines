@@ -6,6 +6,7 @@
  * inputs (stage, tier, last touch) next to the outputs, not just the outputs.
  */
 
+import { MAX_KNOWN_STAGE } from '../../config/constants.js';
 import type { CadenceRow, Pass4Report } from './types.js';
 
 function pad(s: string, n: number): string {
@@ -133,13 +134,23 @@ export function buildSlackAddendum(report: Pass4Report): string {
   }
 
   if (c.withheld > 0) {
-    const names = report.rows
-      .filter((r) => r.withheld !== null)
-      .map((r) => r.name ?? r.recordId)
-      .join(', ');
-    lines.push(
-      `⚠ ${c.withheld} contact(s) withheld — identity check failed, cadence not written: ${names}. Run the Reconciler.`,
-    );
+    const withheldRows = report.rows.filter((r) => r.withheld !== null);
+    const stageIssues = withheldRows.filter((r) => r.withheld === 'STAGE_OUT_OF_RANGE');
+    const identityIssues = withheldRows.filter((r) => r.withheld !== 'STAGE_OUT_OF_RANGE');
+
+    if (stageIssues.length > 0) {
+      const names = stageIssues.map((r) => r.name ?? r.recordId).join(', ');
+      lines.push(
+        `⚠ ${stageIssues.length} contact(s) show a pipeline stage beyond Stage ${MAX_KNOWN_STAGE} — ` +
+          `not an identity problem, an Attio data error: ${names}. Correct the stage value in Attio.`,
+      );
+    }
+    if (identityIssues.length > 0) {
+      const names = identityIssues.map((r) => r.name ?? r.recordId).join(', ');
+      lines.push(
+        `⚠ ${identityIssues.length} contact(s) withheld — identity check failed, cadence not written: ${names}. Run the Reconciler.`,
+      );
+    }
   }
 
   if (c.failed > 0 || c.verifiedMismatch > 0) {
