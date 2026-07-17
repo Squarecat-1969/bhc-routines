@@ -7,7 +7,7 @@ and 4 can change what gets written to production.
 
 ---
 
-## 1. `TODAY` is undefined for PASS 4 — currently America/Los_Angeles ⚠ NEEDS A DECISION
+## 1. `TODAY` is undefined for PASS 4 — ✅ DECIDED 2026-07-17: UTC
 
 **Spec:** PASS 4d uses `TODAY` without ever defining it. PASS 4.5 defines its own as
 `datetime.now(timezone.utc).date()`.
@@ -21,21 +21,24 @@ Consequences of picking UTC:
 - `days_since` is inflated by 1, so a contact tips into `stalled` one day early.
 - Anything landing exactly on the `> 2 * cadence_days` boundary flips.
 
-**Chosen:** `America/Los_Angeles`, via `RUN_TIMEZONE` (`src/config/env.ts`). Rationale:
-cadence is a human-relationship concept — "45 days since I last spoke to them" is
-measured in Bobby's calendar, not UTC's. `todayIn()` is tested against exactly the
-06:00 UTC case (`tests/dates.test.ts`).
+**Decided: `UTC`**, via `RUN_TIMEZONE` (`src/config/env.ts`, default changed 2026-07-17).
+Rationale: matches PASS 4.5's existing convention (`datetime.now(timezone.utc).date()`)
+so the two passes agree on `TODAY` when 4.5 later reuses PASS 4's report rather than
+disagreeing by up to a day depending on run time. `todayIn()` is tested against exactly
+the 06:00 UTC boundary case (`tests/dates.test.ts`) for both `UTC` and
+`America/Los_Angeles`, so the LA behavior is still verified even though it's no longer
+the default.
 
-**Risk of this choice:** it may differ by one day from what the current LLM-run
-routine has been writing (which is itself probably inconsistent run-to-run — the
-agent had no defined `TODAY` either). Expect small diffs against live values.
-
-> **Decision needed:** keep `America/Los_Angeles`, or set `RUN_TIMEZONE=UTC` to match
-> PASS 4.5's convention? If PASS 4.5 later reuses PASS 4's `TODAY`, they must agree.
+**Known effect of this choice:** on the 11:00 PM PDT scheduled run (06:00 UTC next
+day), `TODAY` under UTC is one calendar day ahead of what a human in Seattle would
+call "today." `next_check_in_date` and `days_since` shift by one day versus the
+LA-default behavior modeled above — expect small diffs against live values from the
+old agentic routine (which had no defined `TODAY` either, so it was likely
+inconsistent run-to-run anyway).
 
 ---
 
-## 2. The unknown-tier cadence contradicts itself
+## 2. The unknown-tier cadence contradicts itself — ✅ CONFIRMED 2026-07-17: Social (pseudocode)
 
 **Spec, prose table (line 244):** `(unknown) → 90 days · Context`
 **Spec, 4b:** "Anything else → Strategic"
@@ -52,7 +55,8 @@ rather than `Context`. In the sample run that was 1 of 6 contacts; the dry-run r
 marks these with `*` and a `tier_defaulted` count so the real number is visible before
 going live.
 
-> **Decision needed:** is an unknown tier Social (pseudocode) or Context (prose table)?
+Confirmed by Bobby: Social, no code change needed — `DEFAULT_TIER` in
+`src/config/constants.ts` already implements this.
 
 ---
 

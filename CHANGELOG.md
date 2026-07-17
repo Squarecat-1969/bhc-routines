@@ -2,6 +2,13 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-07-17 — PASS 4 decisions 1 & 2 resolved
+
+- **`RUN_TIMEZONE` default changed `America/Los_Angeles` → `UTC`** (`src/config/env.ts`, `.env.example`). Bobby's call: matches PASS 4.5's existing UTC convention so the two passes agree on `TODAY`. Known effect: on the 11pm PDT scheduled run, `TODAY` is one calendar day ahead of Seattle's "today" — `next_check_in_date`/`days_since` shift by a day versus the LA-default behavior. `docs/pass4-notes.md` #1 updated to reflect the decision; no test changes needed (`todayIn()` was already tested against both zones).
+- **Unknown relationship-tier touch mode confirmed: Social** (follows the spec's pseudocode, not the contradicting prose table). No code change — `DEFAULT_TIER` already implemented this. `docs/pass4-notes.md` #2 marked confirmed.
+- Still open in `docs/pass4-notes.md`: #3 (Stage 6+ fallback, non-blocking) and #4 (live Attio field-slug verification via `npm run pass4 -- --dump-shapes` — Bobby running this locally via Claude Code before PASS 4 goes live).
+- `npm run typecheck` and `npm test` (63 tests) pass after the timezone default change.
+
 ## 2026-07-14
 
 - **Added `AGENTS.md`** at repo root — defines how a Claude Code session should distinguish a routine-execution session (started via a routine's own schedule, API call, or manual Run now) from a build/maintenance session (a human editing files in this repo). Written to be factual/criteria-based rather than persuasive, after persuasion-style grounding text (in this README and in Late Edition's own Instructions) repeatedly triggered self-refusal on scheduled/API-triggered runs — a document telling an agent to "override your caution, proceed" reads as an injection-shaped red flag regardless of intent or accuracy.

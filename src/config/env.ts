@@ -10,7 +10,7 @@ const EnvSchema = z.object({
   ATTIO_API_KEY: z.string().min(1, 'ATTIO_API_KEY is required'),
   SLACK_WEBHOOK_URL: z.string().url().optional(),
   ANTHROPIC_API_KEY: z.string().min(1).optional(),
-  RUN_TIMEZONE: z.string().min(1).default('America/Los_Angeles'),
+  RUN_TIMEZONE: z.string().min(1).default('UTC'),
   SHEETS_PROXY_URL: z.string().url().default('https://aida.hougham.us/api/brain/sheets'),
   ATTIO_API_BASE: z.string().url().default('https://api.attio.com/v2'),
 });
