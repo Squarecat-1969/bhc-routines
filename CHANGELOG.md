@@ -2,6 +2,17 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-07-18 — PASS 2's enrichment call built (LLM half, partial)
+
+- **New: `src/lib/anthropic.ts`** — a hand-rolled Anthropic Messages API client, same style as `AttioClient`/`SheetsClient` (not the SDK). One consumer so far: PASS 2's enrichment call.
+- **New: `src/passes/pass2/{enrich,enrich-schema,prompt}.ts`** — the actual enrichment call (spec step "e"/"e2"), one narrow single-purpose call per thread with a fixed JSON schema. Three real safety properties, not just prompting:
+  - `zod` schema rejects `key_commitments` as anything other than a string — the actual enforcement mechanism for the spec's explicit "never a participant-keyed object, crashes the Aida UI with React error #31" warning, not hopeful prompting. Test asserts this exact failure shape gets rejected.
+  - A deterministic guard downgrades `REPLY_NEEDED` to `FYI_ONLY` on an Outbound thread — the spec's own named "most common misfire" ("REPLY_NEEDED on Direction=Outbound is almost always wrong"), actively corrected rather than just prompted against, with a visible warning every time it fires.
+  - The HARD DATA GUARDRAIL is applied to every free-text output field, defense in depth against the model echoing sensitive content it saw in the raw thread.
+- **`ENRICHMENT_MODEL`/`ENRICHMENT_MAX_TOKENS`** added to `constants.ts` — flagged explicitly as a reasonable default, not a confirmed cost/quality decision.
+- 29 new tests (schema validation including the critical safety-rejection test, prompt-builder pure-string tests, and integration tests against a new fake Anthropic backend covering the outbound-ceiling guard, guardrail redaction, and failure handling). 243/243 across the whole repo, typecheck clean.
+- **Still no PASS 2 orchestration/CLI** — every building block now exists (parsing, resolution, drift, triage, guardrail, the real enrichment call, Write_Targets assembly) but nothing wires them into a runnable pass, writes the actual Brain_Complete row, builds the Slack block, or marks Thread_Staging PROCESSED. That's real, substantial glue work — the natural next session.
+
 ## 2026-07-18 — PASS 2 deterministic half: building blocks built, orchestration deliberately deferred
 
 - **New pass, `src/passes/pass2/`:** email parsing/dedup, primary/secondary participant identification, the full Contacts→Attio→Master_ID resolution cascade (never fabricates a BHC_ID), the drift check, NO_ACTION triage heuristics, the HARD DATA GUARDRAIL, and the complete `Write_Targets_JSON` assembly.

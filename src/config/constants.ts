@@ -143,6 +143,16 @@ export const PIPELINE_CACHE_COLUMNS = 18;
 export const ATTIO_SEGMENT_HARDCODE = 'S1';
 
 /**
+ * Model + token budget for PASS 2's enrichment call. NOT verified as Bobby's
+ * chosen tradeoff — a reasonable default (balanced quality/cost for a nightly
+ * batch job with real judgment calls: the outbound-ceiling rule, personal-
+ * context extraction restraint, drafting in Bobby's voice), not a settled
+ * decision. See docs/pass2-notes.md.
+ */
+export const ENRICHMENT_MODEL = 'claude-sonnet-5';
+export const ENRICHMENT_MAX_TOKENS = 2000;
+
+/**
  * Owned/internal addresses (spec preamble) — a thread's contact is NEVER one
  * of these. OWNED_EMAILS is exact-match; OWNED_DOMAINS matches any address at
  * that domain (all of @thenewblank.com is internal TNB staff).
