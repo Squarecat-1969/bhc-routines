@@ -2,10 +2,9 @@
 
 Companion to `src/passes/pass4/`. Everything here is a place where the spec
 (`routines/BHC_Late_Edition.md`) was ambiguous, self-contradictory, or silent, and
-I had to make a call. Items 1, 2, 3, and 5 are decided (2026-07-17). **Item 4 is
-partially verified** — the dangerous `last_interaction` bug is confirmed and fixed,
-but the pipeline-entry and write-path assumptions are still unchecked before PASS 4
-can go `--live`.
+I had to make a call. Items 1, 2, 3, and 5 are decided (2026-07-17). **Item 4's
+read-side assumptions are now fully verified (2026-07-18) — only the write path is
+still unchecked, and it's the last gate before PASS 4 can go `--live` for real.**
 
 ---
 
@@ -86,7 +85,7 @@ Covered by `tests/identity-gate.test.ts`.
 
 ---
 
-## 4. Attio: MCP → REST — ⚠ PARTIALLY VERIFIED 2026-07-17 (live `--dump-shapes` run)
+## 4. Attio: MCP → REST — ⚠ READ-SIDE VERIFIED 2026-07-18, write path still open
 
 The spec says "Attio MCP connector". GitHub Actions has no MCP host, so
 `src/lib/attio.ts` uses the Attio REST API with `ATTIO_API_KEY`. Same data, different
@@ -98,9 +97,9 @@ Attio's built-in `last_interaction` attribute (`attribute_type: 'interaction'`),
 the timestamp nested under `interacted_at`, not a plain `value`. `PERSON_SLUGS.lastInteractionAt`
 now reads `'last_interaction'`; `dateOf` still accepts a plain `value` shape too, for
 other date-typed slugs. Regression test in `tests/attio.test.ts` pins the real shape.
-This would have failed exactly as predicted: every contact reading "last touch
-unknown," `stalled` universally false, cadence dates all looking plausible while
-being silently wrong.
+Corroborating evidence from the same dump: this record's `follow_up_reason`, written
+the night before by the old agentic routine, already read "...last touch date
+unknown" — exactly the failure this bug would produce.
 
 **✅ Also found and fixed via the same run:** the Contacts read range was too narrow
 (`A1:V1`/`A3:V`) — the tier column sits well past V in the live 113+-column sheet.
@@ -109,20 +108,30 @@ full header row and the resolved tier column's letter/index on every run, so thi
 class of bug is visible in the log instead of silently finding nothing. Folds in
 item #5 below — same root cause, same fix.
 
-**Still open — not yet checked against live data:**
+**✅ Confirmed correct, second `--dump-shapes` run (2026-07-18):**
+
+- **Pipeline entry shape** (`parent_record_id` + `entry_values`) — proven by the dump
+  itself: `listEntries()` only returns an entry when `parent_record_id` resolves to a
+  real string, and this run successfully fetched a real person record (Suzie
+  Schofield, BHC-00103) from it. Had the shape been wrong, `--dump-shapes` would have
+  errored ("Pipeline list returned no entries"), not printed real data.
+- **Select values as `entry_values.<slug>[0].option.title`** — the dump shows
+  `tnb_stage[0].option.title = "Stage 0 – Qualified/Staged"`, exactly the shape
+  `selectTitleOf` expects. `stageNum()`'s regex only looks for `stage\s*(\d+)`, so the
+  em dash and label text after it don't matter.
+
+**Still open — the write path, only checkable via an actual `--live` write:**
 
 | Assumption | Where | Risk if wrong |
 |---|---|---|
-| `POST /v2/lists/{id}/entries/query`, entries carry `parent_record_id` + `entry_values` | `listEntries` | 0 entries → pass no-ops |
-| Select values read as `entry_values.<slug>[0].option.title` | `selectTitleOf` | every stage reads as 0 → everyone falls to tier cadence |
 | Writing a select by its title string (`"Context"`) is accepted | `updatePersonRecord` | writes 400 |
 | `PATCH /v2/objects/people/records/{id}` with `{data:{values:{…}}}` | `updatePersonRecord` | writes fail |
 
-The pipeline-entries and select-title assumptions are checkable from the same
-`--dump-shapes` output already captured (it prints raw `entry_values` too) — worth a
-second look at that same terminal output rather than a new run. The two write-path
-assumptions (`updatePersonRecord`) can only be checked by an actual `--live` write,
-which is the next gate after these are reviewed.
+Both are properties of a *write*, so nothing short of an actual `--live` call can
+confirm them — that's the next and last gate before PASS 4 is trustworthy end to end.
+Recommend a canary first: `npm run pass4:live -- --limit 1` against one low-stakes
+contact, read the QA-readback line in the output (the code already re-fetches after
+writing and compares), then scale up once that one write is confirmed clean.
 
 ---
 
