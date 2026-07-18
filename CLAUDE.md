@@ -23,7 +23,7 @@ npm run pass4:live    # writes cadence to Attio
 npm run pass4 -- --dump-shapes   # print raw Attio payloads to verify slugs
 ```
 
-Migration status: **PASS 4 (cadence) built, dry-run only, not yet live.** Everything else still runs as a prompt spec. Order: 4 → 4.5 → 1+0 → 2 (deterministic half) → 2's LLM calls → 3+5. Don't skip ahead; each step gets reviewed before the next.
+Migration status: **PASS 4 (cadence) verified end-to-end against production — dry-run and a live canary write both confirmed clean, 2026-07-18.** Everything else still runs as a prompt spec. Order: 4 → 4.5 → 1+0 → 2 (deterministic half) → 2's LLM calls → 3+5. Don't skip ahead; each step gets reviewed before the next. PASS 4.5 is next.
 
 Ground rules for the rebuild:
 - **Dry-run is the default.** `--live` must be explicit. An integration test asserts dry-run issues zero mutating requests — keep it that way.

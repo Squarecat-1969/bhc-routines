@@ -5,7 +5,7 @@
  * identity for this system (spec: Authentication → Slack).
  */
 
-import { requestJson, withRetry } from './http.js';
+import { requestText, withRetry } from './http.js';
 
 export interface SlackPoster {
   post(text: string): Promise<void>;
@@ -16,7 +16,7 @@ export function createSlackPoster(webhookUrl: string): SlackPoster {
     async post(text: string): Promise<void> {
       await withRetry(
         () =>
-          requestJson(webhookUrl, {
+          requestText(webhookUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ text, username: 'Aida', icon_emoji: ':aida:' }),

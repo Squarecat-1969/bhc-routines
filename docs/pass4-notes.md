@@ -2,9 +2,9 @@
 
 Companion to `src/passes/pass4/`. Everything here is a place where the spec
 (`routines/BHC_Late_Edition.md`) was ambiguous, self-contradictory, or silent, and
-I had to make a call. Items 1, 2, 3, and 5 are decided (2026-07-17). **Item 4's
-read-side assumptions are now fully verified (2026-07-18) — only the write path is
-still unchecked, and it's the last gate before PASS 4 can go `--live` for real.**
+I had to make a call. All five items are decided and verified as of 2026-07-18.
+**PASS 4 is confirmed end-to-end against production** — dry-run and a live canary
+write both succeeded. Next up per the migration order: PASS 4.5.
 
 ---
 
@@ -85,7 +85,7 @@ Covered by `tests/identity-gate.test.ts`.
 
 ---
 
-## 4. Attio: MCP → REST — ⚠ READ-SIDE VERIFIED 2026-07-18, write path still open
+## 4. Attio: MCP → REST — ✅ FULLY VERIFIED 2026-07-18, PASS 4 confirmed end-to-end
 
 The spec says "Attio MCP connector". GitHub Actions has no MCP host, so
 `src/lib/attio.ts` uses the Attio REST API with `ATTIO_API_KEY`. Same data, different
@@ -120,18 +120,22 @@ item #5 below — same root cause, same fix.
   `selectTitleOf` expects. `stageNum()`'s regex only looks for `stage\s*(\d+)`, so the
   em dash and label text after it don't matter.
 
-**Still open — the write path, only checkable via an actual `--live` write:**
+**✅ Write path confirmed — 2026-07-18, `npm run pass4:live -- --limit 1`.** Real
+cadence write to Suzie Schofield (BHC-00103): `written=1 failed=0
+read_back_mismatch=0`. Both remaining write-path assumptions hold — Attio accepted
+the select written by title string, and the PATCH body shape was correct.
 
-| Assumption | Where | Risk if wrong |
-|---|---|---|
-| Writing a select by its title string (`"Context"`) is accepted | `updatePersonRecord` | writes 400 |
-| `PATCH /v2/objects/people/records/{id}` with `{data:{values:{…}}}` | `updatePersonRecord` | writes fail |
+**PASS 4 is now verified end-to-end against production. Item 4 is fully closed.**
 
-Both are properties of a *write*, so nothing short of an actual `--live` call can
-confirm them — that's the next and last gate before PASS 4 is trustworthy end to end.
-Recommend a canary first: `npm run pass4:live -- --limit 1` against one low-stakes
-contact, read the QA-readback line in the output (the code already re-fetches after
-writing and compares), then scale up once that one write is confirmed clean.
+**Bug found by this same canary run, unrelated to Attio:** the cadence write
+succeeded and posted to Slack correctly, but the process then crashed with
+`SyntaxError: Unexpected token 'o', "ok" is not valid JSON`. Slack's incoming-webhook
+endpoint returns the literal text `"ok"` on success, not JSON — `requestJson`
+unconditionally `JSON.parse`s the response body, so a fully successful post still
+exited non-zero, which would have marked a working run as failed in CI. Fixed with a
+new `requestText` helper (`src/lib/http.ts`) that `slack.ts` now uses instead;
+`requestJson` is untouched and still correct for Attio and Sheets, which do return
+JSON. Regression test in `tests/http.test.ts` pins both behaviors.
 
 ---
 

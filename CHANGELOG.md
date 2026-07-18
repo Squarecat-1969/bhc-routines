@@ -2,6 +2,15 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-07-18 — PASS 4 verified end-to-end against production; goes live
+
+- **`npm run pass4 -- --dump-shapes` (second run):** confirmed the two remaining read-side assumptions — pipeline entry shape (`parent_record_id`/`entry_values`) and select-value reads (`entry_values.<slug>[0].option.title`) both match the live Attio workspace exactly.
+- **`npm run pass4:live -- --limit 1` (canary):** real cadence write to Suzie Schofield (BHC-00103) — `written=1 failed=0 read_back_mismatch=0`. Confirms Attio accepts a select written by title string and the PATCH body shape is correct. **PASS 4 is now fully verified end-to-end against production; `docs/pass4-notes.md` items 1–5 are all resolved.**
+- **Fixed a real bug found by that same canary run:** the cadence write and Slack post both succeeded, but the process then crashed — `requestJson` unconditionally `JSON.parse`s its response body, and Slack's incoming webhook returns the literal text `"ok"` on success, not JSON. A fully successful run would have exited non-zero. New `requestText` helper in `src/lib/http.ts`; `slack.ts` now uses it. `requestJson` untouched (still correct for Attio/Sheets, which do return JSON). Regression test added: `tests/http.test.ts`.
+- Also landed this session (Claude Code, chat-assisted): `RUN_TIMEZONE` default → `UTC`; unknown-tier touch mode confirmed Social; Stage 6+ is now a `STAGE_OUT_OF_RANGE` withhold (data-integrity flag) instead of a silent tier-cadence fallback, since there's no mechanism for a track to advance past Stage 5; GHA workflow's hardcoded `RUN_TIMEZONE: America/Los_Angeles` fixed to match the UTC default (would have silently overridden the decision on first live run); `last_interaction_at` → `last_interaction` fix (the dangerous slug bug — every contact was reading "last touch unknown"); Contacts read range widened `A1:V1`/`A3:V` → `A1:EZ1`/`A3:EZ` (tier column sits well past V in the live 113+-column sheet), with header-row diagnostic logging added to `load.ts`.
+- `npm run typecheck` and `npm test` (72 tests) pass.
+- Next per the migration order (`docs/CLAUDE.md`): PASS 4.5 (Pipeline Cache).
+
 ## 2026-07-17 — PASS 4 decisions 1 & 2 resolved
 
 - **`RUN_TIMEZONE` default changed `America/Los_Angeles` → `UTC`** (`src/config/env.ts`, `.env.example`). Bobby's call: matches PASS 4.5's existing UTC convention so the two passes agree on `TODAY`. Known effect: on the 11pm PDT scheduled run, `TODAY` is one calendar day ahead of Seattle's "today" — `next_check_in_date`/`days_since` shift by a day versus the LA-default behavior. `docs/pass4-notes.md` #1 updated to reflect the decision; no test changes needed (`todayIn()` was already tested against both zones).

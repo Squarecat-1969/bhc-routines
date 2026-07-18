@@ -66,3 +66,23 @@ export async function requestJson<T = unknown>(
     clearTimeout(timer);
   }
 }
+
+/**
+ * Same success/retry semantics as `requestJson`, but returns the raw response
+ * body instead of parsing it as JSON. Slack's incoming-webhook endpoint returns
+ * the literal text "ok" on success — JSON.parse-ing that throws, which wrongly
+ * turns a successful post into a crashed run. Use this for any endpoint whose
+ * response body isn't JSON.
+ */
+export async function requestText(url: string, init: RequestInit, timeoutMs = 60_000): Promise<string> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...init, signal: controller.signal });
+    const text = await res.text();
+    if (!res.ok) throw new HttpError(res.status, url, text);
+    return text;
+  } finally {
+    clearTimeout(timer);
+  }
+}
