@@ -63,8 +63,8 @@ async function main(): Promise<void> {
   const logger = createLogger();
   const env = loadEnv();
 
-  if (!env.ANTHROPIC_API_KEY) {
-    throw new Error('ANTHROPIC_API_KEY is required for PASS 2 (the enrichment call needs it even in dry-run).');
+  if (!env.ANTHROPIC_BHC_ROUTINES_API) {
+    throw new Error('ANTHROPIC_BHC_ROUTINES_API is required for PASS 2 (the enrichment call needs it even in dry-run).');
   }
 
   const sheets = new SheetsClient({
@@ -78,7 +78,7 @@ async function main(): Promise<void> {
     onRetry: ({ attempt, delayMs }) => logger.warn(`  attio retry ${attempt} in ${delayMs}ms`),
   });
   const anthropic = new AnthropicClient({
-    apiKey: env.ANTHROPIC_API_KEY,
+    apiKey: env.ANTHROPIC_BHC_ROUTINES_API,
     onRetry: ({ attempt, delayMs }) => logger.warn(`  anthropic retry ${attempt} in ${delayMs}ms`),
   });
 
