@@ -17,8 +17,8 @@
  */
 
 import {
-  ATTIO_FETCH_BATCH_PAUSE_MS,
-  ATTIO_FETCH_BATCH_SIZE,
+  PASS4_5_FETCH_BATCH_SIZE,
+  PASS4_5_FETCH_PAUSE_MS,
   ATTIO_PIPELINE_LIST,
   PERSON_SLUGS,
   RANGES,
@@ -160,8 +160,8 @@ async function runPass45Inner(
 
   // 4.5b — bulk-fetch identity from Attio, batched.
   logger.info('4.5b — fetching person records (batched)');
-  const batchSize = opts.fetchBatchSize ?? ATTIO_FETCH_BATCH_SIZE;
-  const pauseMs = opts.fetchPauseMs ?? ATTIO_FETCH_BATCH_PAUSE_MS;
+  const batchSize = opts.fetchBatchSize ?? PASS4_5_FETCH_BATCH_SIZE;
+  const pauseMs = opts.fetchPauseMs ?? PASS4_5_FETCH_PAUSE_MS;
   logger.info(`  batch size ${batchSize}, pause ${pauseMs}ms between batches`);
   const records = await fetchPersonRecordsBatched(
     attio,

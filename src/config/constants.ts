@@ -113,3 +113,16 @@ export const ATTIO_SEGMENT_HARDCODE = 'S1';
 
 export const ATTIO_FETCH_BATCH_SIZE = 10;
 export const ATTIO_FETCH_BATCH_PAUSE_MS = 2_000;
+
+/**
+ * PASS 4.5 fetches ~50x more records than PASS 4 (~2,213 vs ~44), so PASS 4's
+ * pacing (tuned for its own scale) is far more conservative than necessary here.
+ * These values are empirically proven, not guessed: three real dry runs against
+ * production (2026-07-18) at batch=10/pause=2000ms, batch=25/pause=1000ms, and
+ * batch=40/pause=1000ms all completed with zero failures and zero retries across
+ * all 2,216 records. Wall time dropped from ~11m19s to ~2m15s. See
+ * docs/pass4_5-notes.md #1 for the full comparison. Still overridable via
+ * --batch-size/--pause-ms if headroom ever needs re-checking.
+ */
+export const PASS4_5_FETCH_BATCH_SIZE = 40;
+export const PASS4_5_FETCH_PAUSE_MS = 1_000;

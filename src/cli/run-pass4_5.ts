@@ -4,7 +4,11 @@
  *   npm run pass4_5:dry            compute and print, write nothing
  *   npm run pass4_5:live           compute and write to Pipeline_Cache / Name_Conflicts
  *   npm run pass4_5 -- --dry-run --limit 50
- *   npm run pass4_5 -- --dry-run --batch-size 25 --pause-ms 1000   (fetch tuning, see docs/pass4_5-notes.md #1)
+ *   npm run pass4_5 -- --dry-run --batch-size 60 --pause-ms 750   (re-tune if ever needed)
+ *
+ * Default fetch pacing (batch=40, pause=1000ms) is empirically proven, not
+ * guessed — see docs/pass4_5-notes.md #1 for the real dry-run comparison this
+ * was picked from (~2m15s at full production scale, zero failures/retries).
  *
  * Dry-run is the default: `--live` must be passed explicitly. There is no way to
  * write by omitting a flag. --limit/--batch-size/--pause-ms are dev/testing

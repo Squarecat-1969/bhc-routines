@@ -5,46 +5,46 @@ place the spec (`routines/BHC_Late_Edition.md`, PASS 4.5 section) was ambiguous,
 silent, or where building this standalone (rather than chained after a live PASS 4
 run in the same process) required a judgment call.
 
-**Status: first live dry run confirmed clean, 2026-07-18.** 2,216/2,216 records
-fetched with zero failures and zero retries; 0 identity mismatches; 0 unresolved;
-the 4.5h suppression logic correctly held back 11 real name-drift candidates that
-already have pending Reconciler-sourced cards. 38 integration/unit tests still pass
-(111/111 across the whole repo), typecheck clean. **The one open item is runtime
-tuning (below) — everything else read-side is proven. Not yet run `--live`.**
+**Status: fully verified read-side and performance-tuned, 2026-07-18.** 2,216/2,216
+records fetched with zero failures/retries at three different batch settings; 0
+identity mismatches; 0 unresolved; the 4.5h suppression logic correctly held back 11
+real name-drift candidates that already have pending Reconciler-sourced cards.
+Default fetch pacing settled at batch=40/pause=1000ms (~2m15s at full scale, down
+from ~11m19s). 38 integration/unit tests still pass (111/111 across the whole
+repo), typecheck clean. **Everything in this doc is now resolved. Not yet run
+`--live`** — that's the next and last step before PASS 4.5 is trustworthy
+end-to-end, same gate PASS 4 went through.
 
 ---
 
-## 1. Batch size for the 4.5b bulk fetch — proven clean at 10, but slow; now tunable
+## 1. Batch size for the 4.5b bulk fetch — ✅ RESOLVED 2026-07-18: batch=40, pause=1000ms
 
-Spec says "Batch in groups of 50." This code defaults to `ATTIO_FETCH_BATCH_SIZE = 10`
-and `ATTIO_FETCH_BATCH_PAUSE_MS = 2000`, reused from PASS 4's proven values.
+Spec says "Batch in groups of 50." This code's default is now `PASS4_5_FETCH_BATCH_SIZE
+= 40` / `PASS4_5_FETCH_PAUSE_MS = 1000` (`src/config/constants.ts`) — its own tuned
+values, no longer PASS 4's.
 
-**Why reused rather than raised to match the spec's "50":** the spec's "50" was
-written assuming a true bulk `get-records-by-ids` call (one request, 50 records). Our
-REST transport has no bulk endpoint — `fetchPersonRecordsBatched` (`src/lib/attio.ts`)
-does N parallel single-record GETs per batch instead (see that file's own doc comment
-for the full deviation rationale). A batch of 50 there means 50 *concurrent* GET
-requests, not one cheap call — a real difference in load on Attio's rate limiter that
-the spec's number doesn't account for.
+**Why not PASS 4's constants:** the spec's "50" assumes a true bulk
+`get-records-by-ids` call (one request, 50 records). Our REST transport has no bulk
+endpoint — `fetchPersonRecordsBatched` (`src/lib/attio.ts`) does N parallel
+single-record GETs per batch instead. PASS 4's `ATTIO_FETCH_BATCH_SIZE = 10` was tuned
+for its own ~44-record scale; reusing it for PASS 4.5's ~2,213 records was needlessly
+conservative.
 
-**✅ First real dry run, 2026-07-18** (`npm run pass4_5:dry`, default batch=10):
-2,216/2,216 person records fetched, **zero failures, zero retries** (no retry
-warnings anywhere in the log — every single-record GET succeeded on the first try).
-0 identity mismatches, 0 unresolved. Total wall time: **~11m19s**, almost entirely in
-the fetch loop. That's over half of the GitHub Actions job's 20-minute timeout, for
-this pass alone — a real constraint once this runs alongside PASS 4 and whatever
-comes after it in the migration order.
+**Three real dry runs against production (2026-07-18), all clean:**
 
-Zero failures/retries at batch=10 is exactly the signal that there's headroom to
-raise concurrency. `--batch-size` and `--pause-ms` are now CLI flags
-(`npm run pass4_5 -- --dry-run --batch-size 25 --pause-ms 1000`) so this can be tuned
-empirically without a code patch each time — run a dry run at a higher setting, check
-whether failures/retries stay at zero, and use whatever wall-clock time is comfortable
-against the 20-minute budget once this is wired into CI.
+| Batch / Pause | Wall time | Failures | Retries |
+|---|---|---|---|
+| 10 / 2000ms (PASS 4's original default) | ~11m19s | 0 | 0 |
+| 25 / 1000ms | ~3m23s | 0 | 0 |
+| 40 / 1000ms | ~2m15s | 0 | 0 |
 
-> **Decision needed:** pick a batch size/pause via a few empirical dry runs (dry-run
-> writes nothing, so this carries zero data risk) rather than guessing at one number
-> now — try e.g. 20 and 30 and compare failure/retry counts and wall time.
+Zero failures and zero retries at every level tested — no sign of Attio's rate
+limiter pushing back even at 40 concurrent requests. **Settled on 40/1000ms**: a
+~5x improvement over the original default, comfortable headroom against the GitHub
+Actions 20-minute budget, without chasing marginal gains past the point that
+mattered. Still overridable via `--batch-size`/`--pause-ms` if this ever needs
+re-checking (e.g. if Attio's actual limits become visible at a much higher setting,
+or if a future combined run alongside other passes changes the load picture).
 
 ---
 
