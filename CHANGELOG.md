@@ -2,6 +2,16 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-07-18 — PASS 2 fully built: orchestration wires everything together
+
+- **New: `src/passes/pass2/index.ts`, `report.ts`, and `src/cli/run-pass2.ts`** — the full orchestration and CLI. Per-thread flow: parse → test-guard → triage → [real thread: resolve participants, drift-check, enrich via the real LLM call] → build `Write_Targets_JSON` → build the Brain_Complete row (A–AD) → append → mark Thread_Staging PROCESSED.
+- **New: `thread-staging-row.ts`, `brain-complete-row.ts`, `reply-recipients.ts`, `slack-block.ts`, `contact-context.ts`** — the remaining glue: the full A–W Thread_Staging parser (for the A–U Brain_Complete mirror), the 30-column row assembly, `Reply_Recipients_JSON`/`Reply_Mode` computed deterministically from already-resolved participants, the per-thread Slack block (2g2), and the contact-context lookup for response drafting.
+- **Fail-soft is per-thread, not just per-pass**: an enrichment failure leaves that one thread unprocessed (not marked PROCESSED) so it's naturally retried next run, rather than aborting the whole pass or writing bad content.
+- **A real gap caught by trying to wire things together**: the enrichment schema was missing `outcome` (Google's CG column) entirely — added to `enrich-schema.ts` and the prompt, importing `OUTCOME_VALUES` from `write-targets.ts` as the single source of truth rather than defining it twice. Exactly the kind of gap isolated unit tests don't surface but an integration attempt does.
+- **`contacts-email-map.ts` extended** to cover all three of its purposes (email→BHC_ID, the drift check's Google-side index, and Personal_Notes/Topics_of_Interest/Conversation_Trigger) from one shared wide read, per the spec's own explicit "zero extra Sheets calls" efficiency note.
+- 37 new tests (pure-logic pieces plus a full end-to-end orchestration suite against all three fake backends together — noise paths skip the LLM, a real thread produces a complete valid row, dry-run calls Anthropic but writes nothing, an enrichment failure leaves the thread unprocessed, drift withholds only the drifted CRM side, `--limit` works, never throws on systemic failure). 271/271 across the whole repo, typecheck clean.
+- **PASS 2 is now fully built** — deterministic logic, the real enrichment call, and the orchestration wiring it all together. Not yet run against production. Unlike every other pass, `npm run pass2:dry` still calls the real Anthropic API (real cost, zero Sheets risk) since that's the only way to see real enrichment output.
+
 ## 2026-07-18 — PASS 2's enrichment call built (LLM half, partial)
 
 - **New: `src/lib/anthropic.ts`** — a hand-rolled Anthropic Messages API client, same style as `AttioClient`/`SheetsClient` (not the SDK). One consumer so far: PASS 2's enrichment call.

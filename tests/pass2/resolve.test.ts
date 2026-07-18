@@ -15,7 +15,7 @@ const MINIMAL: FakeBackendConfig = {
 };
 
 function emptyContactsMap(): ContactsEmailMap {
-  return { byEmail: new Map(), contactIdByGoogleRow: new Map() };
+  return { byEmail: new Map(), contactIdByGoogleRow: new Map(), personalContextByGoogleRow: new Map() };
 }
 
 describe('resolveContact — cascade step 1: Contacts email map', () => {
@@ -23,6 +23,7 @@ describe('resolveContact — cascade step 1: Contacts email map', () => {
     const contactsMap: ContactsEmailMap = {
       byEmail: new Map([['alice@x.com', { bhcId: 'BHC-00001', googleRow: 10 }]]),
       contactIdByGoogleRow: new Map(),
+      personalContextByGoogleRow: new Map(),
     };
     const backend = new FakeBackend({ ...MINIMAL, masterId: [['BHC-00001', 'Alice Nguyen', 'BOTH', 10, 'rec-alice', '']] });
     const { attioBase, sheetsUrl } = await backend.start();

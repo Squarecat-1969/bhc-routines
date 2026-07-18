@@ -1,9 +1,10 @@
-# PASS 2 — deterministic half: implementation notes
+# PASS 2 — implementation notes
 
 Companion to `src/passes/pass2/`. Mirrors the other passes' notes format.
 
-**Status: building blocks AND the enrichment call are built and tested (91 tests),
-not yet wired into a runnable orchestration/CLI — see "What's NOT here" below.**
+**Status: fully built and tested (271/271 across the whole repo), including the
+orchestration and CLI. Not yet run against production — same next step as every
+pass before it.**
 
 ---
 
@@ -83,19 +84,44 @@ not yet wired into a runnable orchestration/CLI — see "What's NOT here" below.
   PASS 0 question, and it happens to confirm these letters and field names
   exactly. Not a guess.
 
-## What's NOT here yet, and why that's the right boundary
+## The orchestration (`index.ts`) — real design decisions made building it
 
-**No orchestration (`index.ts`) or CLI for PASS 2 yet.** Every building block
-exists now — parsing, resolution, drift, triage, the guardrail, the real
-enrichment call, and the Write_Targets assembly — but nothing wires them
-together into a runnable pass over a real working set, writes the actual
-Brain_Complete row (A–AD, which requires carrying forward Thread_Staging's own
-A–U alongside the new enrichment values for the enriched columns), builds the
-per-thread Slack block (2g2), or marks Thread_Staging PROCESSED (2h). That's
-real, substantial glue work — genuinely lower-risk than what's built so far
-(no new identity-resolution logic, no new LLM-safety design), but still a
-meaningful chunk of orchestration and a new Brain_Complete row-builder that
-hasn't been scoped yet. Next session's natural starting point.
+- **Fail-soft is per-thread, not just per-pass.** An enrichment failure (bad
+  API response, malformed JSON, a network error) skips just that thread —
+  it's left unprocessed (Thread_Staging NOT marked PROCESSED), so it's
+  naturally retried on the next run. Consistent with "when in doubt, leave it
+  open" throughout this project, and a meaningfully different failure mode
+  than PASS 4/4.5's per-contact skip, since here the *entire remaining
+  content* for a thread depends on one LLM call succeeding, not a handful of
+  independent field writes.
+- **Building this surfaced a real gap:** the enrichment schema was missing
+  `outcome` (Google's CG / `Last_Interaction_Outcome`) entirely — `Write_Targets_JSON`
+  needs it and nothing was producing it. Added to `enrich-schema.ts` (importing
+  `OUTCOME_VALUES` from `write-targets.ts` as the single source of truth,
+  rather than defining the enum twice) and to the prompt's requested JSON
+  shape. Caught by trying to actually wire the pieces together — exactly the
+  kind of gap that unit tests on isolated pieces don't surface, but an
+  integration attempt does.
+- **Secondaries are not drift-checked**, per the spec's own scoping ("DRIFT
+  CHECK (per resolved contact after cascade)" appears in the context of the
+  primary's resolution walkthrough, not repeated for secondaries). Treated as
+  clean by default in `Write_Targets_JSON` assembly; `includeAttio`'s own
+  Location check still gates whether a secondary's Attio block gets written
+  at all, so an unresolved or Google-only secondary still can't produce a
+  spurious Attio write.
+- **The Contacts wide read is now shared across three purposes** in one pass
+  (email→BHC_ID map, the Google-side drift check's col-A index, and
+  Personal_Notes/Topics_of_Interest/Conversation_Trigger for response
+  drafting) — `contacts-email-map.ts` grew to cover all three from the same
+  single read, per the spec's own explicit efficiency note ("Extract AI, AU,
+  and AV for each contact from this same bulk read by google_row — never make
+  additional per-contact cell reads for these fields. Zero extra Sheets
+  calls").
+- **Channel is hardcoded to `"Email"`** in the Write_Targets interaction
+  content — not something the LLM produces. Thread_Staging is specifically
+  the email capture pipeline (other channels like LinkedIn/Zoom get captured
+  differently, per the ROS architecture), so this isn't a judgment call, just
+  a known constant for this pass.
 
 ## Two things flagged rather than guessed past
 
@@ -105,9 +131,8 @@ hasn't been scoped yet. Next session's natural starting point.
    (see `attio.ts`'s own comments) — but unlike those, a query-with-filter call
    has never actually been checked against production. `getPersonRecord`/
    per-record GETs are proven (PASS 4's `--dump-shapes` and canary write);
-   this specific query shape is not. First real check should happen once PASS
-   2's orchestration exists and can run a dry pass against a handful of real
-   threads.
+   this specific query shape is not. First real check happens on the first
+   live dry run against a thread with an unresolved-in-Contacts participant.
 2. **The `principal recipient` fallback chain for outbound threads is an
    inferred design choice, not spec text.** Given real data shows
    `recipient_email` often blank, `participants.ts` falls back to the most
@@ -123,9 +148,24 @@ hasn't been scoped yet. Next session's natural starting point.
    threads — a real cost/quality tradeoff Bobby should confirm rather than
    have picked for him silently. Easy to change in one place
    (`src/config/constants.ts`) once he weighs in.
+4. **`npm run pass2:dry` still calls the real Anthropic API.** Unlike every
+   other pass, PASS 2's dry-run can't be fully free — the only way to see real
+   enrichment output is to actually call the model. It skips every Sheets
+   write (zero data risk), but it does spend real API cost. Worth running with
+   `--limit` first.
 
 ## Status
 
-91 tests (all pure-logic, against the fake Attio/Sheets backend, or against a
-fake Anthropic backend — no production dry run possible yet, per the boundary
-above). 243/243 across the whole repo, typecheck clean.
+129 PASS 2 tests (pure-logic, against the fake Attio/Sheets backend, against a
+fake Anthropic backend individually, and a full end-to-end orchestration
+suite exercising all three fakes together — noise paths skip the LLM
+entirely, a real relationship thread produces a complete Brain_Complete row
+with a valid Write_Targets_JSON, dry-run calls Anthropic but writes nothing,
+an enrichment failure leaves the thread unprocessed, drift withholds only the
+drifted CRM side while still writing the row, `--limit` caps the working set,
+and the pass never throws on a systemic failure). 271/271 across the whole
+repo, typecheck clean. `npm run pass2:dry` / `npm run pass2:live` exist.
+
+**Not yet run against production.** Same next step as every pass before it —
+though see the "npm run pass2:dry still calls the real Anthropic API" note
+above; this one has a real cost the others didn't.

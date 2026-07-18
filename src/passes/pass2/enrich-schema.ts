@@ -10,6 +10,8 @@
 
 import { z } from 'zod';
 
+import { OUTCOME_VALUES } from './write-targets.js';
+
 export const ACTION_REQUIRED_VALUES = ['REPLY_NEEDED', 'ACTION_ITEM', 'FYI_ONLY', 'NO_ACTION'] as const;
 
 const TaskSchema = z.object({
@@ -26,6 +28,7 @@ export const EnrichmentResponseSchema = z.object({
   pipeline_signals: z.string(),
   brain_notes: z.string(),
   action_required: z.enum(ACTION_REQUIRED_VALUES),
+  outcome: z.enum(OUTCOME_VALUES),
   response_draft: z.string(), // '' when action_required !== 'REPLY_NEEDED'
   tasks: z.array(TaskSchema),
   ready_to_archive: z.boolean(),

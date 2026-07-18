@@ -10,6 +10,7 @@ const VALID_RESPONSE = {
   pipeline_signals: '',
   brain_notes: '',
   action_required: 'FYI_ONLY',
+  outcome: 'Neutral',
   response_draft: '',
   tasks: [],
   ready_to_archive: false,

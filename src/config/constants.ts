@@ -76,6 +76,13 @@ export const PERSON_SLUGS = {
   linkedin: 'linkedin',
   relationshipTier: 'relationship_tier',
   emailAddresses: 'email_addresses',
+  // Added for PASS 2 (spec: "personal_notes, topics_of_interest, and
+  // conversation_trigger from Attio"). Slugs match the spec's literal field
+  // names — NOT verified via --dump-shapes against a real Attio record with
+  // these fields populated. See docs/pass2-notes.md.
+  personalNotes: 'personal_notes',
+  topicsOfInterest: 'topics_of_interest',
+  conversationTrigger: 'conversation_trigger',
 } as const;
 
 // --- Sheets ranges -----------------------------------------------------------
@@ -135,6 +142,16 @@ export const TIER_HEADER_CANDIDATES = ['Relationship_Tier', 'Tier'] as const;
 /** Contacts columns PASS 4.5 needs beyond tier — resolved by title, per spec 4.5b. */
 export const CONTACTS_EMAIL_HEADER = 'Primary_Email';
 export const CONTACTS_SEGMENT_HEADER = 'Effective_Segment';
+
+/**
+ * Contact-context columns for PASS 2's response drafting (spec: "read the
+ * contact's Personal_Notes (col AI), Topics_of_Interest (col AU), and
+ * Conversation_Trigger (col AV) from the Contacts tab"). Resolved by header
+ * title, never by letter, same discipline as every other Contacts read.
+ */
+export const CONTACTS_PERSONAL_NOTES_HEADER = 'Personal_Notes';
+export const CONTACTS_TOPICS_OF_INTEREST_HEADER = 'Topics_of_Interest';
+export const CONTACTS_CONVERSATION_TRIGGER_HEADER = 'Conversation_Trigger';
 
 /** Pipeline_Cache column order (spec 4.5e) — 18 columns, A-R. */
 export const PIPELINE_CACHE_COLUMNS = 18;

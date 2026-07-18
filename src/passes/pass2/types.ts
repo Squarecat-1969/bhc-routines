@@ -52,3 +52,39 @@ export interface TriageResult {
   readonly tag: NoiseTag | null;
   readonly reason: string;
 }
+
+/**
+ * Full Thread_Staging row (A-U, the columns Brain_Complete mirrors), plus
+ * V/W (Row_Status/Run_ID, not mirrored but needed to mark the source
+ * processed). Separate from pass1's narrower ThreadStagingRow — PASS 1 only
+ * needed a subset; PASS 2 needs the full row to build Brain_Complete's A-U
+ * passthrough columns. Duplication across passes is this codebase's stated
+ * convention.
+ */
+export interface ThreadStagingFullRow {
+  readonly threadId: string;
+  readonly bhcId: string;
+  readonly contactName: string;
+  readonly sourceMailbox: string;
+  readonly direction: string;
+  readonly subject: string;
+  readonly firstEmailDate: string;
+  readonly lastEmailDate: string;
+  readonly emailCount: string;
+  readonly rawEmailsJson: string;
+  readonly runningSummary: string;
+  readonly keyCommitments: string;
+  readonly personalDetailsFlag: string;
+  readonly companyIntel: string;
+  readonly threadStatus: string;
+  readonly readyToArchive: string;
+  readonly parentThreadId: string;
+  readonly contactHistoryRowId: string;
+  readonly crmLastSynced: string;
+  readonly pipelineSignals: string;
+  readonly brainNotes: string;
+  readonly rowStatus: string;
+  readonly runId: string;
+  /** 1-based physical row in Thread_Staging (data starts at row 2). */
+  readonly sheetRow: number;
+}

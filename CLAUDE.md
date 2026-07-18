@@ -27,10 +27,12 @@ npm run pass1:dry     # compute + print, writes nothing
 npm run pass1:live    # deletes resolved Brain_Complete rows, compacts survivors
 npm run pass0:dry     # compute + print, writes nothing
 npm run pass0:live    # closes exact-match placeholders, enqueues inferred matches
+npm run pass2:dry     # writes nothing to Sheets, but DOES call the real Anthropic API
+npm run pass2:live    # writes Brain_Complete rows, marks Thread_Staging PROCESSED
 npm run inspect:activity-log   # read-only — dumps real Activity_Log header/sample rows
 ```
 
-Migration status: **PASS 4, PASS 4.5, PASS 1, and PASS 0 are all built and live-run confirmed against production, 2026-07-18** (PASS 4 and PASS 4.5 fully `--live`; PASS 1 and PASS 0 dry-run confirmed clean, not yet `--live`). **PASS 2's deterministic half AND its enrichment call are both built and tested (243/243 tests pass) — still no orchestration/CLI**, since wiring everything together (the Brain_Complete row builder, the Slack block, marking Thread_Staging PROCESSED) is real, substantial glue work that hasn't been scoped yet. See `docs/pass2-notes.md`. Everything else still runs as a prompt spec. Order: 4 → 4.5 → 1+0 → 2 (deterministic half) → 2's LLM calls → 3+5. Don't skip ahead; each step gets reviewed before the next. PASS 2's orchestration is next.
+Migration status: **PASS 4, PASS 4.5, PASS 1, and PASS 0 are all built and live-run confirmed against production, 2026-07-18** (PASS 4 and PASS 4.5 fully `--live`; PASS 1 and PASS 0 dry-run confirmed clean, not yet `--live`). **PASS 2 is fully built — deterministic logic, the real enrichment call, and the orchestration wiring it together (271/271 tests pass) — not yet run against production.** See `docs/pass2-notes.md`. Everything else (PASS 2.5, PASS 3, PASS 5) still runs as a prompt spec. Migration order (4 → 4.5 → 1+0 → 2) is complete as originally scoped; PASS 2's first live dry-run is next, then PASS 2.5/3/5.
 
 Ground rules for the rebuild:
 - **Dry-run is the default.** `--live` must be explicit. An integration test asserts dry-run issues zero mutating requests — keep it that way.

@@ -42,6 +42,7 @@ Return exactly this JSON shape, all fields required (empty string / empty array 
   "pipeline_signals": "any business-opportunity signal, or empty string",
   "brain_notes": "any other note worth carrying forward, or empty string",
   "action_required": "REPLY_NEEDED" | "ACTION_ITEM" | "FYI_ONLY" | "NO_ACTION",
+  "outcome": "Positive" | "Neutral" | "No Response" | "Negative" | "Declined" | "Opportunity Emerging" | "Meeting Booked" | "Advocate Signal" | "Needs Nurture" — your read on how this specific interaction landed, not the whole relationship's history,
   "response_draft": "draft in Bobby's voice, or empty string if action_required is not REPLY_NEEDED",
   "tasks": [{"description": "...", "due_date": "YYYY-MM-DD or empty string", "priority": "..."}],
   "ready_to_archive": true if the thread is clearly closed or over 60 days old, else false,
