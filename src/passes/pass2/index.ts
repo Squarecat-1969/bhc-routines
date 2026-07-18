@@ -47,6 +47,22 @@ export interface Pass2Options {
   readonly limit?: number;
 }
 
+export interface ThreadPreview {
+  readonly threadId: string;
+  readonly contactName: string | null;
+  readonly subject: string;
+  readonly direction: string;
+  readonly isNoise: boolean;
+  readonly noiseTag: NoiseTag | null;
+  readonly actionRequired: string | null;
+  readonly outcome: string | null;
+  readonly runningSummary: string | null;
+  readonly keyCommitments: string | null;
+  readonly responseDraft: string | null;
+  readonly personalContextFound: boolean;
+  readonly driftNotes: readonly string[];
+}
+
 export interface Pass2Report {
   readonly runId: string;
   readonly dryRun: boolean;
@@ -63,6 +79,8 @@ export interface Pass2Report {
   readonly actionableCount: number;
   readonly driftCount: number;
 
+  /** One entry per successfully-processed thread — for reviewing actual content without going --live. */
+  readonly previews: readonly ThreadPreview[];
   readonly warnings: readonly string[];
 }
 
@@ -81,6 +99,7 @@ function emptyReport(partial: { runId: string; dryRun: boolean; startedAt: strin
     enrichmentFailureCount: 0,
     actionableCount: 0,
     driftCount: 0,
+    previews: [],
     warnings: [],
   };
 }
@@ -149,6 +168,7 @@ async function runPass2Inner(opts: Pass2Options & { runId: string; startedAt: st
   let actionableCount = 0;
   let driftCount = 0;
   let slackIndex = 0;
+  const previews: ThreadPreview[] = [];
 
   for (const source of workingSet) {
     processedCount += 1;
@@ -275,6 +295,21 @@ async function runPass2Inner(opts: Pass2Options & { runId: string; startedAt: st
           await sheets.update(`Thread_Staging!V${source.sheetRow}:W${source.sheetRow}`, [['PROCESSED', runId]]);
         }
         writtenCount += 1;
+        previews.push({
+          threadId: source.threadId,
+          contactName: contactNameForSlack,
+          subject: source.subject,
+          direction: source.direction,
+          isNoise: false,
+          noiseTag: null,
+          actionRequired: enrichment.action_required,
+          outcome: enrichment.outcome,
+          runningSummary: enrichment.running_summary,
+          keyCommitments: enrichment.key_commitments,
+          responseDraft: enrichment.action_required === 'REPLY_NEEDED' ? enrichment.response_draft : null,
+          personalContextFound: enrichment.personal_details_flag,
+          driftNotes: primaryDrift.notes,
+        });
         continue;
       }
     }
@@ -296,6 +331,21 @@ async function runPass2Inner(opts: Pass2Options & { runId: string; startedAt: st
       await sheets.update(`Thread_Staging!V${source.sheetRow}:W${source.sheetRow}`, [['PROCESSED', runId]]);
     }
     writtenCount += 1;
+    previews.push({
+      threadId: source.threadId,
+      contactName: null,
+      subject: source.subject,
+      direction: source.direction,
+      isNoise: true,
+      noiseTag: content.kind === 'noise' ? content.tag : null,
+      actionRequired: 'NO_ACTION',
+      outcome: null,
+      runningSummary: null,
+      keyCommitments: null,
+      responseDraft: null,
+      personalContextFound: false,
+      driftNotes: [],
+    });
   }
 
   logger.info(
@@ -317,6 +367,7 @@ async function runPass2Inner(opts: Pass2Options & { runId: string; startedAt: st
     enrichmentFailureCount,
     actionableCount,
     driftCount,
+    previews,
     warnings,
   };
 }

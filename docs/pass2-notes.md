@@ -186,18 +186,44 @@ truncation theory or diagnose a different future failure without re-running.
 **Not yet re-verified**: whether 4000 tokens is enough — that needs another
 live run to confirm the same 3 threads (or a wider `--limit`) now succeed.
 
+**Re-verified, same day**: `--limit 5` came back **5/5 written, 0 enrichment
+failures** (was 1/3 failing at 2000 tokens). Real confirmation the fix worked,
+not just a plausible theory.
+
+## Content previews — a real gap found by actually reviewing a result
+
+The `--limit 5` run's report only showed counts (`written=5 noise=1
+actionable=4`) — no way to see what got produced. Reviewing a "successful"
+run with zero visibility into the actual drafted content isn't a real review;
+it's trusting structural success as a proxy for quality, which is exactly
+the kind of shortcut this project has avoided everywhere else tonight.
+
+**Fixed:** `Pass2Report.previews` — one entry per processed thread (contact
+name, subject, action classification, outcome, running summary, key
+commitments, the response draft when `REPLY_NEEDED`, whether personal context
+was found, any drift notes). Noise-filtered threads get a lighter preview
+(just the tag — no LLM content exists to show). Rendered directly in
+`report.ts`'s CLI output, so a dry run is now actually reviewable without
+going `--live`.
+
 ## Status
 
-129 PASS 2 tests (pure-logic, against the fake Attio/Sheets backend, against a
+134 PASS 2 tests (pure-logic, against the fake Attio/Sheets backend, against a
 fake Anthropic backend individually, and a full end-to-end orchestration
 suite exercising all three fakes together — noise paths skip the LLM
 entirely, a real relationship thread produces a complete Brain_Complete row
 with a valid Write_Targets_JSON, dry-run calls Anthropic but writes nothing,
 an enrichment failure leaves the thread unprocessed, drift withholds only the
 drifted CRM side while still writing the row, `--limit` caps the working set,
-and the pass never throws on a systemic failure). 271/271 across the whole
-repo, typecheck clean. `npm run pass2:dry` / `npm run pass2:live` exist.
+content previews render correctly for both actionable and noise threads, and
+the pass never throws on a systemic failure). 276/276 across the whole repo,
+typecheck clean. `npm run pass2:dry` / `npm run pass2:live` exist.
 
-**Not yet run against production.** Same next step as every pass before it —
-though see the "npm run pass2:dry still calls the real Anthropic API" note
-above; this one has a real cost the others didn't.
+**Run twice against real production data** (`--limit 3`, then `--limit 5`
+after the token-limit fix): 8 real threads processed total, 7 written
+successfully, 1 early failure diagnosed and fixed. Confirmed correct on real
+data: Contacts column resolution, the email map, the working-set filter, and
+now (after the token fix) the enrichment call itself. **Not yet run at full
+scale or `--live`** — still worth a wider dry run before trusting this
+unattended, and `--live` is a genuinely different question (the first real
+Brain_Complete writes, visible in Aida's Queue) worth its own deliberate step.

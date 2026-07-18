@@ -2,6 +2,13 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-07-18 — PASS 2: add content previews to the report
+
+- The `--limit 5` follow-up run came back **5/5 written, 0 enrichment failures** — real confirmation the 4000-token fix from the previous run worked (was 1/3 failing at 2000).
+- **Real gap noticed reviewing that result: the report only showed counts.** No way to see what PASS 2 actually produced — the drafted responses, summaries, whether the outbound-ceiling guard fired — without going `--live` and digging through Brain_Complete by hand, which isn't a real review step.
+- **Fixed: `Pass2Report` now carries a `previews` array**, one entry per processed thread (contact name, subject, action classification, outcome, running summary, key commitments, the response draft when REPLY_NEEDED, whether personal context was found, and any drift notes). Noise-filtered threads get a lighter preview (just the tag, no LLM content, since none was generated). `report.ts` renders these directly in the CLI output.
+- 3 new tests locking in the preview content for an actionable thread, the REPLY_NEEDED-only response_draft rule, and the noise-path preview shape. 276/276 across the whole repo, typecheck clean.
+
 ## 2026-07-18 — PASS 2's first live dry-run: token limit too tight, fixed; diagnostic gap fixed
 
 - **First real run against production** (`--limit 3`, real Thread_Staging working set): confirmed the previously-unverified Contacts column resolution (`Personal_Notes`/`Topics_of_Interest`/`Conversation_Trigger`) is correct, and the email map/working-set logic both work against real data (36 emails from 2,855 Contacts rows, 17 real threads found).

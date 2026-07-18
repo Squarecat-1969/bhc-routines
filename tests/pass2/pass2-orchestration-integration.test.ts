@@ -172,6 +172,56 @@ describe('PASS 2 orchestration — a real relationship thread', () => {
     expect((statusWrite!.body as { values: unknown[][] }).values[0]).toEqual(['PROCESSED', report.runId]);
   });
 
+  it('includes a content preview for an actionable thread — real content, reviewable without going --live', async () => {
+    const { report } = await run(
+      {
+        threadStaging: [
+          threadStagingRow({
+            threadId: 'T1',
+            rawEmails: rawEmailsJson({ msgId: 'm1', senderEmail: 'alice@x.com', body: 'Following up on the project timeline' }),
+          }),
+        ],
+      },
+      JSON.stringify(VALID_ENRICHMENT),
+      true,
+    );
+    expect(report.previews).toHaveLength(1);
+    const preview = report.previews[0]!;
+    expect(preview.isNoise).toBe(false);
+    expect(preview.contactName).toBe('Alice Nguyen');
+    expect(preview.actionRequired).toBe('ACTION_ITEM');
+    expect(preview.runningSummary).toBe('Alice followed up about the project.');
+    expect(preview.keyCommitments).toBe('Bobby to send the deck by Friday.');
+    expect(preview.responseDraft).toBeNull(); // only populated for REPLY_NEEDED
+  });
+
+  it('includes response_draft in the preview only for REPLY_NEEDED', async () => {
+    const replyNeeded = { ...VALID_ENRICHMENT, action_required: 'REPLY_NEEDED', response_draft: 'Hey Alice—Bobby' };
+    const { report } = await run(
+      {
+        threadStaging: [
+          threadStagingRow({ threadId: 'T1', rawEmails: rawEmailsJson({ msgId: 'm1', senderEmail: 'alice@x.com', body: 'Question?' }) }),
+        ],
+      },
+      JSON.stringify(replyNeeded),
+      true,
+    );
+    expect(report.previews[0]!.responseDraft).toBe('Hey Alice—Bobby');
+  });
+
+  it('includes a preview for a noise-filtered thread, with the tag and no LLM content', async () => {
+    const { report } = await run(
+      { threadStaging: [threadStagingRow({ threadId: 'T1', rawEmails: rawEmailsJson({ msgId: 'm1', senderEmail: 'no-reply@service.com', body: 'Your receipt' }) })] },
+      JSON.stringify(VALID_ENRICHMENT),
+      true,
+    );
+    expect(report.previews).toHaveLength(1);
+    const preview = report.previews[0]!;
+    expect(preview.isNoise).toBe(true);
+    expect(preview.noiseTag).toBe('noise:automated');
+    expect(preview.runningSummary).toBeNull();
+  });
+
   it('produces a Write_Targets_JSON with the resolved BHC_ID', async () => {
     const { sheetsBackend } = await run(
       {
