@@ -70,6 +70,12 @@ export const PERSON_SLUGS = {
   nextCheckInDate: 'next_check_in_date',
   nextTouchModePlanned: 'next_touch_mode_planned',
   followUpReason: 'follow_up_reason',
+  // Added for PASS 4.5 (4.5b's per-record capture list).
+  jobTitle: 'job_title',
+  companyName: 'company_name',
+  linkedin: 'linkedin',
+  relationshipTier: 'relationship_tier',
+  emailAddresses: 'email_addresses',
 } as const;
 
 // --- Sheets ranges -----------------------------------------------------------
@@ -82,10 +88,26 @@ export const RANGES = {
   // index in the header row is the same index into each data row.
   contactsHeader: 'Contacts!A1:EZ1',
   contactsData: 'Contacts!A3:EZ',
+  // PASS 4.5 targets.
+  pipelineCacheHeader: 'Pipeline_Cache!A1:R1',
+  pipelineCachePriorIds: 'Pipeline_Cache!A2:A',
+  pipelineCacheWrite: 'Pipeline_Cache!A2:R',
+  nameConflictsAll: 'Name_Conflicts!A2:M',
+  nameConflictsAppend: 'Name_Conflicts!A2:M',
 } as const;
 
 /** Header titles accepted for the tier column, in preference order (spec 4b). */
 export const TIER_HEADER_CANDIDATES = ['Relationship_Tier', 'Tier'] as const;
+
+/** Contacts columns PASS 4.5 needs beyond tier — resolved by title, per spec 4.5b. */
+export const CONTACTS_EMAIL_HEADER = 'Primary_Email';
+export const CONTACTS_SEGMENT_HEADER = 'Effective_Segment';
+
+/** Pipeline_Cache column order (spec 4.5e) — 18 columns, A-R. */
+export const PIPELINE_CACHE_COLUMNS = 18;
+
+/** Hardcoded per spec 4.5b — NEVER derived from hf_last_segment / hf_current_segment. */
+export const ATTIO_SEGMENT_HARDCODE = 'S1';
 
 // --- Pacing (spec 4c: batches of 10, 2s between) ------------------------------
 

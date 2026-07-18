@@ -17,6 +17,12 @@ export interface FakePerson {
   name?: string;
   bhcContactId?: string;
   lastInteraction?: string;
+  jobTitle?: string;
+  companyName?: string;
+  linkedin?: string;
+  relationshipTier?: string;
+  /** Primary email first. */
+  emailAddresses?: string[];
   /** Force the read-back to return this instead of what was PATCHed. */
   readBackOverride?: string;
   /** Make GET/PATCH fail with this status. */
@@ -38,6 +44,14 @@ export interface FakeBackendConfig {
   contactsHeader: unknown[];
   /** Rows for RANGES.contactsData (Contacts data starting at row 3) */
   contacts: unknown[][];
+  /** When true, the Pipeline_Cache header read fails — simulates the tab not existing (spec 4.5.0). */
+  pipelineCacheTabMissing?: boolean;
+  /** When set, the Master_ID read fails with this status — for testing failure paths AFTER the tab guard succeeds. */
+  masterIdFailWith?: number;
+  /** Rows for Pipeline_Cache!A2:A — simulates a prior run's row count for the blank-trailing-rows check. */
+  pipelineCachePriorIds?: unknown[][];
+  /** Rows for Name_Conflicts!A2:M — existing conflict rows for the 4.5h suppression check. */
+  nameConflicts?: unknown[][];
 }
 
 export interface RecordedRequest {
@@ -91,11 +105,26 @@ export class FakeBackend {
     // --- Sheets proxy ---
     if (path === '/sheets') {
       const { action, range } = (body ?? {}) as { action?: string; range?: string };
-      if (action !== 'read') return send(200, {});
-      if (range?.startsWith('Master_ID')) return send(200, { values: this.config.masterId });
-      if (range === RANGES.contactsHeader) return send(200, { values: [this.config.contactsHeader] });
-      if (range?.startsWith('Contacts')) return send(200, { values: this.config.contacts });
-      return send(200, { values: [] });
+
+      if (action === 'read') {
+        if (range === RANGES.pipelineCacheHeader) {
+          if (this.config.pipelineCacheTabMissing) return send(400, { error: 'Unable to parse range: Pipeline_Cache!A1:R1' });
+          return send(200, { values: [['BHC_ID']] });
+        }
+        if (range === RANGES.pipelineCachePriorIds) return send(200, { values: this.config.pipelineCachePriorIds ?? [] });
+        if (range === RANGES.nameConflictsAll) return send(200, { values: this.config.nameConflicts ?? [] });
+        if (range?.startsWith('Master_ID')) {
+          if (this.config.masterIdFailWith) return send(this.config.masterIdFailWith, { error: 'forced Master_ID failure' });
+          return send(200, { values: this.config.masterId });
+        }
+        if (range === RANGES.contactsHeader) return send(200, { values: [this.config.contactsHeader] });
+        if (range?.startsWith('Contacts')) return send(200, { values: this.config.contacts });
+        return send(200, { values: [] });
+      }
+
+      // update / append: acknowledge. The request is already recorded above
+      // (this.requests / this.sheetsWrites) for tests to assert on.
+      return send(200, {});
     }
 
     // --- Attio: list entries ---
@@ -142,6 +171,13 @@ export class FakeBackend {
               attribute_type: 'interaction',
             },
           ];
+        if (person.jobTitle !== undefined) values['job_title'] = [{ value: person.jobTitle }];
+        if (person.companyName !== undefined) values['company_name'] = [{ value: person.companyName }];
+        if (person.linkedin !== undefined) values['linkedin'] = [{ value: person.linkedin }];
+        if (person.relationshipTier !== undefined)
+          values['relationship_tier'] = [{ option: { title: person.relationshipTier } }];
+        if (person.emailAddresses !== undefined)
+          values['email_addresses'] = person.emailAddresses.map((e) => ({ email_address: e }));
 
         const written = this.patched.get(id);
         if (written) {

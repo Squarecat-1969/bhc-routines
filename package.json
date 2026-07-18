@@ -13,7 +13,10 @@
     "test:watch": "vitest",
     "pass4": "tsx src/cli/run-pass4.ts",
     "pass4:dry": "tsx src/cli/run-pass4.ts --dry-run",
-    "pass4:live": "tsx src/cli/run-pass4.ts --live"
+    "pass4:live": "tsx src/cli/run-pass4.ts --live",
+    "pass4_5": "tsx src/cli/run-pass4_5.ts",
+    "pass4_5:dry": "tsx src/cli/run-pass4_5.ts --dry-run",
+    "pass4_5:live": "tsx src/cli/run-pass4_5.ts --live"
   },
   "dependencies": {
     "dotenv": "^17.4.2",

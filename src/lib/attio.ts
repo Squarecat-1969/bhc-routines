@@ -13,7 +13,7 @@
  */
 
 import { parseFlexibleDate, type CivilDate } from './dates.js';
-import { requestJson, withRetry, type RetryOptions } from './http.js';
+import { requestJson, sleep, withRetry, type RetryOptions } from './http.js';
 
 export type AttioValues = Record<string, unknown>;
 
@@ -83,6 +83,20 @@ export function nameOf(values: AttioValues | undefined, slug = 'name'): string |
   const last = typeof v['last_name'] === 'string' ? v['last_name'] : '';
   const joined = `${first} ${last}`.trim();
   return joined === '' ? null : joined;
+}
+
+/**
+ * Email-address attribute → the primary address. `email_addresses` is an
+ * array-typed attribute — the first entry is the primary one (confirmed via
+ * `--dump-shapes`: multiple entries appear in creation order, primary first).
+ * Spec 4.5b: "ATTIO-only → Attio email_addresses primary."
+ */
+export function emailOf(values: AttioValues | undefined, slug: string): string | null {
+  const v = firstValue(values, slug);
+  if (!v) return null;
+  if (typeof v['email_address'] === 'string') return v['email_address'];
+  if (typeof v['value'] === 'string') return v['value'];
+  return null;
 }
 
 export interface AttioClientOptions {
@@ -160,4 +174,54 @@ export class AttioClient {
       body: JSON.stringify({ data: { values } }),
     });
   }
+}
+
+export interface FetchBatchedOptions {
+  readonly batchSize?: number;
+  readonly pauseMs?: number;
+  readonly onProgress?: (done: number, total: number) => void;
+  readonly onFailure?: (recordId: string, error: unknown) => void;
+}
+
+/**
+ * Fetch many person records by ID, batched and paced.
+ *
+ * DEVIATION FROM SPEC: the spec says "Attio MCP connector's get-records-by-ids"
+ * — a true bulk endpoint. GitHub Actions has no MCP host (same reason PASS 4 uses
+ * REST at all), and Attio's REST API has no bulk-by-ID endpoint, only per-record
+ * GET. This does the same *pattern* the spec asks for — batched, paced, retried,
+ * a failure never aborts the batch — just as N parallel single-record GETs per
+ * batch instead of one bulk call. PASS 4 already established this exact pattern
+ * at ~44 records; this is the same helper, extracted so PASS 4.5 doesn't
+ * reimplement it at ~2,213 records. See docs/pass4_5-notes.md.
+ */
+export async function fetchPersonRecordsBatched(
+  attio: AttioClient,
+  ids: readonly string[],
+  opts: FetchBatchedOptions = {},
+): Promise<Map<string, AttioPersonRecord | null>> {
+  const batchSize = opts.batchSize ?? 10;
+  const pauseMs = opts.pauseMs ?? 2_000;
+  const out = new Map<string, AttioPersonRecord | null>();
+
+  for (let i = 0; i < ids.length; i += batchSize) {
+    const batch = ids.slice(i, i + batchSize);
+    const settled = await Promise.allSettled(batch.map((id) => attio.getPersonRecord(id)));
+
+    settled.forEach((res, j) => {
+      const id = batch[j]!;
+      if (res.status === 'fulfilled') {
+        out.set(id, res.value);
+      } else {
+        out.set(id, null);
+        opts.onFailure?.(id, res.reason);
+      }
+    });
+
+    const done = Math.min(i + batchSize, ids.length);
+    opts.onProgress?.(done, ids.length);
+    if (done < ids.length) await sleep(pauseMs);
+  }
+
+  return out;
 }

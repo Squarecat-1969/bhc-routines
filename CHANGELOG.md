@@ -2,6 +2,17 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-07-18 — PASS 4.5 (Pipeline Cache) built and tested
+
+- **New pass, `src/passes/pass4_5/`:** full nightly rewrite of the derived `Pipeline_Cache` tab (~2,213 records) plus ATTIO-only name-drift enqueue to `Name_Conflicts`. Mirrors PASS 4's shape — pure logic separated from I/O, dry-run default, mandatory identity gate, fail-soft (never blocks PASS 5 on an internal exception).
+- **`SheetsClient` gains `update`/`append`** (`src/lib/sheets.ts`) — PASS 4.5 is the first pass that writes to Google Sheets. Body shape confirmed against the spec's own `sheets()` helper convention (`action: read|update|append`).
+- **New Attio extractors/helpers** (`src/lib/attio.ts`): `emailOf` (the `email_addresses` array attribute — takes the primary/first entry), and `fetchPersonRecordsBatched`, a reusable batched-by-ID fetch extracted from PASS 4's inline pattern so PASS 4.5 doesn't reimplement it at ~50x the record count.
+- **New `loadContactsWide`** (`src/passes/pass4_5/contacts.ts`): resolves Relationship_Tier, Primary_Email, and Effective_Segment by header title in one wide Contacts read, keyed by Google_Row (never by inferring a row from a BHC_ID, per the Hard Contracts).
+- **A real bug caught before going live:** an early version only wrote/blanked the cache when the run had at least one eligible row, so a run where every target got withheld would leave a stale prior cache untouched instead of clearing it. Fixed — blanking now runs independent of whether the main block wrote anything. Regression test added.
+- **38 new tests** (20 integration against a fake Sheets+Attio backend, 18 pure-logic) — 111/111 total pass, typecheck clean.
+- Open items and deviations documented in `docs/pass4_5-notes.md` (batch-size timing at real scale, the tab-guard's error-handling scope, and two spots where this runs standalone rather than literally chained after PASS 4 in-memory — no combined entrypoint exists yet).
+- **Not yet run against production.** Same posture PASS 4 was in before its own `--dump-shapes` verification — that's the next step: a real dry run against live Attio/Sheets data, review the report, then `--live`.
+
 ## 2026-07-18 — PASS 4 verified end-to-end against production; goes live
 
 - **`npm run pass4 -- --dump-shapes` (second run):** confirmed the two remaining read-side assumptions — pipeline entry shape (`parent_record_id`/`entry_values`) and select-value reads (`entry_values.<slug>[0].option.title`) both match the live Attio workspace exactly.
