@@ -25,7 +25,7 @@ npm run pass4_5:dry   # compute + print, writes nothing
 npm run pass4_5:live  # writes Pipeline_Cache + enqueues Name_Conflicts
 ```
 
-Migration status: **PASS 4 (cadence) verified end-to-end against production — dry-run and a live canary write both confirmed clean, 2026-07-18.** **PASS 4.5 (Pipeline Cache) built and tested against a fake backend (111/111 tests pass) — not yet run against production; see `docs/pass4_5-notes.md`.** Everything else still runs as a prompt spec. Order: 4 → 4.5 → 1+0 → 2 (deterministic half) → 2's LLM calls → 3+5. Don't skip ahead; each step gets reviewed before the next. PASS 4.5's live dry-run is next.
+Migration status: **PASS 4 (cadence) and PASS 4.5 (Pipeline Cache) are both verified end-to-end against production, live-run confirmed, 2026-07-18.** See `docs/pass4-notes.md` and `docs/pass4_5-notes.md`. Everything else still runs as a prompt spec. Order: 4 → 4.5 → 1+0 → 2 (deterministic half) → 2's LLM calls → 3+5. Don't skip ahead; each step gets reviewed before the next. PASS 1+0 is next.
 
 Ground rules for the rebuild:
 - **Dry-run is the default.** `--live` must be explicit. An integration test asserts dry-run issues zero mutating requests — keep it that way.

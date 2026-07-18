@@ -2,6 +2,20 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-07-18 — PASS 4.5 verified end-to-end against production; goes live
+
+- **`npm run pass4_5:live`:** real full rewrite of `Pipeline_Cache` (2,216 rows) plus the 4.5h name-conflict check. Matched the dry run's predicted numbers exactly — `written=2216 mismatch=0 unresolved=0 enqueued=0` — nothing surprised us going from dry to live. Runtime ~2m33s including the actual write, in line with the tuned dry runs.
+- **PASS 4.5 is now fully verified end-to-end against production.** `docs/pass4_5-notes.md` — every item resolved.
+- 111/111 tests pass, typecheck clean.
+- Next per the migration order: PASS 1+0.
+
+## 2026-07-18 — PASS 4.5: settle fetch pacing at batch=40/pause=1000ms from real tuning data
+
+- Two more dry runs against production: batch=25/pause=1000ms (~3m23s) and batch=40/pause=1000ms (~2m15s), both zero failures/retries across all 2,216 records — same as the original batch=10 default (~11m19s), just faster. No sign of Attio's rate limiter pushing back even at 40 concurrent.
+- Settled on 40/1000ms as PASS 4.5's own default (new `PASS4_5_FETCH_BATCH_SIZE`/`PASS4_5_FETCH_PAUSE_MS` constants, no longer reusing PASS 4's ~44-record-tuned values). ~5x faster than the original default. Still overridable via `--batch-size`/`--pause-ms`.
+- `docs/pass4_5-notes.md` #1 updated with the full 3-way comparison table.
+- 111/111 tests pass, typecheck clean.
+
 ## 2026-07-18 — PASS 4.5 (Pipeline Cache) built and tested
 
 - **New pass, `src/passes/pass4_5/`:** full nightly rewrite of the derived `Pipeline_Cache` tab (~2,213 records) plus ATTIO-only name-drift enqueue to `Name_Conflicts`. Mirrors PASS 4's shape — pure logic separated from I/O, dry-run default, mandatory identity gate, fail-soft (never blocks PASS 5 on an internal exception).

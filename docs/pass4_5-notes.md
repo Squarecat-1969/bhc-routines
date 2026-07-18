@@ -5,15 +5,17 @@ place the spec (`routines/BHC_Late_Edition.md`, PASS 4.5 section) was ambiguous,
 silent, or where building this standalone (rather than chained after a live PASS 4
 run in the same process) required a judgment call.
 
-**Status: fully verified read-side and performance-tuned, 2026-07-18.** 2,216/2,216
-records fetched with zero failures/retries at three different batch settings; 0
-identity mismatches; 0 unresolved; the 4.5h suppression logic correctly held back 11
-real name-drift candidates that already have pending Reconciler-sourced cards.
-Default fetch pacing settled at batch=40/pause=1000ms (~2m15s at full scale, down
-from ~11m19s). 38 integration/unit tests still pass (111/111 across the whole
-repo), typecheck clean. **Everything in this doc is now resolved. Not yet run
-`--live`** — that's the next and last step before PASS 4.5 is trustworthy
-end-to-end, same gate PASS 4 went through.
+**Status: fully verified end-to-end against production, 2026-07-18. PASS 4.5 is
+live.** Read side: 2,216/2,216 records fetched with zero failures/retries across
+three batch settings; 0 identity mismatches; 0 unresolved; the 4.5h suppression
+logic correctly held back 11 real name-drift candidates that already have pending
+Reconciler-sourced cards. Performance: settled at batch=40/pause=1000ms (~2m15s
+dry, ~2m33s live including the actual write — down from ~11m19s at the original
+default). **Write side (`npm run pass4_5:live`):** real full rewrite of
+`Pipeline_Cache` — same numbers as the dry run predicted (written=2216,
+mismatch=0, unresolved=0, enqueued=0), which is itself a good signal: nothing
+surprised us going from dry to live. 111/111 tests pass, typecheck clean.
+**Every item in this doc is resolved. PASS 4.5 is done.**
 
 ---
 
