@@ -2,6 +2,13 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-07-18 — PASS 2: first content-quality review finds and fixes a real wasted-LLM-call gap
+
+- **First real read of actual PASS 2 output** (the `--limit 5` run, now with content previews). Genuinely good signal: the one `REPLY_NEEDED` draft (a referral thank-you to Joleen Hughes) reads authentically in Bobby's voice — casual, one clean thought, correct sign-off. The LLM correctly caught a Stripe payment-failure notification as `NO_ACTION` even though triage's heuristics missed it — exactly the safety-net split the design intended. An "unresolved primary" on a real law-firm exchange is correct behavior (honest "no CRM record" surfacing), not a bug.
+- **One real gap: fully-internal threads were burning LLM calls for nothing.** A Bobby↔Sevrin Daniels thread (both `@thenewblank.com`) has zero external participants — there was never going to be a contact to enrich. Nothing caught this before spending a full API call.
+- **Fixed: new `isFullyInternal` check** (`participants.ts`), computed immediately after parsing — before triage, before resolution, before the LLM call. Reuses `identifyPrimaryAndSecondary`'s own output rather than a separate scan. New `noise:internal` tag. Filter order is now test-guard → fully-internal → triage → LLM, each cheaper than the next.
+- 4 new tests, including one asserting Anthropic is never called for this exact real-world shape. 280/280 across the whole repo, typecheck clean.
+
 ## 2026-07-18 — PASS 2: add content previews to the report
 
 - The `--limit 5` follow-up run came back **5/5 written, 0 enrichment failures** — real confirmation the 4000-token fix from the previous run worked (was 1/3 failing at 2000).

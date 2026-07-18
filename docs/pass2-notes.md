@@ -206,6 +206,39 @@ was found, any drift notes). Noise-filtered threads get a lighter preview
 `report.ts`'s CLI output, so a dry run is now actually reviewable without
 going `--live`.
 
+## First real content review (2026-07-18, `--limit 5` with previews) — quality confirmed, one real gap found and fixed
+
+Reading actual output for the first time. Genuinely good signal:
+
+- **Response draft quality is strong.** The one `REPLY_NEEDED` thread (a
+  referral from Joleen Hughes) produced a draft that's casual, warm, one
+  clean thought, correctly signed off — reads like the voice rules actually
+  worked, not just structurally valid output.
+- **The LLM correctly caught what triage missed.** A Stripe payment-failure
+  notification wasn't recognized by any triage heuristic, but the model still
+  classified it `NO_ACTION` correctly — exactly the safety-net behavior the
+  triage/LLM split was designed for.
+- **An "unresolved primary" on a thread with real external parties (an HMLG
+  law firm exchange) is correct behavior, not a bug** — the resolution
+  cascade honestly surfaced "I don't have a CRM record for this person"
+  rather than guessing, per the "never fabricate a BHC_ID" rule.
+
+**One real gap: fully-internal threads were burning LLM calls for nothing.**
+A Bobby↔Sevrin Daniels thread (both `@thenewblank.com`, discussing a loan
+servicer) has zero external participants — there was never going to be a
+contact to enrich for. Nothing caught this before spending a full API call:
+the resolution cascade correctly found nothing, but that happens *after* the
+LLM has already run.
+
+**Fixed:** new `isFullyInternal` check (`participants.ts`), computed
+immediately after parsing — before triage, before any resolution work, before
+the LLM call. Reuses `identifyPrimaryAndSecondary`'s own output (true when
+both `primaryEmail` is null and `secondaryEmails` is empty) rather than a
+separate scan. New `noise:internal` tag. Filter order is now: test-guard →
+fully-internal → triage → LLM, each cheaper than the next, each a real chance
+to skip real API cost. 4 new tests, including one asserting Anthropic is
+never called for this exact real-world shape.
+
 ## Status
 
 134 PASS 2 tests (pure-logic, against the fake Attio/Sheets backend, against a
@@ -215,15 +248,20 @@ entirely, a real relationship thread produces a complete Brain_Complete row
 with a valid Write_Targets_JSON, dry-run calls Anthropic but writes nothing,
 an enrichment failure leaves the thread unprocessed, drift withholds only the
 drifted CRM side while still writing the row, `--limit` caps the working set,
-content previews render correctly for both actionable and noise threads, and
-the pass never throws on a systemic failure). 276/276 across the whole repo,
-typecheck clean. `npm run pass2:dry` / `npm run pass2:live` exist.
+content previews render correctly for both actionable and noise threads, a
+fully-internal thread never reaches the LLM, and the pass never throws on a
+systemic failure). 280/280 across the whole repo, typecheck clean. `npm run
+pass2:dry` / `npm run pass2:live` exist.
 
-**Run twice against real production data** (`--limit 3`, then `--limit 5`
-after the token-limit fix): 8 real threads processed total, 7 written
-successfully, 1 early failure diagnosed and fixed. Confirmed correct on real
-data: Contacts column resolution, the email map, the working-set filter, and
-now (after the token fix) the enrichment call itself. **Not yet run at full
-scale or `--live`** — still worth a wider dry run before trusting this
-unattended, and `--live` is a genuinely different question (the first real
-Brain_Complete writes, visible in Aida's Queue) worth its own deliberate step.
+**Run three times against real production data** (`--limit 3`, `--limit 5`
+after the token-limit fix, then a content-quality review of that same
+`--limit 5` run once previews existed): 13 real threads processed total, 12
+written successfully, 1 early failure diagnosed and fixed, 1 wasted-LLM-call
+gap found and fixed via actual content review. Confirmed correct on real
+data: Contacts column resolution, the email map, the working-set filter, the
+enrichment call itself, response draft quality, the triage/LLM safety-net
+split, and the resolution cascade's honest "unresolved" surfacing for real
+external parties without a CRM record. **Not yet run at full scale or
+`--live`** — still worth a wider dry run before trusting this unattended, and
+`--live` is a genuinely different question (the first real Brain_Complete
+writes, visible in Aida's Queue) worth its own deliberate step.

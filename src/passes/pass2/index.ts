@@ -25,7 +25,7 @@ import { loadMasterId } from '../pass4/load.js';
 import { buildContactContext } from './contact-context.js';
 import { loadContactsEmailMap } from './contacts-email-map.js';
 import { enrichThread } from './enrich.js';
-import { isTestOrPlaceholder, identifyPrimaryAndSecondary } from './participants.js';
+import { isFullyInternal, isTestOrPlaceholder, identifyPrimaryAndSecondary } from './participants.js';
 import { parseRawEmailsJson } from './parse-emails.js';
 import { checkDrift, resolveContact } from './resolve.js';
 import { triageContent } from './triage.js';
@@ -184,40 +184,48 @@ async function runPass2Inner(opts: Pass2Options & { runId: string; startedAt: st
     if (isTestOrPlaceholder(messages)) {
       content = { kind: 'noise', tag: 'noise:test' };
     } else {
-      const triage = triageContent(messages);
-      if (triage.isNoise) {
-        content = { kind: 'noise', tag: triage.tag as NoiseTag };
+      // Computed early (before triage/LLM) so a fully-internal thread never
+      // reaches either — found on a real production run (Bobby <-> internal
+      // TNB staff, no external party at all): nothing caught it before an
+      // LLM call got spent on a thread that could never have a contact.
+      const participants = identifyPrimaryAndSecondary(messages, source.direction);
+      if (isFullyInternal(participants)) {
+        content = { kind: 'noise', tag: 'noise:internal' };
       } else {
-        // Real relationship thread — resolve participants and enrich.
-        const { primaryEmail, secondaryEmails } = identifyPrimaryAndSecondary(messages, source.direction);
-        let primaryResolved: ResolvedContact | null = null;
-        let contactNameForSlack: string | null = null;
+        const triage = triageContent(messages);
+        if (triage.isNoise) {
+          content = { kind: 'noise', tag: triage.tag as NoiseTag };
+        } else {
+          // Real relationship thread — resolve participants and enrich.
+          const { primaryEmail, secondaryEmails } = participants;
+          let primaryResolved: ResolvedContact | null = null;
+          let contactNameForSlack: string | null = null;
 
-        if (primaryEmail) {
-          primaryResolved = await resolveContact(primaryEmail, { contactsMap, masterIndex, attio });
-          contactNameForSlack = source.contactName || primaryEmail;
-        }
-        const secondariesResolved = await Promise.all(
-          secondaryEmails.map((email) => resolveContact(email, { contactsMap, masterIndex, attio })),
-        );
-
-        let attioValues: Record<string, unknown> | null = null;
-        let primaryDrift: ReturnType<typeof checkDrift> = { clean: true, tags: [], notes: [] };
-        if (primaryResolved) {
-          attioValues = await fetchAttioValuesIfNeeded(attio, primaryResolved, attioCache);
-          const contactsColA =
-            primaryResolved.googleRow !== null ? (contactsMap.contactIdByGoogleRow.get(primaryResolved.googleRow) ?? null) : null;
-          primaryDrift = checkDrift({ resolved: primaryResolved, contactsColAAtGoogleRow: contactsColA, attioRecordValues: attioValues });
-          if (!primaryDrift.clean) {
-            driftCount += 1;
-            warnings.push(
-              `${source.threadId}: identity drift on primary — ${primaryDrift.notes.join('; ')}. CRM writes withheld for the drifted side.`,
-            );
+          if (primaryEmail) {
+            primaryResolved = await resolveContact(primaryEmail, { contactsMap, masterIndex, attio });
+            contactNameForSlack = source.contactName || primaryEmail;
           }
-        }
+          const secondariesResolved = await Promise.all(
+            secondaryEmails.map((email) => resolveContact(email, { contactsMap, masterIndex, attio })),
+          );
 
-        const contactContext = primaryResolved
-          ? buildContactContext(primaryResolved, source.contactName, contactsMap, attioValues)
+          let attioValues: Record<string, unknown> | null = null;
+          let primaryDrift: ReturnType<typeof checkDrift> = { clean: true, tags: [], notes: [] };
+          if (primaryResolved) {
+            attioValues = await fetchAttioValuesIfNeeded(attio, primaryResolved, attioCache);
+            const contactsColA =
+              primaryResolved.googleRow !== null ? (contactsMap.contactIdByGoogleRow.get(primaryResolved.googleRow) ?? null) : null;
+            primaryDrift = checkDrift({ resolved: primaryResolved, contactsColAAtGoogleRow: contactsColA, attioRecordValues: attioValues });
+            if (!primaryDrift.clean) {
+              driftCount += 1;
+              warnings.push(
+                `${source.threadId}: identity drift on primary — ${primaryDrift.notes.join('; ')}. CRM writes withheld for the drifted side.`,
+              );
+            }
+          }
+
+          const contactContext = primaryResolved
+            ? buildContactContext(primaryResolved, source.contactName, contactsMap, attioValues)
           : null;
 
         const outcome = await enrichThread(anthropic, messages, source.direction, contactContext);
@@ -311,6 +319,7 @@ async function runPass2Inner(opts: Pass2Options & { runId: string; startedAt: st
           driftNotes: primaryDrift.notes,
         });
         continue;
+      }
       }
     }
 

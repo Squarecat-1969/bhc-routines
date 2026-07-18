@@ -45,7 +45,8 @@ export type NoiseTag =
   | 'noise:sensitive'
   | 'noise:automated'
   | 'noise:cold'
-  | 'vendor';
+  | 'vendor'
+  | 'noise:internal';
 
 export interface TriageResult {
   readonly isNoise: boolean;

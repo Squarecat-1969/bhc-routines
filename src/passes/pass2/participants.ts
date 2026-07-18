@@ -78,6 +78,18 @@ export function identifyPrimaryAndSecondary(
 }
 
 /**
+ * True when no external party appears anywhere in the thread — every
+ * sender/recipient/cc across every message is an owned/internal address.
+ * Found on a real production thread (Bobby <-> Sevrin Daniels, both
+ * @thenewblank.com, discussing a loan servicer): the resolution cascade
+ * correctly found nothing to resolve, but nothing caught this *before*
+ * spending an LLM call on a thread that was never going to have a contact.
+ */
+export function isFullyInternal(result: PrimarySecondary): boolean {
+  return result.primaryEmail === null && result.secondaryEmails.length === 0;
+}
+
+/**
  * Spec 2a2: "Lorem-ipsum or obvious test → NO_ACTION, tag noise:test."
  * Deliberately narrow — catches unambiguous placeholder content, not a
  * general spam/quality filter (that's triage's job, step c).

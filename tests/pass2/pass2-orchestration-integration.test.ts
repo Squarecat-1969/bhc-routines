@@ -140,6 +140,30 @@ describe('PASS 2 orchestration — noise paths skip the LLM entirely', () => {
     expect(report.noiseCount).toBe(1);
     expect(anthropicBackend.requests).toHaveLength(0);
   });
+
+  it('a fully-internal thread never calls Anthropic — the real Sevrin/loan-billing case caught on the first production run', async () => {
+    const { report, anthropicBackend } = await run(
+      {
+        threadStaging: [
+          threadStagingRow({
+            threadId: 'T1',
+            direction: 'Outbound',
+            rawEmails: rawEmailsJson({
+              msgId: 'm1',
+              senderEmail: 'bobby@thenewblank.com',
+              body: 'Any thoughts on this loan servicer?',
+              direction: 'Outbound',
+            }),
+          }),
+        ],
+      },
+      JSON.stringify(VALID_ENRICHMENT),
+      false,
+    );
+    expect(report.noiseCount).toBe(1);
+    expect(anthropicBackend.requests).toHaveLength(0);
+    expect(report.previews[0]!.noiseTag).toBe('noise:internal');
+  });
 });
 
 describe('PASS 2 orchestration — a real relationship thread', () => {
