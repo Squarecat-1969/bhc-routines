@@ -97,6 +97,25 @@ export const RANGES = {
   // PASS 1 targets.
   brainCompleteData: 'Brain_Complete!A2:AD',
   threadStagingData: 'Thread_Staging!A2:W',
+  // PASS 0 target.
+  activityLogData: 'Activity_Log!A2:U',
+  reconciliationQueueAll: 'Reconciliation_Queue!A2:N',
+  reconciliationQueueAppend: 'Reconciliation_Queue!A2:N',
+} as const;
+
+/**
+ * Activity_Log column indices (0-based) — verified live via
+ * `npm run inspect:activity-log` (2026-07-18), NOT inferred from the spec's
+ * bare "col J"/"col N"/"col P" references. See docs/pass1-and-pass0-notes.md.
+ */
+export const ACTIVITY_LOG_COLS = {
+  activityId: 0, // A
+  timestamp: 1, // B
+  contactId: 2, // C
+  contactName: 4, // E
+  body: 9, // J
+  outcome: 13, // N
+  nextActionNote: 15, // P
 } as const;
 
 /**

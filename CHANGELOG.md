@@ -2,6 +2,16 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-07-18 — PASS 0 (Reply-placeholder reconciliation) built
+
+- **Resolved the spec contradiction** flagged earlier tonight (PASS 0's procedural text vs. the Non-negotiables' "PASS 4 is the only exception") with Bobby, using the project's own §4.10: exact matches auto-finalize (unambiguous fact), inferred matches always propose (never silently executed). Built exactly that hybrid.
+- **New pass, `src/passes/pass0/`:** EXACT Thread_ID match writes Activity_Log directly + marks the matched Thread_Staging row PROCESSED. INFERRED (contact+72h window) match stages a `Reconciliation_Queue` row instead. AMBIGUOUS (>1 candidate) tags the candidates' `Brain_Notes` only, leaves them flowing through PASS 2 normally. NO_MATCH writes nothing; staleness (>7d) tracked in the report only (no write target spec'd — flagged as open).
+- **Verified `Reconciliation_Queue` reuse against real Aida code**, not assumed: Bobby pasted both `app/api/brain/reconciliation-queue/route.ts` (reader — generic `itemType` passthrough, confirmed safe) and `commit/route.ts`'s `handleReconAction` (writer — Deny/Pass work generically today; Accept requires non-empty `sourceTaskIds` and will 400 on a placeholder-reconciliation row until a follow-up change ships in `bhc-aida`, out of scope for this repo).
+- **Two things flagged rather than guessed past:** Thread_Staging's date-column format isn't live-verified the way Activity_Log's was (degrades to NO_MATCH rather than mismatching if wrong); the exact-match's Activity_Log body write is intentionally a placeholder, not real email content, since Raw_Emails_JSON's shape for a body/content key was never confirmed.
+- 25 new tests (18 pure-logic, 7 integration). 152/152 across the whole repo, typecheck clean.
+- `docs/pass1-and-pass0-notes.md` renamed to `docs/pass0-and-pass1-notes.md` (pass run-order, not build order) and rewritten to reflect PASS 0 built.
+- **Not yet run against production** — same next step as every pass before it.
+
 ## 2026-07-18 — PASS 1 (Housekeeping) built; PASS 0 blocked on two real open questions
 
 - **New pass, `src/passes/pass1/`:** Brain_Complete resolved-row deletion + survivor compaction, Thread_Staging working-set computation. Fully spec'd, no open questions — unlike PASS 0. Same fail-soft posture as PASS 4.5 (inferred, not spec-mandated, but consistent). 16 tests (8 pure-logic, 8 integration), all passing. `npm run pass1:dry`/`:live` exist. Not yet run against production.

@@ -56,6 +56,8 @@ export interface FakeBackendConfig {
   brainComplete?: unknown[][];
   /** Rows for Thread_Staging!A2:W — PASS 1 working-set input. */
   threadStaging?: unknown[][];
+  /** Rows for Activity_Log!A2:U — PASS 0 placeholder input. */
+  activityLog?: unknown[][];
 }
 
 export interface RecordedRequest {
@@ -119,6 +121,7 @@ export class FakeBackend {
         if (range === RANGES.nameConflictsAll) return send(200, { values: this.config.nameConflicts ?? [] });
         if (range === RANGES.brainCompleteData) return send(200, { values: this.config.brainComplete ?? [] });
         if (range === RANGES.threadStagingData) return send(200, { values: this.config.threadStaging ?? [] });
+        if (range === RANGES.activityLogData) return send(200, { values: this.config.activityLog ?? [] });
         if (range?.startsWith('Master_ID')) {
           if (this.config.masterIdFailWith) return send(this.config.masterIdFailWith, { error: 'forced Master_ID failure' });
           return send(200, { values: this.config.masterId });

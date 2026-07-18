@@ -20,6 +20,9 @@
     "pass1": "tsx src/cli/run-pass1.ts",
     "pass1:dry": "tsx src/cli/run-pass1.ts --dry-run",
     "pass1:live": "tsx src/cli/run-pass1.ts --live",
+    "pass0": "tsx src/cli/run-pass0.ts",
+    "pass0:dry": "tsx src/cli/run-pass0.ts --dry-run",
+    "pass0:live": "tsx src/cli/run-pass0.ts --live",
     "inspect:activity-log": "tsx src/cli/inspect-activity-log.ts"
   },
   "dependencies": {

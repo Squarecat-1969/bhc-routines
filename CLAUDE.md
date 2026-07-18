@@ -25,10 +25,12 @@ npm run pass4_5:dry   # compute + print, writes nothing
 npm run pass4_5:live  # writes Pipeline_Cache + enqueues Name_Conflicts
 npm run pass1:dry     # compute + print, writes nothing
 npm run pass1:live    # deletes resolved Brain_Complete rows, compacts survivors
+npm run pass0:dry     # compute + print, writes nothing
+npm run pass0:live    # closes exact-match placeholders, enqueues inferred matches
 npm run inspect:activity-log   # read-only — dumps real Activity_Log header/sample rows
 ```
 
-Migration status: **PASS 4 (cadence) and PASS 4.5 (Pipeline Cache) are both verified end-to-end against production, live-run confirmed, 2026-07-18.** **PASS 1 (Housekeeping) built and tested (127/127 tests pass) — not yet run against production.** **PASS 0 is NOT built — blocked on two real open questions, see `docs/pass1-and-pass0-notes.md`: (1) its own procedural text appears to contradict the spec's stated Non-negotiable that PASS 4 is the *only* exception to "never write live CRMs," and (2) Activity_Log's column layout is never spelled out in the spec.** Everything else still runs as a prompt spec. Order: 4 → 4.5 → 1+0 → 2 (deterministic half) → 2's LLM calls → 3+5. Don't skip ahead; each step gets reviewed before the next. PASS 1's live dry-run, plus Bobby's decision on PASS 0's write-authority question, are next.
+Migration status: **PASS 4 (cadence) and PASS 4.5 (Pipeline Cache) are both verified end-to-end against production, live-run confirmed, 2026-07-18.** **PASS 1 (Housekeeping) and PASS 0 (Reply-placeholder reconciliation) are both built and tested (152/152 tests pass) — neither run against production yet.** See `docs/pass0-and-pass1-notes.md` for PASS 0's resolved spec-contradiction decision and two flagged-not-guessed unknowns (timestamp format at scale, exact-match body content). Everything else still runs as a prompt spec. Order: 4 → 4.5 → 1+0 → 2 (deterministic half) → 2's LLM calls → 3+5. Don't skip ahead; each step gets reviewed before the next. PASS 0 and PASS 1's live dry-runs are next.
 
 Ground rules for the rebuild:
 - **Dry-run is the default.** `--live` must be explicit. An integration test asserts dry-run issues zero mutating requests — keep it that way.
