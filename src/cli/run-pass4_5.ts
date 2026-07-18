@@ -4,9 +4,11 @@
  *   npm run pass4_5:dry            compute and print, write nothing
  *   npm run pass4_5:live           compute and write to Pipeline_Cache / Name_Conflicts
  *   npm run pass4_5 -- --dry-run --limit 50
+ *   npm run pass4_5 -- --dry-run --batch-size 25 --pause-ms 1000   (fetch tuning, see docs/pass4_5-notes.md #1)
  *
  * Dry-run is the default: `--live` must be passed explicitly. There is no way to
- * write by omitting a flag. --limit is a dev/testing convenience, not in the spec.
+ * write by omitting a flag. --limit/--batch-size/--pause-ms are dev/testing
+ * conveniences, not in the spec.
  */
 
 // Loads .env for local runs; a no-op in CI, where secrets are real env vars.
@@ -29,10 +31,19 @@ interface Args {
   limit: number | undefined;
   jsonOut: string | undefined;
   today: CivilDate | undefined;
+  batchSize: number | undefined;
+  pauseMs: number | undefined;
 }
 
 function parseArgs(argv: readonly string[]): Args {
-  const args: Args = { dryRun: true, limit: undefined, jsonOut: undefined, today: undefined };
+  const args: Args = {
+    dryRun: true,
+    limit: undefined,
+    jsonOut: undefined,
+    today: undefined,
+    batchSize: undefined,
+    pauseMs: undefined,
+  };
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -57,6 +68,18 @@ function parseArgs(argv: readonly string[]): Args {
         const v = argv[++i] ?? '';
         if (!isCivilDate(v)) throw new Error('--today needs YYYY-MM-DD');
         args.today = v;
+        break;
+      }
+      case '--batch-size': {
+        const v = Number.parseInt(argv[++i] ?? '', 10);
+        if (!Number.isFinite(v) || v <= 0) throw new Error('--batch-size needs a positive integer');
+        args.batchSize = v;
+        break;
+      }
+      case '--pause-ms': {
+        const v = Number.parseInt(argv[++i] ?? '', 10);
+        if (!Number.isFinite(v) || v < 0) throw new Error('--pause-ms needs a non-negative integer');
+        args.pauseMs = v;
         break;
       }
       default:
@@ -94,6 +117,8 @@ async function main(): Promise<void> {
     logger,
     ...(args.limit !== undefined ? { limit: args.limit } : {}),
     ...(args.today !== undefined ? { today: args.today } : {}),
+    ...(args.batchSize !== undefined ? { fetchBatchSize: args.batchSize } : {}),
+    ...(args.pauseMs !== undefined ? { fetchPauseMs: args.pauseMs } : {}),
   });
 
   console.log(renderReport(report));

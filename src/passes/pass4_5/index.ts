@@ -62,6 +62,14 @@ export interface Pass45Options {
   readonly today?: CivilDate;
   /** Cap the number of targets processed — for a fast smoke test. Not in spec. */
   readonly limit?: number;
+  /**
+   * Override the 4.5b fetch batch size / pause. Not in spec (which assumes a
+   * true bulk endpoint — see docs/pass4_5-notes.md #1). Defaults to PASS 4's
+   * proven values; raise these once a dry run confirms headroom (zero
+   * failures/retries at the current setting).
+   */
+  readonly fetchBatchSize?: number;
+  readonly fetchPauseMs?: number;
   /** Reuse PASS 4's already-fetched pipeline entries instead of re-fetching (spec 4.5c). */
   readonly pipelineEntries?: readonly AttioPipelineEntry[];
 }
@@ -152,12 +160,15 @@ async function runPass45Inner(
 
   // 4.5b — bulk-fetch identity from Attio, batched.
   logger.info('4.5b — fetching person records (batched)');
+  const batchSize = opts.fetchBatchSize ?? ATTIO_FETCH_BATCH_SIZE;
+  const pauseMs = opts.fetchPauseMs ?? ATTIO_FETCH_BATCH_PAUSE_MS;
+  logger.info(`  batch size ${batchSize}, pause ${pauseMs}ms between batches`);
   const records = await fetchPersonRecordsBatched(
     attio,
     targets.map((t) => t.attioRecordId),
     {
-      batchSize: ATTIO_FETCH_BATCH_SIZE,
-      pauseMs: ATTIO_FETCH_BATCH_PAUSE_MS,
+      batchSize,
+      pauseMs,
       onProgress: (done, total) => logger.info(`  fetched ${done}/${total} person records`),
       onFailure: (id, error) => logger.warn(`  Attio fetch failed for ${id}: ${String(error)}`),
     },

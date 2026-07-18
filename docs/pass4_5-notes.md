@@ -5,18 +5,19 @@ place the spec (`routines/BHC_Late_Edition.md`, PASS 4.5 section) was ambiguous,
 silent, or where building this standalone (rather than chained after a live PASS 4
 run in the same process) required a judgment call.
 
-**Status: built and tested against a fake backend (20 integration tests + 19 pure-logic
-tests, all passing). Not yet run against production — no dry-run, no live run.** Same
-posture PASS 4 was in before its own `--dump-shapes` verification. This is the next
-gate.
+**Status: first live dry run confirmed clean, 2026-07-18.** 2,216/2,216 records
+fetched with zero failures and zero retries; 0 identity mismatches; 0 unresolved;
+the 4.5h suppression logic correctly held back 11 real name-drift candidates that
+already have pending Reconciler-sourced cards. 38 integration/unit tests still pass
+(111/111 across the whole repo), typecheck clean. **The one open item is runtime
+tuning (below) — everything else read-side is proven. Not yet run `--live`.**
 
 ---
 
-## 1. Batch size for the 4.5b bulk fetch — reused PASS 4's constants, untested at this scale
+## 1. Batch size for the 4.5b bulk fetch — proven clean at 10, but slow; now tunable
 
-Spec says "Batch in groups of 50." This code reuses `ATTIO_FETCH_BATCH_SIZE = 10` and
-`ATTIO_FETCH_BATCH_PAUSE_MS = 2000` from PASS 4's constants — proven at PASS 4's scale
-(~44 records) but never exercised at PASS 4.5's (~2,213 records).
+Spec says "Batch in groups of 50." This code defaults to `ATTIO_FETCH_BATCH_SIZE = 10`
+and `ATTIO_FETCH_BATCH_PAUSE_MS = 2000`, reused from PASS 4's proven values.
 
 **Why reused rather than raised to match the spec's "50":** the spec's "50" was
 written assuming a true bulk `get-records-by-ids` call (one request, 50 records). Our
@@ -26,16 +27,24 @@ for the full deviation rationale). A batch of 50 there means 50 *concurrent* GET
 requests, not one cheap call — a real difference in load on Attio's rate limiter that
 the spec's number doesn't account for.
 
-**Cost at scale, worth checking on the first dry run:** ~2,213 records ÷ 10 per batch
-≈ 222 batches × 2s pause ≈ 444s (~7.4 min) of pure pause time alone, before request
-latency. That's a meaningful fraction of the GitHub Actions job's 20-minute timeout,
-especially once this runs in the same job as PASS 4 and whatever comes after it in the
-migration order.
+**✅ First real dry run, 2026-07-18** (`npm run pass4_5:dry`, default batch=10):
+2,216/2,216 person records fetched, **zero failures, zero retries** (no retry
+warnings anywhere in the log — every single-record GET succeeded on the first try).
+0 identity mismatches, 0 unresolved. Total wall time: **~11m19s**, almost entirely in
+the fetch loop. That's over half of the GitHub Actions job's 20-minute timeout, for
+this pass alone — a real constraint once this runs alongside PASS 4 and whatever
+comes after it in the migration order.
 
-> **Decision needed:** run the first dry-run and look at the actual wall-clock time.
-> If it's uncomfortably close to the timeout, raise `batchSize` for this pass
-> specifically (a REST GET batch of 25–50 concurrent requests is very reasonable) —
-> don't guess at a new number now without a real timing data point.
+Zero failures/retries at batch=10 is exactly the signal that there's headroom to
+raise concurrency. `--batch-size` and `--pause-ms` are now CLI flags
+(`npm run pass4_5 -- --dry-run --batch-size 25 --pause-ms 1000`) so this can be tuned
+empirically without a code patch each time — run a dry run at a higher setting, check
+whether failures/retries stay at zero, and use whatever wall-clock time is comfortable
+against the 20-minute budget once this is wired into CI.
+
+> **Decision needed:** pick a batch size/pause via a few empirical dry runs (dry-run
+> writes nothing, so this carries zero data risk) rather than guessing at one number
+> now — try e.g. 20 and 30 and compare failure/retry counts and wall time.
 
 ---
 
