@@ -18,7 +18,7 @@ export interface EnrichmentResult {
 
 export type EnrichmentOutcome =
   | { readonly ok: true; readonly result: EnrichmentResult }
-  | { readonly ok: false; readonly error: string };
+  | { readonly ok: false; readonly error: string; readonly rawPreview: string };
 
 /**
  * Deterministic guard for the spec's own named failure mode: "REPLY_NEEDED
@@ -89,12 +89,17 @@ export async function enrichThread(
       maxTokens: ENRICHMENT_MAX_TOKENS,
     });
   } catch (e) {
-    return { ok: false, error: `Anthropic call failed: ${String(e)}` };
+    return { ok: false, error: `Anthropic call failed: ${String(e)}`, rawPreview: '' };
   }
 
   const parsed = parseEnrichmentResponse(raw);
   if (!parsed.ok) {
-    return { ok: false, error: `response validation failed: ${parsed.error}` };
+    const tail = raw.length > 300 ? `…${raw.slice(-300)}` : raw;
+    return {
+      ok: false,
+      error: `response validation failed: ${parsed.error}`,
+      rawPreview: `(${raw.length} chars total) ${tail}`,
+    };
   }
 
   const warnings: string[] = [];

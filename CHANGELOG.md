@@ -2,6 +2,19 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-07-18 — PASS 2's first live dry-run: token limit too tight, fixed; diagnostic gap fixed
+
+- **First real run against production** (`--limit 3`, real Thread_Staging working set): confirmed the previously-unverified Contacts column resolution (`Personal_Notes`/`Topics_of_Interest`/`Conversation_Trigger`) is correct, and the email map/working-set logic both work against real data (36 emails from 2,855 Contacts rows, 17 real threads found).
+- **2 of 3 threads succeeded fully** — real end-to-end proof: resolved, enriched via the real LLM call, wrote a complete Brain_Complete row with a valid `Write_Targets_JSON`.
+- **1 of 3 hit `"Unterminated string in JSON"`** — a real `max_tokens` truncation. Fail-soft caught it cleanly (left unprocessed for retry, nothing corrupted), but the failure message didn't show what the model actually returned, making the truncation theory hard to confirm.
+- **`ENRICHMENT_MAX_TOKENS` raised `2000 -> 4000`**, from real evidence — same pattern as PASS 4.5's batch-size tuning earlier tonight (tune from a live result, not a guess).
+- **`EnrichmentOutcome`'s failure case now carries `rawPreview`** (last 300 chars of the actual response + total length), surfaced directly in the orchestration's warning line. A future failure is diagnosable from the report alone. 2 new tests, including one reproducing this exact truncation shape.
+- 273/273 across the whole repo, typecheck clean. **Not yet re-verified whether 4000 tokens is enough** — needs another live run.
+
+## Also on 2026-07-18 — Rename ANTHROPIC_API_KEY -> ANTHROPIC_BHC_ROUTINES_API
+
+Bobby generated a new, deliberately uniquely-named Anthropic key and set it in GitHub, Vercel, and both `.env` files (the two existing console keys didn't match what was saved anywhere). Renamed consistently through the whole call path — `env.ts`'s schema and `loadEnv` mapping, `run-pass2.ts`'s usage and error message, `.env.example` — not just at the loading boundary.
+
 ## 2026-07-18 — PASS 2 fully built: orchestration wires everything together
 
 - **New: `src/passes/pass2/index.ts`, `report.ts`, and `src/cli/run-pass2.ts`** — the full orchestration and CLI. Per-thread flow: parse → test-guard → triage → [real thread: resolve participants, drift-check, enrich via the real LLM call] → build `Write_Targets_JSON` → build the Brain_Complete row (A–AD) → append → mark Thread_Staging PROCESSED.

@@ -154,6 +154,38 @@ pass before it.**
    write (zero data risk), but it does spend real API cost. Worth running with
    `--limit` first.
 
+## First live dry run (2026-07-18, `--limit 3`) — real findings, one real fix
+
+Ran against 3 real threads from tonight's Thread_Staging working set. Confirmed
+correct on real data: the Contacts column resolution (`Personal_Notes=AI`,
+`Topics_of_Interest=AU`, `Conversation_Trigger=AV` — item flagged as unverified
+above is now confirmed), the email map (36 emails from 2,855 real Contacts
+rows), and the working-set filter (17 real threads found).
+
+**2 of 3 threads went all the way through cleanly** — resolved, enriched,
+wrote a full Brain_Complete row with a valid `Write_Targets_JSON`.
+
+**1 of 3 failed with `"Unterminated string in JSON"`** — the classic signature
+of hitting `max_tokens` mid-response. The fail-soft design worked exactly as
+intended: caught cleanly, left unprocessed for automatic retry, nothing
+corrupted or half-written. But the failure message only showed the parse
+error, not what the model actually returned, making it hard to confirm the
+truncation theory or diagnose a different future failure without re-running.
+
+**Fixed both:**
+- `ENRICHMENT_MAX_TOKENS` raised `2000 -> 4000`. A real, evidence-based change
+  (this is the second time tonight a limit got tuned from live data rather
+  than guessed at upfront — same pattern as PASS 4.5's batch-size tuning).
+- `EnrichmentOutcome`'s failure case now carries a `rawPreview` (the last 300
+  chars of whatever the model actually returned, plus total length) — surfaced
+  directly in the orchestration's warning line, so a future failure is
+  diagnosable from the report alone, not just "this failed, rerun and hope."
+  2 new tests lock this in, including one that reproduces the exact
+  truncation shape hit here.
+
+**Not yet re-verified**: whether 4000 tokens is enough — that needs another
+live run to confirm the same 3 threads (or a wider `--limit`) now succeed.
+
 ## Status
 
 129 PASS 2 tests (pure-logic, against the fake Attio/Sheets backend, against a

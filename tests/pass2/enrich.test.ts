@@ -115,9 +115,33 @@ describe('enrichThread — guardrail redaction on output', () => {
 });
 
 describe('enrichThread — failure handling', () => {
-  it('returns ok:false (never throws) on a malformed response', async () => {
+  it('returns ok:false (never throws) on a malformed response, with a diagnostic preview', async () => {
     const outcome = await withFakeAnthropic('not valid json', (anthropic) => enrichThread(anthropic, [msg()], 'Inbound', null));
     expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.rawPreview).toContain('not valid json');
+    }
+  });
+
+  it('surfaces a truncation-shaped failure with the response tail — the exact failure hit on the first live dry run', async () => {
+    // Simulates hitting max_tokens mid-string: a JSON object that just stops.
+    const truncated = '{"running_summary": "Alice followed up about the deck and mentioned she';
+    const outcome = await withFakeAnthropic(truncated, (anthropic) => enrichThread(anthropic, [msg()], 'Inbound', null));
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.error).toContain('not valid JSON');
+      expect(outcome.rawPreview).toContain('mentioned she');
+    }
+  });
+
+  it('truncates a very long rawPreview to the last 300 chars, prefixed, rather than dumping the whole thing', async () => {
+    const longGarbage = 'x'.repeat(500);
+    const outcome = await withFakeAnthropic(longGarbage, (anthropic) => enrichThread(anthropic, [msg()], 'Inbound', null));
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.rawPreview).toContain('(500 chars total)');
+      expect(outcome.rawPreview).toContain('…');
+    }
   });
 
   it('returns ok:false (never throws) on an API failure', async () => {

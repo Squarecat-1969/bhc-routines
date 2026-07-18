@@ -203,7 +203,10 @@ async function runPass2Inner(opts: Pass2Options & { runId: string; startedAt: st
         const outcome = await enrichThread(anthropic, messages, source.direction, contactContext);
         if (!outcome.ok) {
           enrichmentFailureCount += 1;
-          warnings.push(`${source.threadId}: enrichment failed — ${outcome.error}. Left unprocessed for retry.`);
+          warnings.push(
+            `${source.threadId}: enrichment failed — ${outcome.error}. Left unprocessed for retry. ` +
+              `Raw response tail: ${outcome.rawPreview}`,
+          );
           continue;
         }
         warnings.push(...outcome.result.warnings.map((w) => `${source.threadId}: ${w}`));

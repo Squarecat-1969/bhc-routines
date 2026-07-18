@@ -160,14 +160,15 @@ export const PIPELINE_CACHE_COLUMNS = 18;
 export const ATTIO_SEGMENT_HARDCODE = 'S1';
 
 /**
- * Model + token budget for PASS 2's enrichment call. NOT verified as Bobby's
- * chosen tradeoff — a reasonable default (balanced quality/cost for a nightly
- * batch job with real judgment calls: the outbound-ceiling rule, personal-
- * context extraction restraint, drafting in Bobby's voice), not a settled
- * decision. See docs/pass2-notes.md.
+ * Model + token budget for PASS 2's enrichment call. `ENRICHMENT_MAX_TOKENS`
+ * raised from 2000 -> 4000 on 2026-07-18 after a real live dry run: one of
+ * three threads truncated mid-string ("Unterminated string in JSON") at
+ * 2000, almost certainly hitting the ceiling on a longer response_draft or
+ * running_summary. `ENRICHMENT_MODEL` remains a reasonable default, not a
+ * confirmed decision — see docs/pass2-notes.md.
  */
 export const ENRICHMENT_MODEL = 'claude-sonnet-5';
-export const ENRICHMENT_MAX_TOKENS = 2000;
+export const ENRICHMENT_MAX_TOKENS = 4000;
 
 /**
  * Owned/internal addresses (spec preamble) — a thread's contact is NEVER one
