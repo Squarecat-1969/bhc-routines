@@ -52,6 +52,10 @@ export interface FakeBackendConfig {
   pipelineCachePriorIds?: unknown[][];
   /** Rows for Name_Conflicts!A2:M — existing conflict rows for the 4.5h suppression check. */
   nameConflicts?: unknown[][];
+  /** Rows for Brain_Complete!A2:AD — PASS 1 housekeeping input. */
+  brainComplete?: unknown[][];
+  /** Rows for Thread_Staging!A2:W — PASS 1 working-set input. */
+  threadStaging?: unknown[][];
 }
 
 export interface RecordedRequest {
@@ -113,6 +117,8 @@ export class FakeBackend {
         }
         if (range === RANGES.pipelineCachePriorIds) return send(200, { values: this.config.pipelineCachePriorIds ?? [] });
         if (range === RANGES.nameConflictsAll) return send(200, { values: this.config.nameConflicts ?? [] });
+        if (range === RANGES.brainCompleteData) return send(200, { values: this.config.brainComplete ?? [] });
+        if (range === RANGES.threadStagingData) return send(200, { values: this.config.threadStaging ?? [] });
         if (range?.startsWith('Master_ID')) {
           if (this.config.masterIdFailWith) return send(this.config.masterIdFailWith, { error: 'forced Master_ID failure' });
           return send(200, { values: this.config.masterId });

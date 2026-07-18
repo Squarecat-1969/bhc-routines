@@ -94,7 +94,21 @@ export const RANGES = {
   pipelineCacheWrite: 'Pipeline_Cache!A2:R',
   nameConflictsAll: 'Name_Conflicts!A2:M',
   nameConflictsAppend: 'Name_Conflicts!A2:M',
+  // PASS 1 targets.
+  brainCompleteData: 'Brain_Complete!A2:AD',
+  threadStagingData: 'Thread_Staging!A2:W',
 } as const;
+
+/**
+ * PASS 1 column indices (0-based), per the spec's explicit A-W / A-AD schemas —
+ * these ARE spec-verified, unlike Activity_Log's (see docs/pass1-notes.md).
+ * Brain_Complete col V ("Brain_Complete" flag, Part D sets TRUE on resolve) is
+ * the 22nd column, A=0 .. V=21. Thread_Staging col V (Row_Status) is also the
+ * 22nd column of its own A-W range — same index, different sheet.
+ */
+export const BRAIN_COMPLETE_RESOLVED_COL = 21; // V
+export const THREAD_STAGING_STATUS_COL = 21; // V
+export const THREAD_STAGING_ROW_STATUS = { PENDING: 'PENDING', ACTIVE: 'ACTIVE', PROCESSED: 'PROCESSED' } as const;
 
 /** Header titles accepted for the tier column, in preference order (spec 4b). */
 export const TIER_HEADER_CANDIDATES = ['Relationship_Tier', 'Tier'] as const;

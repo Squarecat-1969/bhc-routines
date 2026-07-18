@@ -2,6 +2,14 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-07-18 — PASS 1 (Housekeeping) built; PASS 0 blocked on two real open questions
+
+- **New pass, `src/passes/pass1/`:** Brain_Complete resolved-row deletion + survivor compaction, Thread_Staging working-set computation. Fully spec'd, no open questions — unlike PASS 0. Same fail-soft posture as PASS 4.5 (inferred, not spec-mandated, but consistent). 16 tests (8 pure-logic, 8 integration), all passing. `npm run pass1:dry`/`:live` exist. Not yet run against production.
+- **PASS 0 — not built.** Found a real contradiction in the spec while scoping it: the document's own Non-negotiables say PASS 4 is "the only exception" to "never write to live CRMs... Part D writes on resolve," but PASS 0's procedural steps describe writing directly to Activity_Log with no Part D gate. Also: Activity_Log's exact column layout is never spelled out the way Thread_Staging's/Brain_Complete's are — PASS 0's "col J"/"col N"/"col P" references assume a layout that isn't actually given anywhere in the spec.
+- **New read-only reconnaissance tool:** `npm run inspect:activity-log` — same spirit as `--dump-shapes`, two Sheets reads (header + 3 sample rows), zero writes. Built so the next PASS 0 conversation has real column data instead of guessing.
+- Both open questions documented in `docs/pass1-and-pass0-notes.md` with the real spec quotes and two concrete options for the write-authority question — needs Bobby's call before any PASS 0 matching logic gets written.
+- 127/127 tests pass, typecheck clean.
+
 ## 2026-07-18 — PASS 4.5 verified end-to-end against production; goes live
 
 - **`npm run pass4_5:live`:** real full rewrite of `Pipeline_Cache` (2,216 rows) plus the 4.5h name-conflict check. Matched the dry run's predicted numbers exactly — `written=2216 mismatch=0 unresolved=0 enqueued=0` — nothing surprised us going from dry to live. Runtime ~2m33s including the actual write, in line with the tuned dry runs.

@@ -16,7 +16,11 @@
     "pass4:live": "tsx src/cli/run-pass4.ts --live",
     "pass4_5": "tsx src/cli/run-pass4_5.ts",
     "pass4_5:dry": "tsx src/cli/run-pass4_5.ts --dry-run",
-    "pass4_5:live": "tsx src/cli/run-pass4_5.ts --live"
+    "pass4_5:live": "tsx src/cli/run-pass4_5.ts --live",
+    "pass1": "tsx src/cli/run-pass1.ts",
+    "pass1:dry": "tsx src/cli/run-pass1.ts --dry-run",
+    "pass1:live": "tsx src/cli/run-pass1.ts --live",
+    "inspect:activity-log": "tsx src/cli/inspect-activity-log.ts"
   },
   "dependencies": {
     "dotenv": "^17.4.2",

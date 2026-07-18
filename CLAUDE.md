@@ -23,9 +23,12 @@ npm run pass4:live    # writes cadence to Attio
 npm run pass4 -- --dump-shapes   # print raw Attio payloads to verify slugs
 npm run pass4_5:dry   # compute + print, writes nothing
 npm run pass4_5:live  # writes Pipeline_Cache + enqueues Name_Conflicts
+npm run pass1:dry     # compute + print, writes nothing
+npm run pass1:live    # deletes resolved Brain_Complete rows, compacts survivors
+npm run inspect:activity-log   # read-only — dumps real Activity_Log header/sample rows
 ```
 
-Migration status: **PASS 4 (cadence) and PASS 4.5 (Pipeline Cache) are both verified end-to-end against production, live-run confirmed, 2026-07-18.** See `docs/pass4-notes.md` and `docs/pass4_5-notes.md`. Everything else still runs as a prompt spec. Order: 4 → 4.5 → 1+0 → 2 (deterministic half) → 2's LLM calls → 3+5. Don't skip ahead; each step gets reviewed before the next. PASS 1+0 is next.
+Migration status: **PASS 4 (cadence) and PASS 4.5 (Pipeline Cache) are both verified end-to-end against production, live-run confirmed, 2026-07-18.** **PASS 1 (Housekeeping) built and tested (127/127 tests pass) — not yet run against production.** **PASS 0 is NOT built — blocked on two real open questions, see `docs/pass1-and-pass0-notes.md`: (1) its own procedural text appears to contradict the spec's stated Non-negotiable that PASS 4 is the *only* exception to "never write live CRMs," and (2) Activity_Log's column layout is never spelled out in the spec.** Everything else still runs as a prompt spec. Order: 4 → 4.5 → 1+0 → 2 (deterministic half) → 2's LLM calls → 3+5. Don't skip ahead; each step gets reviewed before the next. PASS 1's live dry-run, plus Bobby's decision on PASS 0's write-authority question, are next.
 
 Ground rules for the rebuild:
 - **Dry-run is the default.** `--live` must be explicit. An integration test asserts dry-run issues zero mutating requests — keep it that way.
