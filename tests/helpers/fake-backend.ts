@@ -58,6 +58,8 @@ export interface FakeBackendConfig {
   threadStaging?: unknown[][];
   /** Rows for Activity_Log!A2:U — PASS 0 placeholder input. */
   activityLog?: unknown[][];
+  /** Attio people-search-by-email results, keyed by lowercase email. */
+  emailSearchResults?: Record<string, FakePerson[]>;
 }
 
 export interface RecordedRequest {
@@ -72,6 +74,24 @@ export class FakeBackend {
   readonly patched = new Map<string, Record<string, unknown>>();
 
   constructor(private readonly config: FakeBackendConfig) {}
+
+  private personToValues(person: FakePerson): Record<string, unknown> {
+    const values: Record<string, unknown> = {};
+    if (person.name !== undefined) values['name'] = [{ full_name: person.name }];
+    if (person.bhcContactId !== undefined) values['bhc_contact_id'] = [{ value: person.bhcContactId }];
+    if (person.lastInteraction !== undefined)
+      values['last_interaction'] = [
+        { interaction_type: 'email', interacted_at: person.lastInteraction, attribute_type: 'interaction' },
+      ];
+    if (person.jobTitle !== undefined) values['job_title'] = [{ value: person.jobTitle }];
+    if (person.companyName !== undefined) values['company_name'] = [{ value: person.companyName }];
+    if (person.linkedin !== undefined) values['linkedin'] = [{ value: person.linkedin }];
+    if (person.relationshipTier !== undefined)
+      values['relationship_tier'] = [{ option: { title: person.relationshipTier } }];
+    if (person.emailAddresses !== undefined)
+      values['email_addresses'] = person.emailAddresses.map((e) => ({ email_address: e }));
+    return values;
+  }
 
   get mutatingRequests(): RecordedRequest[] {
     return this.requests.filter((r) => r.method !== 'GET' && !r.path.endsWith('/entries/query') && r.path !== '/sheets');
@@ -154,6 +174,18 @@ export class FakeBackend {
       return send(200, { data: page });
     }
 
+    // --- Attio: search people by email (PASS 2's resolution cascade) ---
+    if (path === '/objects/people/records/query' && req.method === 'POST') {
+      const filter = (body as { filter?: { email_addresses?: { $contains?: string } } })?.filter;
+      const email = (filter?.email_addresses?.$contains ?? '').toLowerCase();
+      const results = this.config.emailSearchResults?.[email] ?? [];
+      const data = results.map((person, i) => ({
+        id: { record_id: `search-result-${i}` },
+        values: this.personToValues(person),
+      }));
+      return send(200, { data });
+    }
+
     // --- Attio: person record ---
     const match = /^\/objects\/people\/records\/(.+)$/.exec(path);
     if (match) {
@@ -169,24 +201,7 @@ export class FakeBackend {
       }
 
       if (req.method === 'GET') {
-        const values: Record<string, unknown> = {};
-        if (person.name !== undefined) values['name'] = [{ full_name: person.name }];
-        if (person.bhcContactId !== undefined) values['bhc_contact_id'] = [{ value: person.bhcContactId }];
-        if (person.lastInteraction !== undefined)
-          values['last_interaction'] = [
-            {
-              interaction_type: 'email',
-              interacted_at: person.lastInteraction,
-              attribute_type: 'interaction',
-            },
-          ];
-        if (person.jobTitle !== undefined) values['job_title'] = [{ value: person.jobTitle }];
-        if (person.companyName !== undefined) values['company_name'] = [{ value: person.companyName }];
-        if (person.linkedin !== undefined) values['linkedin'] = [{ value: person.linkedin }];
-        if (person.relationshipTier !== undefined)
-          values['relationship_tier'] = [{ option: { title: person.relationshipTier } }];
-        if (person.emailAddresses !== undefined)
-          values['email_addresses'] = person.emailAddresses.map((e) => ({ email_address: e }));
+        const values: Record<string, unknown> = this.personToValues(person);
 
         const written = this.patched.get(id);
         if (written) {

@@ -2,6 +2,15 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-07-18 — PASS 2 deterministic half: building blocks built, orchestration deliberately deferred
+
+- **New pass, `src/passes/pass2/`:** email parsing/dedup, primary/secondary participant identification, the full Contacts→Attio→Master_ID resolution cascade (never fabricates a BHC_ID), the drift check, NO_ACTION triage heuristics, the HARD DATA GUARDRAIL, and the complete `Write_Targets_JSON` assembly.
+- **Two real findings from live data**, not guesses: `cc_list` is a Python-dict-repr string, not JSON or a clean array; `recipient_email` is often blank on inbound messages, which matters for the outbound "principal recipient" resolution. Both discovered from a live Thread_Staging read while checking PASS 0/1's dry-run numbers earlier tonight.
+- **`AttioClient` gains `searchPeopleByEmail`** — the resolution cascade's Attio-by-email step. Filter syntax follows the spec's stated shape; explicitly flagged as unverified against live Attio (unlike the per-record GET shapes, which are proven).
+- **Deliberately did NOT build a PASS 2 orchestration/CLI.** The actual enrichment content (summaries, action classification, response drafts, personal-context extraction) needs an LLM call per spec step "e" — none of that exists yet. Wiring an orchestration without it would only meaningfully exercise the small slice of threads resolving straight to NO_ACTION. Matches the migration order's own split ("2 (deterministic half) → 2's LLM calls") — two genuinely different kinds of engineering work.
+- 62 new tests, all pure-logic or against the fake Attio/Sheets backend. 214/214 across the whole repo, typecheck clean.
+- Full writeup, including the two flagged-not-guessed unknowns, in `docs/pass2-notes.md`.
+
 ## 2026-07-18 — PASS 0 (Reply-placeholder reconciliation) built
 
 - **Resolved the spec contradiction** flagged earlier tonight (PASS 0's procedural text vs. the Non-negotiables' "PASS 4 is the only exception") with Bobby, using the project's own §4.10: exact matches auto-finalize (unambiguous fact), inferred matches always propose (never silently executed). Built exactly that hybrid.

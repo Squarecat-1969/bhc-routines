@@ -165,6 +165,42 @@ export class AttioClient {
   }
 
   /**
+   * Search people by email. Spec 2b's resolution cascade: "Miss → Attio by
+   * email → record_id + bhc_contact_id", filter shape
+   * `{"email_addresses": {"$contains": "<email>"}}`.
+   *
+   * DEVIATION FROM SPEC: the spec's filter syntax is written for the Attio MCP
+   * connector's query tool. This uses the same shape against Attio's REST
+   * `records/query` endpoint (same reasoning as `listEntries` — no MCP host in
+   * GitHub Actions). NOT yet verified against a live query — unlike the
+   * per-record GET shapes (confirmed via --dump-shapes), a query-with-filter
+   * call hasn't been checked. See docs/pass2-notes.md.
+   *
+   * Returns [] on zero matches (a miss, not an error) or if the response shape
+   * doesn't parse as expected — never throws for "no results," so callers can
+   * treat an empty array as "cascade to the next resolution step."
+   */
+  async searchPeopleByEmail(email: string): Promise<AttioPersonRecord[]> {
+    const res = await this.request<{ data?: unknown[] }>('/objects/people/records/query', {
+      method: 'POST',
+      body: JSON.stringify({ filter: { email_addresses: { $contains: email } } }),
+    });
+    const rows = Array.isArray(res.data) ? res.data : [];
+    const out: AttioPersonRecord[] = [];
+    for (const raw of rows) {
+      const row = raw as Record<string, unknown>;
+      const id = row['id'];
+      const recordId =
+        id && typeof id === 'object' && typeof (id as Record<string, unknown>)['record_id'] === 'string'
+          ? ((id as Record<string, unknown>)['record_id'] as string)
+          : null;
+      if (!recordId) continue;
+      out.push({ recordId, values: (row['values'] as AttioValues) ?? {} });
+    }
+    return out;
+  }
+
+  /**
    * PATCH a person record. Only ever called with the three cadence attributes
    * (spec Non-negotiable #12 scopes PASS 4's writes to exactly those).
    */

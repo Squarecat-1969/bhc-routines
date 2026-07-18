@@ -142,6 +142,14 @@ export const PIPELINE_CACHE_COLUMNS = 18;
 /** Hardcoded per spec 4.5b — NEVER derived from hf_last_segment / hf_current_segment. */
 export const ATTIO_SEGMENT_HARDCODE = 'S1';
 
+/**
+ * Owned/internal addresses (spec preamble) — a thread's contact is NEVER one
+ * of these. OWNED_EMAILS is exact-match; OWNED_DOMAINS matches any address at
+ * that domain (all of @thenewblank.com is internal TNB staff).
+ */
+export const OWNED_EMAILS = ['bobby@hougham.us', 'bobbyhougham@gmail.com', 'bobby@thenewblank.com'] as const;
+export const OWNED_DOMAINS = ['thenewblank.com'] as const;
+
 // --- Pacing (spec 4c: batches of 10, 2s between) ------------------------------
 
 export const ATTIO_FETCH_BATCH_SIZE = 10;

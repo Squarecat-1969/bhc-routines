@@ -30,7 +30,7 @@ npm run pass0:live    # closes exact-match placeholders, enqueues inferred match
 npm run inspect:activity-log   # read-only — dumps real Activity_Log header/sample rows
 ```
 
-Migration status: **PASS 4 (cadence) and PASS 4.5 (Pipeline Cache) are both verified end-to-end against production, live-run confirmed, 2026-07-18.** **PASS 1 (Housekeeping) and PASS 0 (Reply-placeholder reconciliation) are both built and tested (152/152 tests pass) — neither run against production yet.** See `docs/pass0-and-pass1-notes.md` for PASS 0's resolved spec-contradiction decision and two flagged-not-guessed unknowns (timestamp format at scale, exact-match body content). Everything else still runs as a prompt spec. Order: 4 → 4.5 → 1+0 → 2 (deterministic half) → 2's LLM calls → 3+5. Don't skip ahead; each step gets reviewed before the next. PASS 0 and PASS 1's live dry-runs are next.
+Migration status: **PASS 4, PASS 4.5, PASS 1, and PASS 0 are all built and live-run confirmed against production, 2026-07-18** (PASS 4 and PASS 4.5 fully `--live`; PASS 1 and PASS 0 dry-run confirmed clean, not yet `--live`). **PASS 2's deterministic half is built and tested (214/214 tests pass) — no orchestration/CLI yet, deliberately: the actual enrichment content needs an LLM call (step "e"), which is a separate build step ("2's LLM calls").** See `docs/pass2-notes.md`. Everything else still runs as a prompt spec. Order: 4 → 4.5 → 1+0 → 2 (deterministic half) → 2's LLM calls → 3+5. Don't skip ahead; each step gets reviewed before the next. PASS 2's LLM-call integration is next.
 
 Ground rules for the rebuild:
 - **Dry-run is the default.** `--live` must be explicit. An integration test asserts dry-run issues zero mutating requests — keep it that way.
