@@ -29,10 +29,12 @@ npm run pass0:dry     # compute + print, writes nothing
 npm run pass0:live    # closes exact-match placeholders, enqueues inferred matches
 npm run pass2:dry     # writes nothing to Sheets, but DOES call the real Anthropic API
 npm run pass2:live    # writes Brain_Complete rows, marks Thread_Staging PROCESSED
+npm run pass2_5:dry   # writes nothing to Sheets, but DOES call the real Anthropic API
+npm run pass2_5:live  # writes to Reconciliation_Queue (SUPERSEDE-IN-PLACE)
 npm run inspect:activity-log   # read-only — dumps real Activity_Log header/sample rows
 ```
 
-Migration status: **PASS 4, PASS 4.5, PASS 1, and PASS 0 are all built and live-run confirmed against production, 2026-07-18** (PASS 4 and PASS 4.5 fully `--live`; PASS 1 and PASS 0 dry-run confirmed clean, not yet `--live`). **PASS 2 is fully built — deterministic logic, the real enrichment call, and the orchestration wiring it together (271/271 tests pass) — not yet run against production.** See `docs/pass2-notes.md`. Everything else (PASS 2.5, PASS 3, PASS 5) still runs as a prompt spec. Migration order (4 → 4.5 → 1+0 → 2) is complete as originally scoped; PASS 2's first live dry-run is next, then PASS 2.5/3/5.
+Migration status: **PASS 4, PASS 4.5, PASS 1, and PASS 0 are all built and live-run confirmed against production, 2026-07-19** (PASS 4 and PASS 4.5 fully `--live`; PASS 1 and PASS 0 both now `--live`-confirmed too, including PASS 1's first real read-modify-write round trip on production Brain_Complete). **PASS 2 is fully built and live-verified** — 31 real threads processed across dry/live runs, two real bugs found-fixed-reverified (token limit, wasted-LLM-calls on internal threads), one prompt-quality fix (cold-outreach classification) applied and reverified clean on a harder batch. **PASS 2.5 (Task Reconciliation) is built and tested (323/323 tests pass) — not yet run against production.** See `docs/pass2-notes.md` and `docs/pass2_5-notes.md`. PASS 3 and PASS 5 remain prompt-spec only — building them now to finish the full Late Edition rebuild in one session.
 
 Ground rules for the rebuild:
 - **Dry-run is the default.** `--live` must be explicit. An integration test asserts dry-run issues zero mutating requests — keep it that way.

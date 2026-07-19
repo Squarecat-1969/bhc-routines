@@ -108,6 +108,17 @@ export const RANGES = {
   activityLogData: 'Activity_Log!A2:U',
   reconciliationQueueAll: 'Reconciliation_Queue!A2:N',
   reconciliationQueueAppend: 'Reconciliation_Queue!A2:N',
+  // PASS 2.5 target — verified live 2026-07-19: real tab is Tasks_Open (not
+  // Tasks_Log, a stale name from an old memory summary), 13 cols A-M matching
+  // the spec exactly.
+  tasksOpenData: 'Tasks_Open!A2:M',
+  // PASS 5 target — verified live 2026-07-19: the spec's own text flagged
+  // "verify col B is the status column... if elsewhere, use the correct
+  // column." It IS elsewhere — B is `title`, the real status column is H.
+  zoomStagingStatus: 'Zoom_Staging!H2:H',
+  // PASS 5 target — verified live 2026-07-19: exactly 2 columns (Date,
+  // Brief_JSON), matching the spec's "EXACTLY ONE ROW, EXACTLY TWO COLUMNS."
+  dailyBriefDates: 'Daily_Brief!A2:A',
 } as const;
 
 /**

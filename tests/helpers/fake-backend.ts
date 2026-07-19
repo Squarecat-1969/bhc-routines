@@ -58,6 +58,14 @@ export interface FakeBackendConfig {
   threadStaging?: unknown[][];
   /** Rows for Activity_Log!A2:U — PASS 0 placeholder input. */
   activityLog?: unknown[][];
+  /** Rows for Tasks_Open!A2:M — PASS 2.5 input. */
+  tasksOpen?: unknown[][];
+  /** Rows for Zoom_Staging!H2:H (status column only) — PASS 5 input. */
+  zoomStagingStatuses?: unknown[][];
+  /** Rows for Daily_Brief!A2:A — PASS 5's existing-row lookup. */
+  dailyBriefDates?: unknown[][];
+  /** Rows for Reconciliation_Queue!A2:N — PASS 2.5's supersede-target lookup. */
+  reconciliationQueue?: unknown[][];
   /** Attio people-search-by-email results, keyed by lowercase email. */
   emailSearchResults?: Record<string, FakePerson[]>;
 }
@@ -142,6 +150,10 @@ export class FakeBackend {
         if (range === RANGES.brainCompleteData) return send(200, { values: this.config.brainComplete ?? [] });
         if (range === RANGES.threadStagingData) return send(200, { values: this.config.threadStaging ?? [] });
         if (range === RANGES.activityLogData) return send(200, { values: this.config.activityLog ?? [] });
+        if (range === RANGES.tasksOpenData) return send(200, { values: this.config.tasksOpen ?? [] });
+        if (range === RANGES.zoomStagingStatus) return send(200, { values: this.config.zoomStagingStatuses ?? [] });
+        if (range === RANGES.dailyBriefDates) return send(200, { values: this.config.dailyBriefDates ?? [] });
+        if (range === RANGES.reconciliationQueueAll) return send(200, { values: this.config.reconciliationQueue ?? [] });
         if (range?.startsWith('Master_ID')) {
           if (this.config.masterIdFailWith) return send(this.config.masterIdFailWith, { error: 'forced Master_ID failure' });
           return send(200, { values: this.config.masterId });

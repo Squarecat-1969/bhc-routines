@@ -2,6 +2,16 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-07-19 — PASS 2.5 (Task Reconciliation) built
+
+- **New pass, `src/passes/pass2_5/`.** Live reconnaissance confirmed `Tasks_Open` matches the spec exactly (memory's "Tasks_Log" was stale) and reused `Reconciliation_Queue`'s already-verified schema from PASS 0.
+- **The LLM call is scoped narrower than the spec's literal three verdicts.** Only `LIKELY_HANDLED_EVIDENCE` genuinely needs judgment — `LIKELY_STALE_NO_EVIDENCE` vs. `GENUINELY_OPEN` is pure date math (`Due_Date` vs. today, `>7 days`) once "no evidence" is known, so that split happens in plain TypeScript, not asked of the model.
+- **A real safety property**: the model's claimed `evidence_activity_id` is verified against the actual candidate list it was given — a hallucinated or out-of-list ID fails the whole cluster's reconciliation rather than silently accepting fabricated evidence.
+- **Conservative clustering**: only merges same-contact tasks with identical-after-normalization descriptions, per the spec's own "when in doubt, keep SEPARATE."
+- **SUPERSEDE-IN-PLACE** implemented literally: an existing awaiting row gets updated at its own row (same `Recon_ID`), never duplicated; nothing writes at all when the new verdict isn't materially different from what's already there.
+- Zero candidates → zero LLM calls, same "don't spend an API call on a knowable answer" pattern as PASS 2's `noise:internal` filter.
+- 40 new tests (clustering, candidate-filter gates, schema safety including the hallucination-rejection test, SUPERSEDE-IN-PLACE logic, and a full orchestration suite against fake Sheets+Anthropic together). 323/323 across the whole repo, typecheck clean. `npm run pass2_5:dry`/`:live` exist. **Not yet run against production.**
+
 ## 2026-07-18 — PASS 2: first live writes verified correct; cold-outreach classification gap found and fixed
 
 - **First-ever live write** (`--limit 3`): 3/3 written, 0 failures. Verified correctness by reading the actual Brain_Complete rows back directly (not just trusting the report) — confirmed the noise-filtered row, the unresolved-primary row, and a fully-resolved row (Joleen Hughes, real `BHC_ID` `BHC-02450`, real Attio `record_id`) all landed exactly as designed, including a correctly-computed `Reply_Recipients_JSON`/`Reply_Mode`.
