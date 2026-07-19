@@ -2,6 +2,14 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-07-19 — PASS 5: add a Daily_Brief size-safety guard, prompted by a real question
+
+- **Confirmed via search**: Google Sheets has a hard, non-adjustable 50,000-character-per-cell limit. Today's real writes come in well under 1,000 characters, and the plan's own bounded design (hard-capped at 10 items, naturally bounded fields) keeps realistic worst-case size a small fraction of the limit.
+- **Kept the one-cell design rather than subdividing** — the spec's repeated insistence on "the ONLY valid write shape" reads as protecting a downstream contract (Aida reads this one cell as a single JSON blob), not just caution. Splitting would need coordinated Aida-side changes for a problem the plan's own design doesn't create.
+- **Added instead**: a size check before writing. `writeDailyBrief` now refuses to write (returning a clear reason) if the serialized JSON exceeds a 45,000-character safety margin, rather than risking silent truncation or an API rejection — the same "stop silently, don't write a broken shape" instinct the spec already uses, extended to a failure mode it didn't anticipate.
+- `writeDailyBrief`'s return type changed from `Promise<void>` to a discriminated `DailyBriefWriteResult`, so the orchestration can distinguish "refused due to size" from "genuinely wrote."
+- 2 new tests (refusal path, normal-size success path). 391/391 across the whole repo, typecheck clean.
+
 ## 2026-07-19 — PASS 5's first live run: real data confirmed correct, a real numeric-date-serial bug found and fixed in two passes
 
 - **PASS 5 run against real production data** (83 open tasks, 14 real `Brain_Complete` rows, 44 real Attio pipeline entries via the batched fetch, real `Zoom_Staging` count): mission status, counts, and brief text all confirmed correct — including a cross-check where PASS 5's `nextTouch=Ryan Crisman` lined up with a task PASS 2.5 had independently flagged that same night.

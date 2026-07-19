@@ -121,8 +121,12 @@ async function runPass5Inner(opts: Pass5Options, deps: RunPass5Deps, startedAt: 
   if (!dryRun) {
     logger.info('5f — writing Daily_Brief');
     try {
-      await writeDailyBrief(sheets, today, gamePlan);
-      written = true;
+      const result = await writeDailyBrief(sheets, today, gamePlan);
+      if (result.written) {
+        written = true;
+      } else {
+        warnings.push(`Daily_Brief write skipped: ${result.reason}`);
+      }
     } catch (e) {
       // Spec 5g: never blocks earlier passes, degrade silently — but this
       // orchestrator still surfaces it as a warning rather than pretending

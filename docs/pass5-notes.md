@@ -102,17 +102,51 @@ parse first, sort by actual date value, render via `iso()`.
 2 new regression tests (one per pass) reproducing the exact `"46162"` shape
 found live.
 
+## A size-safety guard, added from a real question, not a real incident
+
+Bobby asked directly: does Google Sheets have a per-cell character limit,
+and does writing the whole `game_plan` into one cell make sense given that?
+Confirmed via search: Sheets has a hard, non-adjustable 50,000-character
+limit per cell. Today's real writes come in well under 1,000 characters,
+and the plan's own design (hard-capped at 10 items, each field naturally
+bounded — a `response_draft` is already constrained to a few sentences by
+PASS 2's own prompt) means realistic worst-case size is a small fraction of
+the limit.
+
+**Kept the one-cell design rather than subdividing** — the spec's insistence
+on "the ONLY valid write shape" (repeated three times: "NEVER iterate...
+NEVER write individual keys as separate rows... NEVER write more than 2
+columns") reads as protecting a downstream contract, not just being
+cautious. Aida's own web app almost certainly reads this one cell and parses
+it as a single JSON blob; splitting it would require coordinated changes on
+the Aida side for a problem the plan's own bounded design doesn't actually
+create.
+
+**Added instead**: a size check before writing. If the serialized JSON ever
+exceeds a 45,000-character safety margin (leaving room below Sheets' actual
+50,000 limit), `writeDailyBrief` refuses to write and returns a clear reason
+rather than risking silent truncation or an API rejection — the same "stop
+silently, don't write a broken shape" instinct the spec already uses
+elsewhere in this step, just extended to a failure mode (an oversized blob)
+the spec itself didn't anticipate. `writeDailyBrief`'s return type changed
+from `Promise<void>` to a discriminated `DailyBriefWriteResult`
+(`written: true` or `written: false` with a reason) so the orchestration can
+distinguish "refused due to size" from "genuinely wrote" rather than
+collapsing both into a boolean. 2 new tests (refusal path, normal-size
+success path).
+
 ## Status
 
-38 tests (mission status — per-track independence, multi-track membership,
+40 tests (mission status — per-track independence, multi-track membership,
 the FTE-only `daysSinceTouch` field, overdue-first tie-break; counts — the
 two different date comparisons; plan — all four buckets' filters and caps,
 the dedup/trim/priority-numbering assembly, the numeric-date-serial
 regression test; brief text — the exact all-clear string, singular/plural
 phrasing, no markdown; `Daily_Brief`'s exact one-row-two-column write shape
-including the update-in-place case; and a full orchestration suite against
-fake Sheets+Attio together). 389/389 across the whole repo, typecheck clean.
-`npm run pass5 -- --run-id <id> --dry-run`/`--live` exist.
+including the update-in-place case and the size-safety guard; and a full
+orchestration suite against fake Sheets+Attio together). 391/391 across the
+whole repo, typecheck clean. `npm run pass5 -- --run-id <id> --dry-run`/
+`--live` exist.
 
 **Run against real production data**: 83 open tasks, 14 real Brain_Complete
 rows, 44 real Attio pipeline entries, real `Zoom_Staging` count. Mission

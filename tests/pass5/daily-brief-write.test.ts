@@ -31,6 +31,50 @@ describe('serializeGamePlan', () => {
   });
 });
 
+describe('writeDailyBrief — size safety guard', () => {
+  it('refuses to write and returns a clear reason when the JSON would exceed the safety margin', async () => {
+    const backend = new FakeBackend(MINIMAL);
+    const { sheetsUrl } = await backend.start();
+    const sheets = new SheetsClient({ token: 'test', url: sheetsUrl });
+    try {
+      // A plan item's `draft` field padded far past any realistic size —
+      // simulates a future scenario where the plan's natural bounds don't
+      // hold, without needing 45,000 real characters of fixture data.
+      const oversized = gamePlan({
+        plan: [
+          {
+            type: 'reply', contact: 'Alice', bhcId: 'BHC-1', reason: 'x', channel: 'email', subject: '',
+            draft: 'x'.repeat(46_000), replyRecipientsJson: '', replyMode: '', description: '', taskId: '',
+            dueDate: '', attioRecordId: '', priority: 1,
+          },
+        ],
+      });
+      const result = await writeDailyBrief(sheets, '2026-07-19', oversized);
+      expect(result.written).toBe(false);
+      if (!result.written) {
+        expect(result.reason).toContain('45000');
+        expect(result.reason).toContain('50000');
+      }
+      expect(backend.sheetsWrites).toHaveLength(0); // never even attempted the write
+    } finally {
+      await backend.stop();
+    }
+  });
+
+  it('writes normally when well under the safety margin', async () => {
+    const backend = new FakeBackend(MINIMAL);
+    const { sheetsUrl } = await backend.start();
+    const sheets = new SheetsClient({ token: 'test', url: sheetsUrl });
+    try {
+      const result = await writeDailyBrief(sheets, '2026-07-19', gamePlan());
+      expect(result.written).toBe(true);
+      expect(backend.sheetsWrites).toHaveLength(1);
+    } finally {
+      await backend.stop();
+    }
+  });
+});
+
 describe('writeDailyBrief — the exact write shape', () => {
   it('appends exactly one row with exactly two columns when no row exists for today', async () => {
     const backend = new FakeBackend(MINIMAL);
