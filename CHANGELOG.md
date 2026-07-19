@@ -2,6 +2,15 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-07-19 — PASS 3 (Slack digest) built
+
+- **New pass, `src/passes/pass3/`.** Unlike every other pass, `--run-id` is required — PASS 3 re-reads and digests a *specific prior* run's `Brain_Complete` output, it doesn't generate its own run.
+- **The task-reconciliation line stays standalone-capable**: instead of requiring in-process chaining with PASS 2.5, it independently re-derives the H/S/O counts by reading `Reconciliation_Queue` filtered by `Run_ID`.
+- **A real, honestly-documented gap**: drift alerts genuinely can't be recovered standalone — PASS 2's drift detection only ever lived in that run's in-memory report, never persisted anywhere. `Pass3Options` accepts optional `driftNotes` for future in-process chaining; standalone runs emit an explicit warning explaining the gap rather than silently omitting the signal.
+- **The empty-body HARD GATE is three distinct outcomes**, not "did it work": `valid` (normal digest), `all_clear` (zero actionable — a legitimate quiet night, not a failure), `failure` (body somehow ends up empty despite staged rows — never posts a stub, posts a failure alert instead).
+- **Spec 3e's "verify the send carried a body"** doesn't map cleanly onto a Slack incoming webhook (no rich response body to inspect); implemented the real intent instead — never silently swallow a failed post, retry via the existing HTTP layer, then post a distinct failure alert if it still doesn't go through.
+- 19 new tests (digest assembly across all three outcome kinds, the two Run_ID-filtered readers, and a full orchestration suite with a mock Slack poster covering normal/dry-run/all-clear/failure-retry/cross-run-isolation/fail-soft). 342/342 across the whole repo, typecheck clean. `npm run pass3 -- --run-id <id> --dry-run`/`--live` exist. **Not yet run against production.**
+
 ## 2026-07-19 — PASS 2.5 (Task Reconciliation) built
 
 - **New pass, `src/passes/pass2_5/`.** Live reconnaissance confirmed `Tasks_Open` matches the spec exactly (memory's "Tasks_Log" was stale) and reused `Reconciliation_Queue`'s already-verified schema from PASS 0.
