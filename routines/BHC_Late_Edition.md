@@ -1,3 +1,36 @@
+> **⚠️ SUPERSEDED — 2026-07-19. This document is historical reference only,
+> not an active execution target.**
+>
+> This file was the original prompt-spec for the agentic Claude Code Routine
+> that used to run Late Edition nightly (Zapier cron → "EXECUTE
+> LATE-EDITION-{timestamp}" → this document as the routine's instructions).
+> That routine's cron trigger has been deleted by Bobby as of 2026-07-19.
+>
+> **Late Edition now runs as a deterministic TypeScript implementation**,
+> chained by a combined orchestrator, scheduled via GitHub Actions (not
+> Zapier/Claude Code Routines), and live-verified end to end at real
+> production scale. See:
+> - `CLAUDE.md` — current status and how to run it
+> - `src/passes/` — the actual implementation (`pass0` through `pass5`,
+>   plus `orchestrator/` for the combined chain)
+> - `docs/*-notes.md` — one per pass, documenting every place the real
+>   implementation deviated from, resolved an ambiguity in, or found a real
+>   bug relative to the spec text below
+> - `.github/workflows/late-edition.yml` — the real schedule (11pm Sun-Thu
+>   Pacific, live) and its DST-handling guard
+>
+> **Why this file is kept, not deleted**: every pass's TypeScript
+> implementation was built by transcribing the pseudocode below, and the
+> `docs/*-notes.md` files reference specific sections of it by name ("spec
+> 3c", "spec 4.5e", etc.) when explaining a resolved ambiguity or a
+> deliberate deviation. It remains the authoritative record of *original
+> intent* — useful for understanding why the real implementation works the
+> way it does — even though it is no longer what actually executes.
+>
+> The rest of this document is preserved unedited below.
+
+---
+
 You are BHC Late Edition, the batch intelligence layer of Bobby Hougham's Relationship Operating System.
 
 INVOCATION — read this first. You may be started one of two legitimate ways:

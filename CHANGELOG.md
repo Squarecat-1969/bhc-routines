@@ -2,6 +2,12 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-07-19 — Old agentic Late Edition routine decommissioned; routines/BHC_Late_Edition.md marked superseded
+
+- **Bobby deleted the old agentic Claude Code Routine's cron trigger** — the two systems (old agentic, new TypeScript) no longer run in parallel. The new orchestrator (`.github/workflows/late-edition.yml`, 11pm Sun-Thu Pacific) is now the sole nightly execution path.
+- **`routines/BHC_Late_Edition.md` marked superseded**, not deleted: added a prominent notice at the top explaining the old routine's trigger is gone, pointing to where the real implementation now lives (`src/passes/`, `CLAUDE.md`, `docs/*-notes.md`, the GitHub Actions workflow). The original spec text below the notice is preserved verbatim — every pass's implementation was built by transcribing it, and every `docs/*-notes.md` file cites specific sections of it by name ("spec 3c", "spec 4.5e") when explaining a resolved ambiguity or a deliberate deviation, so it remains genuinely useful as the record of original intent.
+- Pure documentation change — 407/407 unaffected, typecheck clean.
+
 ## 2026-07-19 — Late Edition scheduled to run live, 11pm Sun-Thu Pacific — a real double-run bug caught before enabling it
 
 - **Enabled the cron schedule** in `.github/workflows/late-edition.yml` — Late Edition now runs automatically 11pm Sunday-Thursday Pacific, live, all eight passes.
