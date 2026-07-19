@@ -80,4 +80,27 @@ describe('buildDigestBody — all_clear (zero actionable, not a failure)', () =>
       expect(result.body).not.toContain('1 threads');
     }
   });
+
+  it('still includes real drift notes on an all-clear night — real bug found on the orchestrator\'s first full-scale live run: this early-return path skipped drift rendering entirely, silently hiding a standing data-integrity flag whenever nothing else happened to surface', () => {
+    const result = buildDigestBody(
+      [],
+      'RUN-1',
+      TODAY,
+      NO_TASKS,
+      ['T2: identity drift on primary — Attio bhc_contact_id mismatch. CRM writes withheld for the drifted side.'],
+    );
+    expect(result.kind).toBe('all_clear');
+    if (result.kind === 'all_clear') {
+      expect(result.body).toContain('⚠ Drift:');
+      expect(result.body).toContain('Attio bhc_contact_id mismatch');
+    }
+  });
+
+  it('omits the drift line entirely on an all-clear night with genuinely no drift', () => {
+    const result = buildDigestBody([], 'RUN-1', TODAY, NO_TASKS, []);
+    expect(result.kind).toBe('all_clear');
+    if (result.kind === 'all_clear') {
+      expect(result.body).not.toContain('Drift');
+    }
+  });
 });

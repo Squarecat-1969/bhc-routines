@@ -51,18 +51,26 @@ export async function runPass3(opts: Pass3Options, deps: RunPass3Deps): Promise<
 
 async function runPass3Inner(opts: Pass3Options, deps: RunPass3Deps, startedAt: string): Promise<Pass3Report> {
   const { sheets, slack, logger, today = todayIn('UTC') } = deps;
-  const { runId, dryRun, driftNotes = [] } = opts;
+  const { runId, dryRun, driftNotes } = opts;
   const warnings: string[] = [];
 
   logger.info('PASS 3 — Slack digest');
   logger.info(`  digesting run_id : ${runId}`);
   logger.info(`  mode             : ${dryRun ? 'DRY RUN (no Slack post)' : 'LIVE (posts to #aida)'}`);
 
-  if (driftNotes.length === 0) {
+  // Distinguish "not given a driftNotes array at all" (genuinely standalone
+  // — the caller has no way to know if there was drift) from "given an
+  // array that happens to be empty" (chained with PASS 2, which genuinely
+  // found zero drift this run). Collapsing both to [] before this check
+  // produced a false-positive "running standalone" warning on every
+  // chained run with a clean PASS 2 — found on the combined orchestrator's
+  // first full-scale live run, 2026-07-19.
+  if (driftNotes === undefined) {
     warnings.push(
       "drift alerts require chaining directly with PASS 2's in-memory report — running PASS 3 standalone means any drift this run had is not surfaced in the digest. See docs/pass3-notes.md.",
     );
   }
+  const resolvedDriftNotes = driftNotes ?? [];
 
   logger.info('3a — re-reading Brain_Complete for this run');
   const rows = await loadBrainCompleteRowsForRun(sheets, runId);
@@ -71,7 +79,7 @@ async function runPass3Inner(opts: Pass3Options, deps: RunPass3Deps, startedAt: 
   const taskCounts = await loadTaskReconciliationCountsForRun(sheets, runId);
 
   logger.info('3b/3c — assembling digest body');
-  const result = buildDigestBody(rows, runId, today, taskCounts, driftNotes);
+  const result = buildDigestBody(rows, runId, today, taskCounts, resolvedDriftNotes);
 
   if (result.kind === 'failure') {
     warnings.push(`digest assembly failed: ${result.reason}`);

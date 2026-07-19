@@ -27,12 +27,15 @@ function mockSlack(): SlackPoster & { posts: string[] } {
   };
 }
 
-async function run(config: Partial<FakeBackendConfig>, runId: string, dryRun: boolean, slack: SlackPoster) {
+async function run(config: Partial<FakeBackendConfig>, runId: string, dryRun: boolean, slack: SlackPoster, driftNotes?: readonly string[]) {
   const backend = new FakeBackend({ ...MINIMAL, ...config });
   const { sheetsUrl } = await backend.start();
   const sheets = new SheetsClient({ token: 'test', url: sheetsUrl });
   try {
-    return await runPass3({ runId, dryRun }, { sheets, slack, logger: silentLogger, today: '2026-07-19' as never });
+    return await runPass3(
+      { runId, dryRun, ...(driftNotes !== undefined ? { driftNotes } : {}) },
+      { sheets, slack, logger: silentLogger, today: '2026-07-19' as never },
+    );
   } finally {
     await backend.stop();
   }
@@ -116,6 +119,25 @@ describe('PASS 3 orchestration — drift notes', () => {
     const slack = mockSlack();
     const report = await run({ brainComplete: [brainRow('T1', 'RUN-A')] }, 'RUN-A', false, slack);
     expect(report.warnings.some((w) => w.includes('drift alerts require chaining'))).toBe(true);
+  });
+
+  it('does NOT warn when chained with an empty driftNotes array — a real bug found on the orchestrator\'s first full-scale live run: PASS 2 genuinely finding zero drift was indistinguishable from PASS 3 never being given the data at all', async () => {
+    const slack = mockSlack();
+    const report = await run({ brainComplete: [brainRow('T1', 'RUN-A')] }, 'RUN-A', false, slack, []);
+    expect(report.warnings.some((w) => w.includes('drift alerts require chaining'))).toBe(false);
+  });
+
+  it('includes real drift notes in the digest when chained with a non-empty array, and still does not warn', async () => {
+    const slack = mockSlack();
+    const report = await run(
+      { brainComplete: [brainRow('T1', 'RUN-A')] },
+      'RUN-A',
+      false,
+      slack,
+      ['T2: identity drift on primary — Attio bhc_contact_id mismatch. CRM writes withheld for the drifted side.'],
+    );
+    expect(report.warnings.some((w) => w.includes('drift alerts require chaining'))).toBe(false);
+    expect(report.digestBody).toContain('Drift');
   });
 });
 

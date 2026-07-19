@@ -2,6 +2,14 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-07-19 — Orchestrator's first full-scale live run: two real PASS 3 drift bugs found and fixed
+
+- **Ran the combined orchestrator unlimited `--dry-run`** (all 79 PASS 2.5 clusters, all 2216 PASS 4.5 targets, real Attio/Sheets throughout, ~7 minutes end to end). Surfaced a false warning: PASS 3 said it was running "standalone" and couldn't surface drift — but it wasn't standalone, the orchestrator explicitly chained it.
+- **Bug 1**: PASS 3 destructured `driftNotes = []` before checking whether to warn, collapsing "never given a driftNotes array" (truly standalone) and "given an array that's genuinely empty" (chained, PASS 2 found zero drift) into the same value. Fixed: check `opts.driftNotes === undefined` before applying any default.
+- **Bug 2, found while fixing Bug 1**: even with the check fixed, real drift notes chained into a night where nothing else surfaced would still never appear — `buildDigestBody`'s `all_clear` path returned early, before the drift-rendering code ever ran. Identity drift is a standing data-integrity flag, not a "new item," and shouldn't vanish just because no email needed a reply that night. Fixed: the `all_clear` path now renders drift notes too, when present.
+- Both bugs would have fired on essentially every real production run with a clean PASS 2 (most nights) — a false "you're not chained" warning that would train Bobby to ignore it, plus real drift silently disappearing on any all-clear night.
+- 4 new tests. 407/407 across the whole repo, typecheck clean. Full writeup in `docs/pass3-notes.md`.
+
 ## 2026-07-19 — Orchestrator's first live run: clean, zero aborts; fixed a real warnings-visibility gap
 
 - **First live run of the combined orchestrator** (`--dry-run --limit 3`) against real production data: real Contacts (2855 rows), real Master_ID (2450 rows), real Attio pipeline (44 entries), real open tasks (83, 79 clusters), real Thread_Staging (500 rows). All eight passes completed with `aborted: false`. ~37 seconds end to end.

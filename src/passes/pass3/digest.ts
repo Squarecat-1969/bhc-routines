@@ -27,9 +27,15 @@ export function buildDigestBody(
   const countLine = `${surfaced.length} surfaced · ${filtered.length} filtered as noise/internal`;
   const taskLine = buildTaskReconciliationLine(taskCounts);
 
-  // Zero actionable — a legitimate, expected outcome, not a failure.
+  // Zero actionable — a legitimate, expected outcome, not a failure. But
+  // drift notes are a standing data-integrity flag, not a "new item" —
+  // they must not be silently dropped just because nothing else surfaced
+  // tonight. Found on the combined orchestrator's first full-scale live
+  // run: this early return skipped the drift-rendering logic entirely,
+  // even when driftNotes was genuinely non-empty.
   if (surfaced.length === 0) {
     const lines = [header, countLine, '', 'Nothing needs your attention tonight. ✅', '', taskLine];
+    if (driftNotes.length > 0) lines.push('', `⚠ Drift: ${driftNotes.join(' | ')}`);
     if (filtered.length > 0) lines.push('', `Filtered as noise/internal: ${filtered.length} thread${filtered.length === 1 ? '' : 's'}`);
     const body = lines.join('\n');
     if (body.trim() === '') {
