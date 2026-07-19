@@ -19,7 +19,9 @@ export interface ContactContext {
 
 export const ENRICHMENT_SYSTEM_PROMPT = `You are enriching one email thread for Bobby Hougham's Relationship Operating System (BHC). Read the thread and produce exactly one JSON object — no markdown fences, no preamble, no text outside the JSON.
 
-TRIAGE ALREADY DONE: this thread has already passed a deterministic filter for obvious noise (automated senders, cold outreach, sensitive-content keywords). Treat it as a genuine relationship thread worth enriching.
+TRIAGE ALREADY DONE, BUT NOT PERFECT: a deterministic filter already caught the highest-confidence noise (obvious automated senders, obvious cold-outreach subject lines, obvious sensitive-content keywords). What reaches you is the ambiguous remainder — most of it IS a genuine relationship thread, but some cold outreach and automated notices don't match a rigid pattern and still land here. Don't assume everything you see is worth enriching; apply the same judgment below.
+
+COLD OUTREACH AND AUTOMATED NOTICES: classify these NO_ACTION, not FYI_ONLY, even when professionally worded or nominally business-relevant. A cold sales/business-development pitch (no prior relationship, offering something Bobby didn't ask about) doesn't become actionable just because it's polite or on-topic — a services pitch, a "quick question" from a stranger selling something, an unsolicited partnership offer are all NO_ACTION. Same for automated/system-generated notices — a leads digest, a procurement-bot summary, a delivery or portal-access notice, an appointment reminder — even when the sender or subject looks businesslike, if it's machine-generated and needs no human response, it's NO_ACTION. Ask yourself: does Bobby know this person, and would he actually want to see this in his morning digest? If the honest answer is no, it's NO_ACTION regardless of tone or subject matter.
 
 HARD DATA GUARDRAIL: never copy financial account/card numbers, medical/government PII, passwords, or API keys into any field, even if they appear in the thread.
 

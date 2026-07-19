@@ -239,6 +239,56 @@ fully-internal → triage → LLM, each cheaper than the next, each a real chanc
 to skip real API cost. 4 new tests, including one asserting Anthropic is
 never called for this exact real-world shape.
 
+## First `--live` write, then the full working set — real writes verified, one more real gap found
+
+**First-ever live write** (`--limit 3`): 3/3 written, 0 failures. Read the
+actual Brain_Complete rows back via a direct Sheets read (not just trusting
+the report) — confirmed every piece of the pipeline correct on real data: the
+noise-filtered internal thread had blank `Write_Targets_JSON` and no Slack
+block as designed; the unresolved-primary thread correctly withheld
+`Write_Targets_JSON`; and the Joleen Hughes thread produced a complete,
+correct `Write_Targets_JSON` with her real `BHC_ID` (`BHC-02450` — notably,
+one of the two contacts sitting in the Name_Conflicts backlog) and real Attio
+`record_id`, a correctly-computed `Reply_Recipients_JSON`/`Reply_Mode`, and a
+real extracted task.
+
+**Full working set** (`--live`, no limit, 14 threads): 14/14 written, 0
+enrichment failures, 0 drift. The `noise:internal` filter caught a second
+real case ("PTO") independent of the one that found the bug, confirming the
+fix generalizes. A phishing/scam email (a spoofed-domain fake settlement
+notice) was correctly classified `NO_ACTION` without any special-casing — the
+model's own judgment handled it.
+
+**One real inconsistency found reviewing this batch**: cold-outreach pitches
+and automated notices that slipped past deterministic triage got inconsistent
+classifications from the LLM — some correctly `NO_ACTION`, structurally
+identical others `FYI_ONLY` (one email's own generated summary said *"cold
+outreach... no prior relationship"* while its own classification was
+`FYI_ONLY`, not `NO_ACTION`). Not a code bug — nothing crashed or wrote
+incorrectly — but a real quality gap: `FYI_ONLY` surfaces in the digest,
+`NO_ACTION` doesn't, so this meant sales pitches would show up in Bobby's
+morning digest.
+
+**Root cause, once traced:** the prompt's own framing worked against correct
+classification. It told the model *"this thread has already passed a
+deterministic filter... treat it as a genuine relationship thread worth
+enriching"* — actively discouraging `NO_ACTION` even for the ambiguous
+remainder triage was always meant to defer to the LLM's own judgment. The
+deterministic triage layer (`triage.ts`) was working exactly as designed —
+catching only high-confidence patterns and correctly deferring anything
+ambiguous — but the enrichment prompt never told the model it was *supposed*
+to apply the same standard to what reached it.
+
+**Fixed:** rewrote the framing (`prompt.ts`) to correctly describe triage as
+imperfect-by-design, and added explicit `COLD OUTREACH AND AUTOMATED NOTICES`
+guidance: classify `NO_ACTION` not `FYI_ONLY` regardless of tone or
+professional wording, with a concrete decision test ("would Bobby actually
+want to see this in his morning digest?"). 5 new tests, including one that
+would fail if the old discouraging framing text ever came back. **Not yet
+re-verified against a live run** — a prompt change can't be unit-tested for
+actual model behavior the way a schema or logic change can; the next live run
+is the real check.
+
 ## Status
 
 134 PASS 2 tests (pure-logic, against the fake Attio/Sheets backend, against a
@@ -250,18 +300,20 @@ an enrichment failure leaves the thread unprocessed, drift withholds only the
 drifted CRM side while still writing the row, `--limit` caps the working set,
 content previews render correctly for both actionable and noise threads, a
 fully-internal thread never reaches the LLM, and the pass never throws on a
-systemic failure). 280/280 across the whole repo, typecheck clean. `npm run
+systemic failure). 283/283 across the whole repo, typecheck clean. `npm run
 pass2:dry` / `npm run pass2:live` exist.
 
-**Run three times against real production data** (`--limit 3`, `--limit 5`
-after the token-limit fix, then a content-quality review of that same
-`--limit 5` run once previews existed): 13 real threads processed total, 12
-written successfully, 1 early failure diagnosed and fixed, 1 wasted-LLM-call
-gap found and fixed via actual content review. Confirmed correct on real
-data: Contacts column resolution, the email map, the working-set filter, the
-enrichment call itself, response draft quality, the triage/LLM safety-net
-split, and the resolution cascade's honest "unresolved" surfacing for real
-external parties without a CRM record. **Not yet run at full scale or
-`--live`** — still worth a wider dry run before trusting this unattended, and
-`--live` is a genuinely different question (the first real Brain_Complete
-writes, visible in Aida's Queue) worth its own deliberate step.
+**Run against real production data six times total** across dry-run and
+`--live` (`--limit 3` dry ×2, `--limit 5` dry ×2, `--limit 3` live, full
+`--live` at 14 threads): 31 real threads processed, 30 written successfully.
+Two real bugs found from actual output and fixed: the token-limit truncation
+and the wasted-LLM-call gap on internal threads, both reverified afterward
+against the exact threads that surfaced them. One real prompt-quality gap
+found (cold-outreach/automated-notice classification inconsistency) and
+fixed, not yet reverified. **First live writes confirmed correct via a
+direct Sheets read** — real `Write_Targets_JSON` with a real `BHC_ID`, real
+Attio `record_id`, correctly-computed `Reply_Recipients_JSON`/`Reply_Mode`,
+correct noise-path blanking. The full working set has now run `--live`
+clean end to end. **Next real step: a live run to confirm the cold-outreach
+prompt fix, then this is ready to run unattended at whatever cadence Bobby
+wants.**

@@ -30,6 +30,22 @@ describe('ENRICHMENT_SYSTEM_PROMPT', () => {
   it('warns explicitly against a participant-keyed object for key_commitments', () => {
     expect(ENRICHMENT_SYSTEM_PROMPT).toContain('NEVER a JSON object keyed by person name');
   });
+
+  it('does not tell the model to assume every thread is a genuine relationship thread — found on a real production run where this framing discouraged NO_ACTION', () => {
+    // The old text ("Treat it as a genuine relationship thread worth enriching")
+    // actively discouraged the model from ever choosing NO_ACTION, even for
+    // cold-outreach/automated content that slipped past deterministic triage.
+    expect(ENRICHMENT_SYSTEM_PROMPT).not.toContain('Treat it as a genuine relationship thread worth enriching');
+  });
+
+  it('includes explicit cold-outreach and automated-notice classification guidance', () => {
+    expect(ENRICHMENT_SYSTEM_PROMPT).toContain('COLD OUTREACH AND AUTOMATED NOTICES');
+    expect(ENRICHMENT_SYSTEM_PROMPT).toContain('NO_ACTION, not FYI_ONLY');
+  });
+
+  it('gives a concrete decision test for the ambiguous cold/automated case', () => {
+    expect(ENRICHMENT_SYSTEM_PROMPT).toContain('would he actually want to see this in his morning digest');
+  });
 });
 
 describe('buildEnrichmentUserPrompt', () => {

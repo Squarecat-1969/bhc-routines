@@ -2,6 +2,13 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-07-18 — PASS 2: first live writes verified correct; cold-outreach classification gap found and fixed
+
+- **First-ever live write** (`--limit 3`): 3/3 written, 0 failures. Verified correctness by reading the actual Brain_Complete rows back directly (not just trusting the report) — confirmed the noise-filtered row, the unresolved-primary row, and a fully-resolved row (Joleen Hughes, real `BHC_ID` `BHC-02450`, real Attio `record_id`) all landed exactly as designed, including a correctly-computed `Reply_Recipients_JSON`/`Reply_Mode`.
+- **Full working set, no limit** (`--live`, 14 threads): 14/14 written, 0 enrichment failures, 0 drift. The `noise:internal` filter caught a second independent real case ("PTO"). A phishing/scam email was correctly classified `NO_ACTION` by the model's own judgment.
+- **One real prompt-quality gap found reviewing this batch**: cold-outreach pitches and automated notices that slipped past deterministic triage got inconsistent LLM classifications — some correctly `NO_ACTION`, structurally identical others `FYI_ONLY`, meaning sales pitches would show up in the morning digest. Root cause: the prompt's own framing (*"treat it as a genuine relationship thread worth enriching"*) actively discouraged the model from ever choosing `NO_ACTION`, even for the ambiguous remainder triage was designed to defer to it.
+- **Fixed**: rewrote the triage framing to correctly describe it as imperfect-by-design, and added explicit `COLD OUTREACH AND AUTOMATED NOTICES` guidance with a concrete decision test. 5 new tests. 283/283 across the whole repo, typecheck clean. **Not yet reverified against a live run** — the next live run is the real check for a prompt change.
+
 ## 2026-07-18 — PASS 2: first content-quality review finds and fixes a real wasted-LLM-call gap
 
 - **First real read of actual PASS 2 output** (the `--limit 5` run, now with content previews). Genuinely good signal: the one `REPLY_NEEDED` draft (a referral thank-you to Joleen Hughes) reads authentically in Bobby's voice — casual, one clean thought, correct sign-off. The LLM correctly caught a Stripe payment-failure notification as `NO_ACTION` even though triage's heuristics missed it — exactly the safety-net split the design intended. An "unresolved primary" on a real law-firm exchange is correct behavior (honest "no CRM record" surfacing), not a bug.
