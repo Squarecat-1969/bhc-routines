@@ -176,7 +176,7 @@ export function evaluateContact(args: {
   return { ...base, nameVerdict: null, withheld: null, notes };
 }
 
-async function fetchRecords(
+export async function fetchRecords(
   attio: AttioClient,
   entries: readonly AttioPipelineEntry[],
   logger: Logger,

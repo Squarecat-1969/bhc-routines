@@ -2,6 +2,17 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-07-19 — PASS 5 (Game Plan Generation) built — the full Late Edition rebuild is now complete
+
+This is the last of the eight passes. Every pass in the original agentic `BHC_Late_Edition.md` spec now has a real, tested TypeScript implementation: PASS 0, 1, 2, 2.5, 3, 4, 4.5, 5.
+
+- **New pass, `src/passes/pass5/`.** Like PASS 3, `--run-id` is required.
+- **A real reuse win**: rather than re-deriving cadence math, PASS 5 calls PASS 4's `evaluateContact` directly (exported — a purely additive change, PASS 4's full suite reran clean afterward) on a fresh read-only Attio fetch. PASS 5's cadence numbers are *literally the same code path* as PASS 4's, not a second implementation that could drift.
+- **Mission status needed data `CadenceRow` doesn't carry**: a contact can hold an active stage in more than one track simultaneously, but `CadenceRow` only resolves the single *winning* track for cadence purposes. `mission-status.ts` derives lightweight per-track stage membership directly from each Attio entry, while still reusing the shared `CadenceRow`'s `stalled`/`nextCheckIn` once membership is established.
+- **A real spec ambiguity in the plan-building logic (5d), resolved and documented rather than silently picked**: two different sort rules are given for the same buckets — each bucket's own stated sort, and a separate generic 3-key "Ranking" paragraph that appears to contradict it. Resolved as bucket-specific sort governs slot-filling; the generic rule's unambiguous work (dedup, trim to 10, priority numbering) governs the final cross-bucket merge.
+- **Two count comparisons kept intentionally different**: `tasksOverdue` uses strictly-before-today, `pipelineTouches` uses on-or-before-today — transcribed exactly as the spec's own pseudocode has them.
+- 36 new tests (mission status, counts, all four plan buckets plus dedup/trim/priority assembly, brief text including the exact all-clear string, `Daily_Brief`'s exact one-row-two-column write shape, and a full orchestration suite against fake Sheets+Attio together). 384/384 across the whole repo, typecheck clean. `npm run pass5 -- --run-id <id> --dry-run`/`--live` exist. **Not yet run against production.**
+
 ## 2026-07-19 — PASS 3 (Slack digest) built
 
 - **New pass, `src/passes/pass3/`.** Unlike every other pass, `--run-id` is required — PASS 3 re-reads and digests a *specific prior* run's `Brain_Complete` output, it doesn't generate its own run.
