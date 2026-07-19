@@ -163,6 +163,19 @@ export class FakeBackend {
         return send(200, { values: [] });
       }
 
+      if (action === 'append') {
+        // Real Sheets reflects a write on the very next read. No single-pass
+        // test ever needed that (each only checks the write's shape via
+        // sheetsWrites), but a genuine cross-pass test does — PASS 2 writes
+        // a Brain_Complete row, PASS 3 reads it back, both within the same
+        // fake backend instance. Scoped to just Brain_Complete since that's
+        // the one case that currently needs it.
+        if (range?.startsWith('Brain_Complete')) {
+          const newRows = ((body as { values?: unknown[][] })?.values ?? []) as unknown[][];
+          this.config.brainComplete = [...(this.config.brainComplete ?? []), ...newRows];
+        }
+      }
+
       // update / append: acknowledge. The request is already recorded above
       // (this.requests / this.sheetsWrites) for tests to assert on.
       return send(200, {});

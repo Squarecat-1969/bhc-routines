@@ -2,6 +2,17 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-07-19 — The combined Late Edition orchestrator: all eight passes chained, one shared Run_ID
+
+- **New**: `src/passes/orchestrator/` + `npm run late-edition -- --dry-run`/`--live`. Chains PASS 0 → 1 → 2 → 2.5 → 3 → 4 → 4.5 → 5 in one process with one shared `Run_ID`, instead of eight separate commands with a `Run_ID` copied by hand between them.
+- **Closes PASS 3's previously-documented drift-alert gap**: PASS 2's identity-drift warnings now flow directly into PASS 3's digest in memory (`extractDriftNotes`) — the one thing standalone operation could never recover (PASS 2's drift detection only ever lived in that run's in-memory report).
+- **Deliberately shallow, not a rewrite**: does not restructure any individual pass's own Sheets/Attio reads to share data in memory — every pass keeps its own independent, already-live-verified reads. Real risk on working production code for marginal efficiency gain.
+- **Real inconsistency found while wiring this up**: PASS 4's report has no `aborted` field at all, unlike every other pass including its own sibling PASS 4.5 — its existing CLI already posts the Slack addendum unconditionally. Matched that established behavior exactly rather than inventing new gating logic.
+- **A real, valuable finding, not a bug**: building the "does PASS 2's write reach PASS 3" test initially failed with both sides in dry-run — traced down to the dry-run safety guarantee working exactly as designed (PASS 2 gates its actual write behind `!dryRun`, `writtenCount` still increments for reporting only). Confirms the dry-run guarantee holds under a full 8-pass chain, not just each pass alone. Fixed the test, not the code.
+- **The fake test backend gained a real capability**: no single pass's own tests ever needed a write to be visible to a later read within the same test run. Added targeted state to `FakeBackend` so a `Brain_Complete` append is reflected on the next read — the first genuine cross-pass test needed this.
+- 9 new tests, including a full 8-pass chain against fake backends proving one shared `Run_ID`, a clean empty-dataset run, real data genuinely flowing PASS 2 → PASS 3, and the drift-notes flow working end to end. 400/400 across the whole repo, typecheck clean.
+- **Never run end-to-end against real production data.** Full writeup in `docs/late-edition-orchestrator-notes.md`.
+
 ## 2026-07-19 — PASS 5: add a Daily_Brief size-safety guard, prompted by a real question
 
 - **Confirmed via search**: Google Sheets has a hard, non-adjustable 50,000-character-per-cell limit. Today's real writes come in well under 1,000 characters, and the plan's own bounded design (hard-capped at 10 items, naturally bounded fields) keeps realistic worst-case size a small fraction of the limit.
