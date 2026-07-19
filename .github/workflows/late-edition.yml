@@ -1,7 +1,12 @@
 name: Late Edition
 
-# STUB — manual dispatch only. The cron trigger is intentionally commented out
-# until PASS 4's dry-run output has been reviewed against real data.
+# Manual dispatch only — the cron trigger is intentionally still commented
+# out. The full eight-pass orchestrator (src/passes/orchestrator/) is now
+# built, tested, and live-verified end to end at real production scale
+# (2026-07-19: a full --live run completed cleanly in ~8m49s, zero warnings,
+# zero aborts — see CLAUDE.md and docs/late-edition-orchestrator-notes.md).
+# Enabling the schedule is a deliberate decision for Bobby to make, not a
+# default to flip once the code works.
 #
 # When it is time to wire the schedule, read docs/pass4-notes.md #1 first:
 # GitHub Actions cron is always UTC and does NOT observe DST, so a single
@@ -23,7 +28,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'dry-run computes and logs without writing; live writes cadence to Attio'
+        description: 'dry-run computes and logs without writing anywhere; live runs the real thing (Sheets, Attio, #aida)'
         required: true
         default: 'dry-run'
         type: choice
@@ -31,20 +36,24 @@ on:
           - dry-run
           - live
       limit:
-        description: 'Optional cap on contacts processed (blank = all)'
+        description: 'Optional cap on items processed per pass, where supported (PASS 2/2.5/4/4.5) — blank = all. PASS 0/1/3/5 always run unlimited regardless.'
         required: false
         type: string
 
 concurrency:
-  # Never let two runs write cadence to the same records at once.
+  # Never let two runs write to the same records at once — every pass in the
+  # chain writes somewhere (Sheets, Attio, or both).
   group: late-edition
   cancel-in-progress: false
 
 jobs:
-  pass4:
-    name: PASS 4 — Attio cadence engine
+  late-edition:
+    name: Late Edition — all eight passes
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # A full --live run at real production scale took ~8m49s (2026-07-19).
+    # Generous margin above that for LLM latency variance, retry backoff on
+    # a bad network night, and CI setup overhead (checkout/npm ci/typecheck/test).
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -60,24 +69,26 @@ jobs:
 
       - run: npm test
 
-      - name: Run PASS 4
+      - name: Run Late Edition
         env:
           BRAIN_API_TOKEN: ${{ secrets.BRAIN_API_TOKEN }}
           ATTIO_API_KEY: ${{ secrets.ATTIO_API_KEY }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          ANTHROPIC_BHC_ROUTINES_API: ${{ secrets.ANTHROPIC_BHC_ROUTINES_API }}
           RUN_TIMEZONE: UTC
         run: |
-          FLAGS="--json-out out/pass4-report.json"
+          FLAGS="--json-out out/late-edition-report.json"
           if [ "${{ inputs.mode }}" = "live" ]; then FLAGS="$FLAGS --live"; else FLAGS="$FLAGS --dry-run"; fi
           if [ -n "${{ inputs.limit }}" ]; then FLAGS="$FLAGS --limit ${{ inputs.limit }}"; fi
-          npx tsx src/cli/run-pass4.ts $FLAGS
+          npx tsx src/cli/run-late-edition.ts $FLAGS
 
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pass4-report-${{ github.run_id }}
-          path: out/pass4-report.json
-          # Contains contact names — keep the retention window short.
+          name: late-edition-report-${{ github.run_id }}
+          path: out/late-edition-report.json
+          # Contains contact names, thread summaries, and draft reply text —
+          # keep the retention window short.
           retention-days: 7
           if-no-files-found: warn

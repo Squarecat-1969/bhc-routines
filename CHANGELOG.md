@@ -2,6 +2,14 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-07-19 — GitHub Actions workflow rewritten to invoke the combined orchestrator
+
+- **Real gap found**: `.github/workflows/late-edition.yml` was still a PASS-4-only stub, untouched since before this entire rebuild. It invoked `run-pass4.ts` alone, had no `ANTHROPIC_BHC_ROUTINES_API` secret wired up, and had never heard of PASS 0/1/2/2.5/3/5 or the combined orchestrator. Running the existing workflow as-is (even via manual `workflow_dispatch`) would have silently run only PASS 4.
+- **Rewritten**: the workflow now invokes `run-late-edition.ts` (the full eight-pass orchestrator), with `ANTHROPIC_BHC_ROUTINES_API` added to the job's env. Timeout raised `20 → 30` minutes, based on the real observed full `--live` runtime (~8m49s) plus CI setup overhead and margin for LLM/network variance. Report artifact renamed to `late-edition-report-${{ github.run_id }}`.
+- **Cron trigger intentionally still left commented out** — the full chain is now proven at real production scale, but enabling unattended scheduling is a deliberate decision for Bobby to make, not a default to flip once the code works. The existing DST-aware cron-timing documentation in the file is unchanged and still accurate for whenever that decision is made.
+- **`.env.example` updated to match** — was still framed as "Required for PASS 4" only; now reflects that `ANTHROPIC_BHC_ROUTINES_API` is required by the orchestrator (PASS 2 and PASS 2.5 both need it), not "unused by every other pass" as it previously (incorrectly) said.
+- 407/407 across the whole repo unaffected (no TypeScript changed), YAML validity confirmed directly.
+
 ## 2026-07-19 — Orchestrator's first full-scale live run: two real PASS 3 drift bugs found and fixed
 
 - **Ran the combined orchestrator unlimited `--dry-run`** (all 79 PASS 2.5 clusters, all 2216 PASS 4.5 targets, real Attio/Sheets throughout, ~7 minutes end to end). Surfaced a false warning: PASS 3 said it was running "standalone" and couldn't surface drift — but it wasn't standalone, the orchestrator explicitly chained it.
