@@ -2,6 +2,15 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-07-19 — Late Edition scheduled to run live, 11pm Sun-Thu Pacific — a real double-run bug caught before enabling it
+
+- **Enabled the cron schedule** in `.github/workflows/late-edition.yml` — Late Edition now runs automatically 11pm Sunday-Thursday Pacific, live, all eight passes.
+- **Real bug caught before shipping**: the two DST-covering cron expressions (`0 6 * * 1-5` for PDT, `0 7 * * 1-5` for PST) are each unconditional — cron has no concept of season, so *both* fire every single weekday year-round, one hour apart. With `cancel-in-progress: false`, the second fire wouldn't get skipped, it would queue and run right after the first finished — meaning the entire routine, including real Sheets/Attio writes and a real Slack post, would have run **twice every night**, not once.
+- **Fixed with a runtime guard**: a new first step reads the actual current Pacific hour (`TZ='America/Los_Angeles' date +%H`) and only proceeds if it's genuinely 11pm there right now — letting the OS's own DST-aware tzdata decide which of the two fires is correct for today, rather than hand-maintaining the cron twice a year. Verified directly against all four combinations (summer/winter × both cron times) — exactly one passes in each case, every time.
+- **Also fixed**: the run command branched on `inputs.mode`, which only exists for manual `workflow_dispatch` — a scheduled trigger has no `inputs` context at all, so without a fix a cron-triggered run would have silently fallen through to `--dry-run` forever, never doing the real nightly work. Scheduled runs now always pass `--live`; manual dispatches still respect the mode dropdown.
+- Manual `workflow_dispatch` is unaffected by the guard (skips it entirely) and remains available for testing.
+- 407/407 across the whole repo unaffected (no TypeScript changed). YAML validity and the guard's shell logic both verified directly.
+
 ## 2026-07-19 — GitHub Actions workflow rewritten to invoke the combined orchestrator
 
 - **Real gap found**: `.github/workflows/late-edition.yml` was still a PASS-4-only stub, untouched since before this entire rebuild. It invoked `run-pass4.ts` alone, had no `ANTHROPIC_BHC_ROUTINES_API` secret wired up, and had never heard of PASS 0/1/2/2.5/3/5 or the combined orchestrator. Running the existing workflow as-is (even via manual `workflow_dispatch`) would have silently run only PASS 4.

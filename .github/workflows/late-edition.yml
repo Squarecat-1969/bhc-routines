@@ -1,30 +1,33 @@
 name: Late Edition
 
-# Manual dispatch only — the cron trigger is intentionally still commented
-# out. The full eight-pass orchestrator (src/passes/orchestrator/) is now
-# built, tested, and live-verified end to end at real production scale
-# (2026-07-19: a full --live run completed cleanly in ~8m49s, zero warnings,
-# zero aborts — see CLAUDE.md and docs/late-edition-orchestrator-notes.md).
-# Enabling the schedule is a deliberate decision for Bobby to make, not a
-# default to flip once the code works.
-#
-# When it is time to wire the schedule, read docs/pass4-notes.md #1 first:
-# GitHub Actions cron is always UTC and does NOT observe DST, so a single
-# expression cannot hold "11:00 PM PDT/PST, Sunday-Thursday" year-round.
+# Runs automatically 11pm Sun-Thu (Pacific time). GitHub Actions cron is
+# always UTC and does NOT observe DST, so a single expression can't hold
+# "11:00 PM Pacific" year-round — two expressions cover both halves of the
+# year (see docs/pass4-notes.md #1 for the full reasoning):
 #
 #   11:00 PM PDT (UTC-7, ~Mar-Nov) = 06:00 UTC the NEXT day  -> '0 6 * * 1-5'
 #   11:00 PM PST (UTC-8, ~Nov-Mar) = 07:00 UTC the NEXT day  -> '0 7 * * 1-5'
 #
-# Note the day shift: a Sunday-Thursday run in Los Angeles is Monday-Friday in
-# UTC. Using '* * 0-4' would fire on the wrong days.
+# CRITICAL: both expressions fire EVERY weekday, year-round, unconditionally
+# — cron itself has no concept of "only in summer." Without a runtime guard,
+# this means the ENTIRE routine (real Sheets/Attio writes, a real Slack
+# post) would run TWICE every night, one hour apart, since
+# cancel-in-progress: false means the second run queues rather than getting
+# skipped. The "check the current time" step below is that guard: it reads
+# the actual current Pacific hour and only proceeds if it's really 11pm
+# there right now, so only one of the two cron fires ever does real work on
+# any given night, regardless of season.
 #
-# on:
-#   schedule:
-#     - cron: '0 6 * * 1-5'   # 11pm PDT Sun-Thu (summer)
-#     - cron: '0 7 * * 1-5'   # 11pm PST Sun-Thu (winter)
-#   Both fire year-round unless the job itself checks the local hour and exits.
+# Note the day shift: a Sunday-Thursday run in Los Angeles is Monday-Friday
+# in UTC. Using '* * 0-4' would fire on the wrong days.
+#
+# Manual runs via workflow_dispatch skip this guard entirely (they're
+# intentional) and remain available for testing (dry-run by default).
 
 on:
+  schedule:
+    - cron: '0 6 * * 1-5'   # 11pm PDT Sun-Thu (summer)
+    - cron: '0 7 * * 1-5'   # 11pm PST Sun-Thu (winter)
   workflow_dispatch:
     inputs:
       mode:
@@ -56,20 +59,43 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      - name: Guard against the DST-mismatched cron fire
+        id: guard
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "Manual dispatch — skipping the time guard."
+            exit 0
+          fi
+          LA_HOUR=$(TZ='America/Los_Angeles' date +%H)
+          if [ "$LA_HOUR" = "23" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "Current Pacific hour is 23 — this is the correct cron fire for today's DST regime, proceeding."
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "Current Pacific hour is $LA_HOUR, not 23 — this is the DST-mismatched cron fire (the other expression already ran, or will), skipping."
+          fi
+
       - uses: actions/checkout@v4
+        if: steps.guard.outputs.should_run == 'true'
 
       - uses: actions/setup-node@v4
+        if: steps.guard.outputs.should_run == 'true'
         with:
           node-version: '20'
           cache: npm
 
       - run: npm ci
+        if: steps.guard.outputs.should_run == 'true'
 
       - run: npm run typecheck
+        if: steps.guard.outputs.should_run == 'true'
 
       - run: npm test
+        if: steps.guard.outputs.should_run == 'true'
 
       - name: Run Late Edition
+        if: steps.guard.outputs.should_run == 'true'
         env:
           BRAIN_API_TOKEN: ${{ secrets.BRAIN_API_TOKEN }}
           ATTIO_API_KEY: ${{ secrets.ATTIO_API_KEY }}
@@ -78,12 +104,24 @@ jobs:
           RUN_TIMEZONE: UTC
         run: |
           FLAGS="--json-out out/late-edition-report.json"
-          if [ "${{ inputs.mode }}" = "live" ]; then FLAGS="$FLAGS --live"; else FLAGS="$FLAGS --dry-run"; fi
+          # A scheduled (cron) trigger has no `inputs` context at all — only
+          # workflow_dispatch populates it. Without this branch, a scheduled
+          # run would silently fall through to --dry-run every night forever,
+          # since `inputs.mode` would just be empty. Scheduled runs are
+          # always the real nightly run; manual dispatches respect the
+          # chosen mode.
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            FLAGS="$FLAGS --live"
+          elif [ "${{ inputs.mode }}" = "live" ]; then
+            FLAGS="$FLAGS --live"
+          else
+            FLAGS="$FLAGS --dry-run"
+          fi
           if [ -n "${{ inputs.limit }}" ]; then FLAGS="$FLAGS --limit ${{ inputs.limit }}"; fi
           npx tsx src/cli/run-late-edition.ts $FLAGS
 
       - name: Upload report
-        if: always()
+        if: always() && steps.guard.outputs.should_run == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: late-edition-report-${{ github.run_id }}
