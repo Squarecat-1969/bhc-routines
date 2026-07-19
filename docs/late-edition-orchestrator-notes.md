@@ -73,6 +73,31 @@ first scenario that actually needs this. Added targeted, minimal state to
 real Sheets' actual behavior, scoped narrowly to the one tab that currently
 needs it rather than rewriting every tab's write handling speculatively.
 
+## First live run (2026-07-19, --dry-run --limit 3) — clean, zero aborts, one real gap found
+
+All eight passes ran back to back against real production data — real
+Contacts (2855 rows), real Master_ID (2450 rows), real Attio pipeline (44
+entries), real open tasks (83, clustered to 79), real Thread_Staging (500
+rows, 0 in tonight's working set — no new mail since the last test run).
+Every pass completed with `aborted: false`. ~37 seconds end to end with
+`--limit 3` applied to the passes that support it.
+
+**One real gap, found by reading the combined summary carefully**: the
+report never surfaced any pass's own `warnings` array. Each pass's own
+standalone report always has included this (it's how the `max_tokens`
+diagnostic and drift warnings earlier tonight were visible at a glance) —
+the combined report silently dropped it. Warnings still appeared in the
+live log stream (each pass logs its own via the shared logger), but the
+"read this and know if something needs attention" summary at the bottom
+had nothing to say about them. Fixed: `collectWarnings` aggregates every
+pass's warnings, prefixed by pass name, into a `WARNINGS (N):` section —
+present only when there's actually something to say. 3 new tests.
+
+This run itself had zero warnings to surface, so the gap didn't show up
+in this particular run's output — found by reasoning about what *would*
+happen on a run that did have one, not by observing a missed warning
+directly.
+
 ## Status
 
 9 tests: 3 for `extractDriftNotes` (pulls only identity-drift warnings,
@@ -81,11 +106,14 @@ one shared `Run_ID` across all eight reports, a clean run against a fully
 empty dataset, a real thread genuinely flowing from PASS 2's write into
 PASS 3's digest (the fake-backend statefulness fix), the drift-notes flow
 working end to end (the actual point of this whole orchestrator), Slack
-addenda posting live and staying silent in dry-run. 400/400 across the
-whole repo, typecheck clean. `npm run late-edition -- --dry-run --limit N`
-/ `--live` exist.
+addenda posting live and staying silent in dry-run. Plus 3 more for the
+warning-aggregation fix below. 403/403 across the whole repo, typecheck
+clean. `npm run late-edition -- --dry-run --limit N` / `--live` exist.
 
-**Never run end-to-end against real production data.** Every individual
-pass has been live-verified on its own; the chain itself has not. Start
-with `--dry-run` and a small `--limit`, same discipline as every pass's own
-first live run tonight.
+**Run once against real production data** (`--dry-run --limit 3`): all
+eight passes completed cleanly, zero aborts, ~37 seconds end to end. One
+real gap found and fixed (warnings weren't surfaced in the combined
+summary — see above). **Not yet run `--live`, and not yet run without a
+`--limit`** — a full unlimited run (all ~79 PASS 2.5 clusters, all Attio
+pipeline entries for PASS 4/4.5) will take considerably longer than 37
+seconds; worth setting that expectation before the first unlimited run.

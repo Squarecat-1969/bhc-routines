@@ -4,6 +4,31 @@ function line(label: string, value: string): string {
   return `  ${label.padEnd(28)} ${value}`;
 }
 
+/**
+ * Every pass has its own `warnings: readonly string[]` — real diagnostics
+ * like PASS 2.5's max_tokens/thinking-budget finding earlier tonight, or a
+ * PASS 4 withheld-row explanation. Each pass's own standalone report always
+ * surfaced these; the first version of this combined report didn't, which
+ * meant a real warning could scroll past in the live log stream and never
+ * appear in the "at a glance" summary at the bottom. Fixed: aggregate every
+ * pass's warnings here, prefixed by pass name, so nothing that mattered
+ * enough to warn about gets missed just because eight passes ran instead
+ * of one.
+ */
+function collectWarnings(report: LateEditionReport): readonly string[] {
+  const sections: Array<[string, readonly string[]]> = [
+    ['PASS 0', report.pass0.warnings],
+    ['PASS 1', report.pass1.warnings],
+    ['PASS 2', report.pass2.warnings],
+    ['PASS 2.5', report.pass25.warnings],
+    ['PASS 3', report.pass3.warnings],
+    ['PASS 4', report.pass4.warnings],
+    ['PASS 4.5', report.pass45.warnings],
+    ['PASS 5', report.pass5.warnings],
+  ];
+  return sections.flatMap(([label, warnings]) => warnings.map((w) => `[${label}] ${w}`));
+}
+
 export function renderReport(report: LateEditionReport): string {
   const out: string[] = [];
   out.push('');
@@ -56,6 +81,13 @@ export function renderReport(report: LateEditionReport): string {
   out.push('PASS 5 — Game Plan Generation');
   out.push(line('aborted', String(report.pass5.aborted)));
   out.push(line('plan items / written', `${report.pass5.planItemCount} / ${report.pass5.written}`));
+
+  const warnings = collectWarnings(report);
+  if (warnings.length > 0) {
+    out.push('');
+    out.push(`WARNINGS (${warnings.length}):`);
+    for (const w of warnings) out.push(`  ⚠ ${w}`);
+  }
 
   out.push('');
   out.push(`Started  ${report.startedAt}`);

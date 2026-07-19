@@ -2,6 +2,14 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-07-19 — Orchestrator's first live run: clean, zero aborts; fixed a real warnings-visibility gap
+
+- **First live run of the combined orchestrator** (`--dry-run --limit 3`) against real production data: real Contacts (2855 rows), real Master_ID (2450 rows), real Attio pipeline (44 entries), real open tasks (83, 79 clusters), real Thread_Staging (500 rows). All eight passes completed with `aborted: false`. ~37 seconds end to end.
+- **One real gap found**: the combined summary report never surfaced any pass's own `warnings` array — visible in the live log stream, but silently absent from the "read this and know if something needs attention" summary at the bottom. Each individual pass's own standalone report always included this.
+- **Fixed**: `collectWarnings` aggregates every pass's warnings, prefixed by pass name, into a `WARNINGS (N):` section — present only when there's something to report. 3 new tests.
+- 403/403 across the whole repo, typecheck clean.
+- **Not yet run `--live`, and not yet run without `--limit`** — a full unlimited run will take considerably longer than 37 seconds.
+
 ## 2026-07-19 — The combined Late Edition orchestrator: all eight passes chained, one shared Run_ID
 
 - **New**: `src/passes/orchestrator/` + `npm run late-edition -- --dry-run`/`--live`. Chains PASS 0 → 1 → 2 → 2.5 → 3 → 4 → 4.5 → 5 in one process with one shared `Run_ID`, instead of eight separate commands with a `Run_ID` copied by hand between them.
