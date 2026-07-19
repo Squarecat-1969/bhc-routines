@@ -2,6 +2,15 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-07-19 — PASS 2.5's first live dry-run: strong reasoning quality confirmed; a real diagnostic gap found and fixed
+
+- **First live dry-run of PASS 2.5**, sharing `Run_ID` with a real PASS 2 run: 83 real open tasks, 79 clusters, 695 real Activity_Log rows. Reasoning quality genuinely strong, not just structurally valid — the model consistently and correctly distinguished `"Closed from queue"` administrative dismissals from actual proof of completion (a pattern that recurred dozens of times), and correctly downgraded a real evidence match to `medium` confidence rather than `high` when the evidence was topically close but didn't confirm the exact thing the task asked for.
+- **SUPERSEDE-IN-PLACE confirmed against genuine historical data**: 34 rows updated in place against real leftover `Reconciliation_Queue` rows from the old agentic system.
+- **One real failure, caught cleanly by fail-soft** (1 of 79 clusters) but with no diagnostic detail to actually debug from: `"Anthropic response had no text content — unexpected shape"`.
+- **Fixed in `src/lib/anthropic.ts`** (shared by PASS 2 and PASS 2.5): the error now includes `stop_reason` and the actual block types present, and correctly distinguishes a genuinely missing `content` array from one that's present but empty. New `tests/anthropic.test.ts` (3 tests) — the client itself was previously only exercised indirectly through PASS 2/2.5's integration suites.
+- **Also**: PASS 2.5's CLI gained a `--run-id` override so it can share a `Run_ID` with a specific prior PASS 2 run, letting PASS 3's task-reconciliation line correlate correctly — without this, PASS 2.5 always generated its own unrelated `Run_ID`.
+- 387/387 across the whole repo, typecheck clean.
+
 ## 2026-07-19 — PASS 5 (Game Plan Generation) built — the full Late Edition rebuild is now complete
 
 This is the last of the eight passes. Every pass in the original agentic `BHC_Late_Edition.md` spec now has a real, tested TypeScript implementation: PASS 0, 1, 2, 2.5, 3, 4, 4.5, 5.

@@ -6,6 +6,10 @@ export interface FakeAnthropicConfig {
   responseText: string;
   /** If set, the server returns this HTTP status with an error body instead. */
   failWith?: number;
+  /** If true, returns a 200 with content: [] (or non-text blocks) instead of the responseText — simulates the real "no text content" shape found on a live production run. */
+  emptyContent?: boolean;
+  /** Included alongside emptyContent, to simulate Anthropic's own stop_reason field. */
+  stopReason?: string;
 }
 
 export class FakeAnthropicBackend {
@@ -29,6 +33,12 @@ export class FakeAnthropicBackend {
         if (this.config.failWith) {
           res.writeHead(this.config.failWith, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'forced failure' }));
+          return;
+        }
+
+        if (this.config.emptyContent) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ content: [], stop_reason: this.config.stopReason ?? 'end_turn' }));
           return;
         }
 

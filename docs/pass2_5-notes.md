@@ -90,12 +90,49 @@ confidence, proposed date all unchanged), nothing gets written at all.
    sides of the 7-day boundary with synthetic dates, but the first live run
    is the real confirmation.
 
+## First live dry run (2026-07-19, sharing Run_ID with a real PASS 2 run)
+
+Ran against 83 real open tasks, 79 clusters, 695 real Activity_Log rows. Real
+findings:
+
+- **Reasoning quality is genuinely strong**, not just structurally valid.
+  The model consistently and correctly recognized that a `"Closed from
+  queue"` log entry is an *administrative* dismissal, not proof of actual
+  completion — a distinction that showed up dozens of times and never
+  fooled it. One real evidence match (Sarah Holmes reviewing a response
+  letter) was correctly downgraded to `medium` confidence rather than `high`
+  because the evidence showed her reviewing the letter, not that the
+  specific phone call the task described actually happened — the HARD GATE
+  distinguishing "topically related" from "genuinely satisfies" working
+  exactly as designed on a real, subtle case.
+- **SUPERSEDE-IN-PLACE confirmed against genuine historical data**: 34 rows
+  updated in place against real `Reconciliation_Queue` rows left over from
+  the old agentic system, not just fresh appends.
+- **One real failure, fail-soft caught it correctly** (1 of 79 clusters):
+  `"Anthropic response had no text content — unexpected shape"` — but the
+  error carried no diagnostic detail to actually debug it if it recurred.
+
+**Fixed** (in `src/lib/anthropic.ts`, shared by PASS 2 and PASS 2.5):
+the "no text content" error now includes `stop_reason` and the actual block
+types present in the response — and distinguishes a genuinely missing
+`content` array from one that's present but empty, since the first version
+of this fix conflated the two. 3 new tests in a new `tests/anthropic.test.ts`
+(previously untested as its own unit, only exercised indirectly through
+PASS 2/2.5's integration suites).
+
 ## Status
 
-40 tests (pure-logic: clustering, candidate filtering, schema validation,
-supersede-in-place logic; full end-to-end orchestration against fake
-Sheets+Anthropic backends together — evidence-found, no-evidence date math on
-both sides of the 7-day boundary, hallucination rejection, supersede vs.
-append vs. no-write-on-no-change, dry-run, fail-soft). 323/323 across the
-whole repo, typecheck clean. `npm run pass2_5:dry` / `npm run pass2_5:live`
-exist. **Not yet run against production.**
+40 unit/integration tests plus 3 shared-client tests (in `tests/anthropic.test.ts`,
+counted separately since they cover the shared library, not this pass alone) —
+pure-logic: clustering, candidate filtering, schema validation, supersede-in-place
+logic; full end-to-end orchestration against fake Sheets+Anthropic backends
+together — evidence-found, no-evidence date math on both sides of the 7-day
+boundary, hallucination rejection, supersede vs. append vs. no-write-on-no-change,
+dry-run, fail-soft. 387/387 across the whole repo, typecheck clean. `npm run
+pass2_5:dry` / `npm run pass2_5:live` exist, plus `--run-id` to share a Run_ID
+with a specific PASS 2 run.
+
+**Run once against real production data**: 83 open tasks, 79 clusters, 695
+Activity_Log rows, reasoning quality confirmed strong on real edge cases, one
+real failure diagnosed and fixed (see above). Not yet run `--live` (only
+`--dry-run` so far).

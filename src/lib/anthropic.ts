@@ -26,6 +26,7 @@ export interface CompleteOptions {
 
 interface MessagesResponse {
   content?: Array<{ type: string; text?: string }>;
+  stop_reason?: string;
 }
 
 export class AnthropicClient {
@@ -59,7 +60,9 @@ export class AnthropicClient {
       .join('');
 
     if (text === '') {
-      throw new Error('Anthropic response had no text content — unexpected shape');
+      const blockTypes = res.content === undefined ? '(no content array)' : `[${res.content.map((b) => b.type).join(', ')}]`;
+      const stopReason = res.stop_reason ?? '(none)';
+      throw new Error(`Anthropic response had no text content — unexpected shape. stop_reason=${stopReason}, block_types=${blockTypes}`);
     }
     return text;
   }
