@@ -2,6 +2,12 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-07-19 — PASS 3's first live-data runs: digest assembly confirmed correct; a real finding about what the task-reconciliation numbers actually mean
+
+- **PASS 3 run three times against real production data**, sharing `Run_ID` with a real PASS 2 run each time: digest assembly correct on real `Brain_Complete` rows throughout — numbered blocks, action labels, the `REPLY_NEEDED` draft, footer, pluralization all confirmed working on live data.
+- **Real finding, not a bug**: PASS 2.5's own report showed `handled=4 stale=62 open=13` (79 total) after recomputing every open task fresh, but PASS 3's digest showed `4 · 22 · 11` (37 total) for that same run. The gap is PASS 2.5's "write only on material change" rule — most freshly-computed verdicts matched what was already correctly stored, so nothing got written and those rows kept whichever `Run_ID` last actually touched them. PASS 3's task-reconciliation line reports **"what's newly reconciled or changed tonight,"** not the full backlog — correct behavior for a nightly digest, but a real distinction worth understanding, now documented in `docs/pass3-notes.md`.
+- No code changes this round — purely a documentation update from real-data observation.
+
 ## 2026-07-19 — PASS 2.5's first live write confirmed correct; the new diagnostic immediately found a real fix
 
 - **The diagnostic added earlier tonight paid off on the very next run**: rerunning PASS 2.5 `--live` against the same real data surfaced `stop_reason=max_tokens, block_types=[thinking]` — the model was spending its entire 1000-token budget on internal reasoning before ever producing the JSON answer, on genuinely complex clusters (cross-referencing several distinct sub-asks against many candidates). Happened on 3 distinct clusters across the dry-run and live-run, confirming a real recurring pattern, not a fluke.

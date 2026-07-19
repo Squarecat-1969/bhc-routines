@@ -26,6 +26,25 @@ filtered by this run's `Run_ID` (col B) and counting by `Verdict` (col H) —
 the same tab PASS 2.5 already wrote to. Keeps PASS 3 genuinely standalone
 without losing any real data.
 
+**Real finding from live data (2026-07-19): the counts mean "changed
+tonight," not "the full current backlog," and that's correct — but worth
+being explicit about.** PASS 2.5's own report showed `handled=4 stale=62
+open=13` (79 total) after recomputing every open task fresh. But PASS 3's
+digest showed `4 likely handled · 22 likely stale · 11 still open` (37
+total) for that same run. The gap isn't a bug: PASS 2.5's "write only on
+material change" rule means most of those 79 freshly-computed verdicts
+*matched* what was already correctly sitting in `Reconciliation_Queue` from
+earlier writes, so nothing got written and those rows kept whichever
+`Run_ID` last actually touched them (sometimes an older run, sometimes
+never touched at all if the row predates the TypeScript rebuild). PASS 3
+only counts rows genuinely tagged with *this* run — so the digest is
+reporting **"what's newly reconciled or changed tonight,"** not the total
+backlog. That's the right behavior for a nightly digest (Bobby shouldn't see
+the same 40+ unchanged items re-listed every night forever), but it's a
+real distinction worth understanding: **the digest's task-reconciliation
+line will generally under-report the true total open-reconciliation count**,
+by design, not by omission.
+
 ## Drift alerts are the one piece that genuinely can't be recovered standalone
 
 Spec 3b also wants a "Drift alert if any." Unlike the task-reconciliation
@@ -85,6 +104,13 @@ inclusion, the two Run_ID-filtered readers, and a full orchestration suite —
 normal digest posts once, dry-run posts nothing, all-clear posts the
 all-clear message, a Slack failure triggers the retry-then-alert path, only
 the specified run's rows are ever included, standalone runs warn about the
-drift-alert gap, never throws on a systemic failure). 342/342 across the
+drift-alert gap, never throws on a systemic failure). 387/387 across the
 whole repo, typecheck clean. `npm run pass3 -- --run-id <id> --dry-run` /
-`--live` exist. **Not yet run against production.**
+`--live` exist.
+
+**Run three times against real production data** (before and after PASS 2.5's
+token-limit fix, sharing `Run_ID` with a real PASS 2 run each time): digest
+assembly correct on real Brain_Complete rows every time — numbered blocks,
+action labels, the `REPLY_NEEDED` draft, footer, pluralization all confirmed.
+Real finding on the task-reconciliation line's meaning, documented above.
+**Not yet actually posted to `#aida`** (`--dry-run` only so far).
