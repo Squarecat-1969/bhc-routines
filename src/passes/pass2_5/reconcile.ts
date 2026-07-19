@@ -12,7 +12,20 @@ import type { ActivityLogCandidate, ReconciliationResult, TaskCluster } from './
 
 const STALE_THRESHOLD_DAYS = 7;
 const RECONCILIATION_MODEL = 'claude-sonnet-5';
-const RECONCILIATION_MAX_TOKENS = 1000;
+/**
+ * Raised from 1000 -> 3000 on 2026-07-19 after PASS 2.5's first live run
+ * against production: 2 of 79 clusters hit max_tokens with the ENTIRE
+ * budget consumed by a "thinking" content block, leaving zero tokens for
+ * the actual JSON answer (confirmed via the new stop_reason/block_types
+ * diagnostic in anthropic.ts's error — added specifically because this kind
+ * of failure needed real data to diagnose, not a guess). Both failing
+ * clusters involved genuinely complex multi-part asks (cross-referencing
+ * several distinct sub-requests against many candidate interactions), so
+ * the model reasonably wanted more room to think before answering — same
+ * "tune from a live result, not a guess" pattern as every other token-limit
+ * fix tonight and last night.
+ */
+const RECONCILIATION_MAX_TOKENS = 3000;
 
 export type ReconcileOutcome =
   | { readonly ok: true; readonly result: ReconciliationResult }

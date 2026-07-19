@@ -2,6 +2,13 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-07-19 — PASS 2.5's first live write confirmed correct; the new diagnostic immediately found a real fix
+
+- **The diagnostic added earlier tonight paid off on the very next run**: rerunning PASS 2.5 `--live` against the same real data surfaced `stop_reason=max_tokens, block_types=[thinking]` — the model was spending its entire 1000-token budget on internal reasoning before ever producing the JSON answer, on genuinely complex clusters (cross-referencing several distinct sub-asks against many candidates). Happened on 3 distinct clusters across the dry-run and live-run, confirming a real recurring pattern, not a fluke.
+- **Fixed**: `RECONCILIATION_MAX_TOKENS` raised `1000 → 3000` — same "tune from a live result" pattern as every other token-limit fix tonight and last night.
+- **The live write itself checked out**: 34 rows superseded in `Reconciliation_Queue`, matching the earlier dry-run's count exactly — real confirmation the write path is correct, not just the read/compute side.
+- 387/387 across the whole repo (no test asserted the old numeric constant), typecheck clean. Not yet reverified whether 3000 tokens is enough.
+
 ## 2026-07-19 — PASS 2.5's first live dry-run: strong reasoning quality confirmed; a real diagnostic gap found and fixed
 
 - **First live dry-run of PASS 2.5**, sharing `Run_ID` with a real PASS 2 run: 83 real open tasks, 79 clusters, 695 real Activity_Log rows. Reasoning quality genuinely strong, not just structurally valid — the model consistently and correctly distinguished `"Closed from queue"` administrative dismissals from actual proof of completion (a pattern that recurred dozens of times), and correctly downgraded a real evidence match to `medium` confidence rather than `high` when the evidence was topically close but didn't confirm the exact thing the task asked for.

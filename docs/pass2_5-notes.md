@@ -90,7 +90,7 @@ confidence, proposed date all unchanged), nothing gets written at all.
    sides of the 7-day boundary with synthetic dates, but the first live run
    is the real confirmation.
 
-## First live dry run (2026-07-19, sharing Run_ID with a real PASS 2 run)
+## First live dry run, then the real live write (2026-07-19, sharing Run_ID with a real PASS 2 run)
 
 Ran against 83 real open tasks, 79 clusters, 695 real Activity_Log rows. Real
 findings:
@@ -120,6 +120,28 @@ of this fix conflated the two. 3 new tests in a new `tests/anthropic.test.ts`
 (previously untested as its own unit, only exercised indirectly through
 PASS 2/2.5's integration suites).
 
+## The diagnostic paid off immediately — real cause found and fixed
+
+Rerunning against the same real data (this time `--live`, actually writing)
+surfaced the exact cause the new diagnostic was built for:
+`stop_reason=max_tokens, block_types=[thinking]`. The model was spending its
+entire 1000-token budget on internal reasoning before ever producing the
+JSON answer — for genuinely complex clusters (cross-referencing several
+distinct sub-asks against many candidate interactions), it ran out of room
+mid-thought. This happened on 3 distinct clusters across the dry-run and
+live-run (not the same cluster twice), confirming a real recurring pattern
+tied to task complexity, not a one-off fluke.
+
+**Fixed**: `RECONCILIATION_MAX_TOKENS` raised `1000 → 3000` — same "tune
+from a live result, not a guess" pattern as every other token-limit fix
+tonight and last night (PASS 2's enrichment call, PASS 4.5's batch sizing).
+
+**The live write itself checked out**: 34 rows superseded in
+`Reconciliation_Queue`, matching the earlier dry-run's count exactly —
+real confirmation the write path is correct, not just the read/compute side.
+**Not yet reverified** whether 3000 tokens is enough — same as every prompt/
+token-limit change tonight, the next live run is the real check.
+
 ## Status
 
 40 unit/integration tests plus 3 shared-client tests (in `tests/anthropic.test.ts`,
@@ -132,7 +154,10 @@ dry-run, fail-soft. 387/387 across the whole repo, typecheck clean. `npm run
 pass2_5:dry` / `npm run pass2_5:live` exist, plus `--run-id` to share a Run_ID
 with a specific PASS 2 run.
 
-**Run once against real production data**: 83 open tasks, 79 clusters, 695
-Activity_Log rows, reasoning quality confirmed strong on real edge cases, one
-real failure diagnosed and fixed (see above). Not yet run `--live` (only
-`--dry-run` so far).
+**Run three times against real production data** (`--dry-run`, then `--live`
+sharing the same `Run_ID`, then re-verified): 83 open tasks, 79 clusters, 695
+Activity_Log rows each time. Reasoning quality confirmed strong on real edge
+cases across all three runs. Two real bugs found and fixed: the diagnostic
+gap in `AnthropicClient` and the `max_tokens`/thinking-budget truncation
+itself. **Live write confirmed correct**: 34 rows superseded in
+`Reconciliation_Queue`, matching the dry-run's count exactly.
