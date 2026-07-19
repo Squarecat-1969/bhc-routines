@@ -4,6 +4,12 @@
  *   npm run pass2_5:dry     compute and print, write nothing (still calls the LLM)
  *   npm run pass2_5:live    writes to Reconciliation_Queue
  *   npm run pass2_5 -- --dry-run --limit 5
+ *   npm run pass2_5 -- --live --run-id LATE-EDITION-...   share a Run_ID with a specific
+ *                                                          PASS 2 run, so PASS 3's task-
+ *                                                          reconciliation line correlates
+ *                                                          correctly. Without this, PASS 2.5
+ *                                                          always generates its own fresh
+ *                                                          Run_ID, unrelated to any PASS 2 run.
  */
 
 import 'dotenv/config';
@@ -21,11 +27,12 @@ import { renderReport } from '../passes/pass2_5/report.js';
 interface Args {
   dryRun: boolean;
   limit: number | undefined;
+  runId: string | undefined;
   jsonOut: string | undefined;
 }
 
 function parseArgs(argv: readonly string[]): Args {
-  const args: Args = { dryRun: true, limit: undefined, jsonOut: undefined };
+  const args: Args = { dryRun: true, limit: undefined, runId: undefined, jsonOut: undefined };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     switch (a) {
@@ -41,6 +48,10 @@ function parseArgs(argv: readonly string[]): Args {
         args.limit = v;
         break;
       }
+      case '--run-id':
+        args.runId = argv[++i];
+        if (!args.runId) throw new Error('--run-id needs a value');
+        break;
       case '--json-out':
         args.jsonOut = argv[++i];
         if (!args.jsonOut) throw new Error('--json-out needs a path');
@@ -77,6 +88,7 @@ async function main(): Promise<void> {
     anthropic,
     logger,
     ...(args.limit !== undefined ? { limit: args.limit } : {}),
+    ...(args.runId !== undefined ? { runId: args.runId } : {}),
   });
 
   console.log(renderReport(report));
