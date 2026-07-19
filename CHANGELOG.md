@@ -2,6 +2,14 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-07-19 — PASS 5's first live run: real data confirmed correct, a real numeric-date-serial bug found and fixed in two passes
+
+- **PASS 5 run against real production data** (83 open tasks, 14 real `Brain_Complete` rows, 44 real Attio pipeline entries via the batched fetch, real `Zoom_Staging` count): mission status, counts, and brief text all confirmed correct — including a cross-check where PASS 5's `nextTouch=Ryan Crisman` lined up with a task PASS 2.5 had independently flagged that same night.
+- **One real bug, found by reading the output**: a plan item read `"Overdue since 46162 — High priority"` — a raw Excel/Sheets date serial (days since 1899-12-30) leaking verbatim into Bobby-facing text instead of a real date. `buildBucket1` had already correctly parsed the date for its own overdue-days math, but then discarded that parsed value and re-embedded the raw source string for display.
+- **Fixed** in `plan.ts`: the already-parsed date is now carried through and rendered via `iso()` for both the reason text and the `dueDate` field.
+- **Same bug class caught and fixed in PASS 2.5 too**, before it ever surfaced there: `clusterOpenTasks`'s `latestDueDate` used a raw lexicographic string sort, which would rank a numeric serial *after* a real ISO date purely alphabetically regardless of actual calendar order — and that value gets written directly into `Reconciliation_Queue`'s `Proposed_Completion_Date` column.
+- 2 new regression tests reproducing the exact `"46162"` shape found live. 389/389 across the whole repo, typecheck clean. Not yet reverified against a fresh live PASS 5 `--live` run.
+
 ## 2026-07-19 — PASS 3's first live-data runs: digest assembly confirmed correct; a real finding about what the task-reconciliation numbers actually mean
 
 - **PASS 3 run three times against real production data**, sharing `Run_ID` with a real PASS 2 run each time: digest assembly correct on real `Brain_Complete` rows throughout — numbered blocks, action labels, the `REPLY_NEEDED` draft, footer, pluralization all confirmed working on live data.

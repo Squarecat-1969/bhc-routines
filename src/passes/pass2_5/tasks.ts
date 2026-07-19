@@ -13,6 +13,7 @@
  */
 
 import { RANGES } from '../../config/constants.js';
+import { iso, parseFlexibleDate, type CivilDate } from '../../lib/dates.js';
 import { cell, type SheetsClient } from '../../lib/sheets.js';
 import type { OpenTask, TaskCluster } from './types.js';
 
@@ -83,7 +84,17 @@ export function clusterOpenTasks(tasks: readonly OpenTask[]): readonly TaskClust
   for (const [clusterKey, clusterTasks] of groups) {
     const sorted = [...clusterTasks].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     const first = sorted[0]!;
-    const dueDates = sorted.map((t) => t.dueDate).filter((d) => d !== '');
+    // Sort by actual parsed calendar date, not raw lexicographic string
+    // order — the same numeric-Excel-serial bug found in PASS 5's plan
+    // building (a raw serial like "46162" would otherwise rank after any
+    // ISO string starting with "1" or "2" purely alphabetically, picking
+    // the wrong "latest" due date and leaking the raw serial into
+    // Reconciliation_Queue's Proposed_Completion_Date for Bobby to see).
+    const parsedDueDates = sorted
+      .map((t) => parseFlexibleDate(t.dueDate))
+      .filter((d): d is CivilDate => d !== null);
+    const latest = parsedDueDates.length > 0 ? parsedDueDates.sort().at(-1)! : null;
+
     clusters.push({
       clusterKey,
       tasks: sorted,
@@ -91,7 +102,7 @@ export function clusterOpenTasks(tasks: readonly OpenTask[]): readonly TaskClust
       contactName: first.contactName,
       description: first.description,
       earliestCreatedAt: first.createdAt,
-      latestDueDate: dueDates.length > 0 ? dueDates.sort().at(-1)! : '',
+      latestDueDate: iso(latest),
     });
   }
 

@@ -15,7 +15,7 @@
  * once across the merged pool.
  */
 
-import { diffDays, isSameOrBefore, parseFlexibleDate, type CivilDate } from '../../lib/dates.js';
+import { diffDays, iso, isSameOrBefore, parseFlexibleDate, type CivilDate } from '../../lib/dates.js';
 import type { CadenceRow, OpenTask, Pass5BrainCompleteRow, PlanItem, PlanItemType } from './types.js';
 
 const REASON_TRUNCATE_LEN = 100;
@@ -48,18 +48,29 @@ function buildBucket1(openTasks: readonly OpenTask[], today: CivilDate): readonl
     .map((t) => {
       const due = parseFlexibleDate(t.dueDate);
       const daysOverdue = due ? diffDays(today, due) : -1;
-      return { t, daysOverdue };
+      return { t, due, daysOverdue };
     })
     .filter((x) => x.daysOverdue > 0 && OVERDUE_PRIORITIES.has(x.t.priority));
 
   overdue.sort((a, b) => b.daysOverdue - a.daysOverdue); // days overdue desc
 
-  return overdue.slice(0, 3).map(({ t }) => ({
-    ...blankItem('task', t.contactName, t.contactId, `Overdue since ${t.dueDate} — ${t.priority} priority`),
-    description: t.description,
-    taskId: t.taskId,
-    dueDate: t.dueDate,
-  }));
+  return overdue.slice(0, 3).map(({ t, due }) => {
+    // due is guaranteed non-null here — the filter above already required
+    // daysOverdue > 0, which only happens when parseFlexibleDate succeeded.
+    // Real bug found on a live run (2026-07-19): using the raw t.dueDate
+    // string directly could surface a numeric Excel/Sheets date serial
+    // (e.g. "46162") verbatim in Bobby-facing text instead of a real date,
+    // when the underlying cell was stored/read as a number rather than an
+    // ISO string. iso(due) always produces a clean YYYY-MM-DD regardless of
+    // how the source cell was shaped.
+    const dueDateDisplay = iso(due);
+    return {
+      ...blankItem('task', t.contactName, t.contactId, `Overdue since ${dueDateDisplay} — ${t.priority} priority`),
+      description: t.description,
+      taskId: t.taskId,
+      dueDate: dueDateDisplay,
+    };
+  });
 }
 
 function buildBucket2(brainCompleteRows: readonly Pass5BrainCompleteRow[]): readonly Omit<PlanItem, 'priority'>[] {

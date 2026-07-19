@@ -78,4 +78,16 @@ describe('clusterOpenTasks', () => {
     expect(clusters[0]!.earliestCreatedAt).toBe('2026-07-01');
     expect(clusters[0]!.latestDueDate).toBe('2026-07-20');
   });
+
+  it('picks the actual latest calendar date, not the lexicographically-largest string, when a numeric Excel/Sheets date serial is mixed with an ISO string — same bug class found on a real PASS 5 production run', () => {
+    // 46162 (an Excel/Sheets serial) sorts AFTER "2026-07-20" as raw
+    // strings ("4" > "2"), but resolves to a real calendar date earlier
+    // than 2026-07-20. The fix must compare actual parsed dates.
+    const clusters = clusterOpenTasks([
+      task({ taskId: 'T1', dueDate: '46162' }),
+      task({ taskId: 'T2', dueDate: '2026-07-20' }),
+    ]);
+    expect(clusters[0]!.latestDueDate).not.toBe('46162');
+    expect(clusters[0]!.latestDueDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
 });

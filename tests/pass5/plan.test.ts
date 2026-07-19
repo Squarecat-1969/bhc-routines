@@ -68,6 +68,19 @@ describe('buildPlanItems — bucket 1: hard deadline tasks', () => {
     const items = buildPlanItems([task({ priority: 'Urgent', dueDate: '2026-07-01' })], [], [], TODAY);
     expect(items[0]!.reason).toBe('Overdue since 2026-07-01 — Urgent priority');
   });
+
+  it('normalizes a numeric Excel/Sheets date serial to a real date, rather than leaking it verbatim — found on a real production run ("Overdue since 46162")', () => {
+    // 46162 is a real Excel/Sheets serial (days since 1899-12-30) that
+    // resolves to a date well before TODAY, matching the live bug: the
+    // task's Due_Date cell was read/stored as a raw number instead of an
+    // ISO string, and the raw value leaked straight into Bobby-facing text.
+    const items = buildPlanItems([task({ priority: 'High', dueDate: '46162' })], [], [], TODAY);
+    expect(items).toHaveLength(1);
+    expect(items[0]!.reason).not.toContain('46162');
+    expect(items[0]!.reason).toMatch(/Overdue since \d{4}-\d{2}-\d{2} — High priority/);
+    expect(items[0]!.dueDate).not.toBe('46162');
+    expect(items[0]!.dueDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
 });
 
 describe('buildPlanItems — bucket 2: reply-needed emails', () => {
