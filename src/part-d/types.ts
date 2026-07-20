@@ -56,6 +56,15 @@ export interface WriteRowResult {
   /** Attio task IDs created in 4d — QA reads these back; if exactly one, it's also written to Activity_Log col T per spec. */
   readonly taskIds: readonly string[];
   /**
+   * Explicit, set directly from the identity-gate result rather than left
+   * for a caller to infer from parsing `writes`' human-readable strings —
+   * confirm.ts (STEP 6) needs exactly this for its "{g} Google · {a} Attio"
+   * counts, and string-matching a log line meant for humans is the kind of
+   * coupling that silently breaks the moment the wording changes.
+   */
+  readonly googleWritten: boolean;
+  readonly attioWritten: boolean;
+  /**
    * 4f's lighter loop, one entry per secondary in writeTargets.secondary.
    * Per spec: "Secondary QA failure flags that secondary but does NOT block
    * primary V=TRUE" — each secondary's own ok/warnings are tracked

@@ -27,7 +27,7 @@ import type { SheetsClient } from '../lib/sheets.js';
 import type { ItemAction } from './parse-command.js';
 import { qaVerifyAndClose, type QAResult } from './qa-readback.js';
 import type { RunSet, RunSetRow } from './load-run-set.js';
-import type { WriteRowInput } from './types.js';
+import type { WriteRowInput, WriteRowResult } from './types.js';
 import { writeRow } from './write-row.js';
 
 export type RowOutcome =
@@ -42,6 +42,8 @@ export interface AppliedRowResult {
   readonly digestPosition: number | null;
   readonly bhcId: string | null; // null only for skipped_invalid_position, where there's no row to attribute this to
   readonly outcome: RowOutcome;
+  /** Present only for 'resolved' rows — confirm.ts's own source of truth for Google/Attio/task counts, rather than reverse-engineering them from QA's check labels (which exist to verify writes, not to enumerate them for a different caller). */
+  readonly writeResult?: WriteRowResult;
   readonly qa?: QAResult;
   readonly warnings: readonly string[];
 }
@@ -94,7 +96,7 @@ async function resolveOneRow(
   const input = toWriteRowInput(row);
   const writeResult = await writeRow(sheets, attio, masterId, input);
   const qa = await qaVerifyAndClose(sheets, attio, masterId, input, writeResult);
-  return { digestPosition: row.digestPosition, bhcId: row.bhcId, outcome: 'resolved', qa, warnings: [...writeResult.warnings, ...qa.warnings] };
+  return { digestPosition: row.digestPosition, bhcId: row.bhcId, outcome: 'resolved', writeResult, qa, warnings: [...writeResult.warnings, ...qa.warnings] };
 }
 
 export async function applyProceed(sheets: SheetsClient, runSet: RunSet): Promise<BranchResult> {

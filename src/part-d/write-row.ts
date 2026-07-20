@@ -430,7 +430,7 @@ export async function writeRow(
   // So `ok` here just means "completed without a fatal, uncaught error" —
   // callers wanting to know about partial failures should check
   // warnings.length, which is the real, itemized signal, not this boolean.
-  return { ok: true, bhcId, activityId, writes, warnings, taskIds, secondaries };
+  return { ok: true, bhcId, activityId, writes, warnings, taskIds, googleWritten: googleOk, attioWritten: attioOk, secondaries };
 }
 
 /**
