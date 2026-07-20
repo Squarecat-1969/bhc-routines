@@ -197,6 +197,21 @@ export class FakeBackend {
         if (range === RANGES.pipelineCachePriorIds) return send(200, { values: this.config.pipelineCachePriorIds ?? [] });
         if (range === RANGES.nameConflictsAll) return send(200, { values: this.config.nameConflicts ?? [] });
         if (range === RANGES.brainCompleteData) return send(200, { values: this.config.brainComplete ?? [] });
+        if (range?.startsWith('Brain_Complete')) {
+          // Narrower single-row reads (e.g. Brain_Complete!U10:U10, used by
+          // branch.ts's read-then-append correction logic) — same slicing
+          // fix as Activity_Log needed, for the same reason: the exact
+          // range string PASS 1/5 use for the bulk read doesn't match a
+          // column-scoped row read, so without this it would silently fall
+          // through to an empty-array default instead of the row's real data.
+          const parsed = parseSingleRowRange(range);
+          if (parsed) {
+            const rows = this.config.brainComplete ?? [];
+            const fullRow = (rows[parsed.row - 2] ?? []) as unknown[]; // data starts at row 2
+            const slice = fullRow.slice(parsed.startCol, parsed.endCol + 1).map((v) => String(v ?? ''));
+            return send(200, { values: [slice] });
+          }
+        }
         if (range === RANGES.threadStagingData) return send(200, { values: this.config.threadStaging ?? [] });
         if (range?.startsWith('Activity_Log')) {
           const rows = this.config.activityLog ?? [];
@@ -270,17 +285,20 @@ export class FakeBackend {
         }
       }
 
-      if (action === 'update' && (range?.startsWith('Activity_Log') || range?.startsWith('Contact_History'))) {
-        // A correction write (qa-readback.ts) needs to actually modify the
-        // stored full-row array, not just be acknowledged — otherwise the
-        // re-read qa-readback.ts does immediately after would still see the
-        // pre-correction value, and every "corrects on retry" test would be
-        // unable to observe the correction actually working.
+      if (action === 'update' && (range?.startsWith('Activity_Log') || range?.startsWith('Contact_History') || range?.startsWith('Brain_Complete'))) {
+        // A correction write (qa-readback.ts, branch.ts) needs to actually
+        // modify the stored full-row array, not just be acknowledged —
+        // otherwise the re-read done immediately after would still see the
+        // pre-write value.
         const parsed = parseSingleRowRange(range);
         if (parsed) {
-          const store = range.startsWith('Activity_Log') ? this.config.activityLog : this.config.contactHistory;
+          const store = range.startsWith('Activity_Log')
+            ? this.config.activityLog
+            : range.startsWith('Contact_History')
+              ? this.config.contactHistory
+              : this.config.brainComplete;
           if (store) {
-            const idx = parsed.row - 2; // both tabs' data starts at row 2
+            const idx = parsed.row - 2; // all three tabs' data starts at row 2
             const fullRow = (store[idx] ?? []) as unknown[];
             const newValues = (((body as { values?: unknown[][] })?.values ?? [[]])[0] ?? []) as unknown[];
             const updated = [...fullRow];
