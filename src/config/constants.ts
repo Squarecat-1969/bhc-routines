@@ -106,8 +106,8 @@ export const RANGES = {
   threadStagingData: 'Thread_Staging!A2:W',
   // PASS 0 target.
   activityLogData: 'Activity_Log!A2:U',
-  reconciliationQueueAll: 'Reconciliation_Queue!A2:N',
-  reconciliationQueueAppend: 'Reconciliation_Queue!A2:N',
+  reconciliationQueueAll: 'Reconciliation_Queue!A2:O',
+  reconciliationQueueAppend: 'Reconciliation_Queue!A2:O',
   // PASS 2.5 target — verified live 2026-07-19: real tab is Tasks_Open (not
   // Tasks_Log, a stale name from an old memory summary), 13 cols A-M matching
   // the spec exactly.

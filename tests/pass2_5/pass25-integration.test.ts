@@ -81,7 +81,7 @@ describe('PASS 2.5 orchestration — evidence found', () => {
     expect(report.handledCount).toBe(1);
     expect(report.enqueuedCount).toBe(1);
 
-    const append = sheetsBackend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Reconciliation_Queue!A2:N');
+    const append = sheetsBackend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Reconciliation_Queue!A2:O');
     expect(append).toBeDefined();
     const row = (append!.body as { values: unknown[][] }).values[0]!;
     expect(row[7]).toBe('LIKELY_HANDLED_EVIDENCE');
@@ -149,7 +149,7 @@ describe('PASS 2.5 orchestration — SUPERSEDE-IN-PLACE', () => {
     expect(report.supersededCount).toBe(1);
     expect(report.enqueuedCount).toBe(0);
 
-    const update = sheetsBackend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Reconciliation_Queue!A2:N2');
+    const update = sheetsBackend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Reconciliation_Queue!A2:O2');
     expect(update).toBeDefined();
     const row = (update!.body as { values: unknown[][] }).values[0]!;
     expect(row[0]).toBe('RECON-OLD'); // same Recon_ID — in place, not a new one

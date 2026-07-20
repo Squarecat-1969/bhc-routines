@@ -110,13 +110,14 @@ describe('PASS 0 — INFERRED (contact+72h) match', () => {
     );
     expect(report.inferredMatches).toHaveLength(1);
 
-    const enqueue = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Reconciliation_Queue!A2:N');
+    const enqueue = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Reconciliation_Queue!A2:O');
     expect(enqueue).toBeDefined();
     const row = (enqueue!.body as { values: unknown[][] }).values[0]!;
     expect(row[2]).toBe('placeholder_reconciliation'); // C Item_Type
     expect(row[3]).toBe(''); // D Source_Task_ID — blank, not a task
     expect(row[4]).toBe('BHC-00001'); // E BHC_ID
     expect(row[13]).toBe(''); // N Status — awaiting
+    expect(row[14]).toBe('ACT-1'); // O Placeholder_Activity_ID — what Aida's Accept handler resolves
 
     const activityLogWrite = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range?.startsWith('Activity_Log'));
     expect(activityLogWrite).toBeUndefined();

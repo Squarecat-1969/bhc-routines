@@ -11,12 +11,13 @@
  *     is unambiguous."
  *   - Contact+72h-window (INFERRED) match → a heuristic, not a fact. Per
  *     §4.10's own rule ("an inferred resolution is always proposed, never
- *     silently executed"), this stages a Reconciliation_Queue row instead —
- *     confirmed reusable after reading both bhc-aida's reconciliation-queue
- *     reader (generic itemType passthrough) and its commit-route Accept
- *     handler (currently task-specific; a PASS0 row's Accept action needs a
- *     follow-up commit-route change before it's actionable in Aida — see the
- *     notes doc).
+ *     silently executed"), this stages a Reconciliation_Queue row instead.
+ *     Col O (Placeholder_Activity_ID) carries the placeholder's Activity_ID
+ *     explicitly — added 2026-07-19 alongside the bhc-aida commit/route.ts
+ *     fix that makes this row's Accept action actually work (previously it
+ *     400'd unconditionally on a blank Source_Task_ID, since this row type
+ *     has no task to close — see docs/pass0-and-pass1-notes.md and
+ *     bhc-aida's own commit/route.ts comments for the full history).
  *   - AMBIGUOUS (>1 fallback candidate) → leave the placeholder open, tag the
  *     candidate Thread_Staging rows' Brain_Notes, let them flow through PASS 2
  *     normally (their Row_Status is NOT marked PROCESSED).
@@ -163,7 +164,11 @@ async function runPass0Inner(opts: Pass0Options & { runId: string; startedAt: st
             reconId,
             runId,
             'placeholder_reconciliation',
-            '', // Source_Task_ID — intentionally blank, not a task (see notes doc)
+            '', // Source_Task_ID — intentionally blank, not a task (see notes doc).
+                // The correlation ID this row's Accept action actually needs lives
+                // in col O (Placeholder_Activity_ID) instead — added specifically
+                // so bhc-aida's commit/route.ts Accept handler has a real field to
+                // read rather than parsing it back out of Item_Description's prose.
             placeholder.contactId,
             placeholder.contactName,
             `Placeholder ${placeholder.activityId} (opened ${placeholder.timestamp}) may match outbound ` +
@@ -176,6 +181,7 @@ async function runPass0Inner(opts: Pass0Options & { runId: string; startedAt: st
             'medium',
             result.reason,
             '', // Status — awaiting
+            placeholder.activityId, // Placeholder_Activity_ID (col O) — see note on col D above
           ],
         ]);
       }

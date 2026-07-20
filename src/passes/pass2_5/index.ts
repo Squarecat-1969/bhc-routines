@@ -121,7 +121,7 @@ async function runPass25Inner(opts: Pass25Options & { runId: string; startedAt: 
       }
       const row = buildReconciliationQueueRow(runId, supersedeTarget.reconId, result);
       if (!dryRun) {
-        await sheets.update(`Reconciliation_Queue!A${supersedeTarget.sheetRow}:N${supersedeTarget.sheetRow}`, [row]);
+        await sheets.update(`Reconciliation_Queue!A${supersedeTarget.sheetRow}:O${supersedeTarget.sheetRow}`, [row]);
       }
       supersededCount += 1;
     } else {

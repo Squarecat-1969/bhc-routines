@@ -68,14 +68,15 @@ describe('isMaterialChange', () => {
 });
 
 describe('buildReconciliationQueueRow', () => {
-  it('produces the exact 14-column A-N shape with Status blank', () => {
+  it('produces the exact 15-column A-O shape with Status blank and Placeholder_Activity_ID always blank (PASS 0 field only)', () => {
     const row = buildReconciliationQueueRow('RUN-1', 'RECON-1', result({ verdict: 'LIKELY_HANDLED_EVIDENCE', evidenceQuote: 'signed', evidenceSource: 'ACT-1', confidence: 'high' }));
-    expect(row).toHaveLength(14);
+    expect(row).toHaveLength(15);
     expect(row[0]).toBe('RECON-1');
     expect(row[1]).toBe('RUN-1');
     expect(row[2]).toBe('task');
     expect(row[3]).toBe('T1'); // comma-joined Task_IDs
     expect(row[13]).toBe(''); // Status — always blank, awaiting review
+    expect(row[14]).toBe(''); // Placeholder_Activity_ID — PASS 0's field only, never set here
   });
 
   it('joins multiple task IDs with a comma', () => {

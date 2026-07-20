@@ -87,5 +87,6 @@ export function buildReconciliationQueueRow(runId: string, reconId: string, resu
     result.confidence, // L Confidence
     result.brainReasoning, // M Brain_Reasoning
     '', // N Status — blank, awaiting Bobby's review
+    '', // O Placeholder_Activity_ID — PASS 0's field only; always blank for a task row
   ];
 }
