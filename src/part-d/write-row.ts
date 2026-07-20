@@ -60,6 +60,7 @@ import type { MasterIdIndex } from '../passes/pass4/load.js';
 import type { SheetsClient } from '../lib/sheets.js';
 import { iso, isBefore, parseFlexibleDate, type CivilDate } from '../lib/dates.js';
 import { verifyAttioRecordOwnership, verifyGoogleRowOwnership } from './identity-gate.js';
+import { sanitizeField } from './sensitive-data.js';
 import type { SecondaryWriteResult, StagedTask, WriteRowInput, WriteRowResult } from './types.js';
 
 const OUTCOME_DEFAULT = 'Neutral';
@@ -96,8 +97,18 @@ export async function writeRow(
   const nowIso = now.toISOString();
   const dateOnly = nowIso.slice(0, 10);
 
-  const { bhcId, contactName, direction, subject, runningSummary, writeTargets, tasks } = input;
-  const { primary } = writeTargets;
+  const { bhcId, contactName, direction, writeTargets } = input;
+  // subject/runningSummary are let-bound, not const — reassigned to their
+  // sanitized versions right below, so every downstream use in this
+  // function (Activity_Log, Contact_History, secondaries' [cc] subject)
+  // automatically gets the sanitized value without touching each call site.
+  let subject = input.subject;
+  let runningSummary = input.runningSummary;
+  // let-bound, not const — the sensitive-data gate below reassigns this to
+  // a sanitized copy (WriteTargetsPrimary's fields are readonly, so
+  // mutating primary.google/.attio/.personal_context in place isn't legal;
+  // reassigning the whole object is).
+  let primary = writeTargets.primary;
 
   // Identity gate — check both write targets up front, before anything is
   // written, so a withheld Google write doesn't leave Activity_Log pointing
@@ -114,6 +125,62 @@ export async function writeRow(
     if (problem) warnings.push(problem);
     else attioOk = true;
   }
+
+  // Sensitive-data gate — spec non-negotiable: "Sensitive data never
+  // written. If seen in Write_Targets or personal_context: skip and flag."
+  // Same "check everything up front, before any write happens" principle
+  // as the identity gate above — every genuinely free-text field this row
+  // could write gets scanned here, once, before STEP 4a even starts. Only
+  // the actual free-text fields are scanned; Channel/Direction/Outcome are
+  // restricted enums (ChannelValue/DirectionValue/OutcomeValue) and are
+  // structurally incapable of carrying a secret, so scanning them would be
+  // pure overhead with zero chance of ever matching.
+  {
+    const subjectCheck = sanitizeField(subject, 'subject');
+    subject = subjectCheck.value;
+    if (subjectCheck.warning) warnings.push(subjectCheck.warning);
+
+    const summaryCheck = sanitizeField(runningSummary, 'runningSummary');
+    runningSummary = summaryCheck.value;
+    if (summaryCheck.warning) warnings.push(summaryCheck.warning);
+  }
+  if (primary.google) {
+    const ceCheck = sanitizeField(primary.google.fields.CE, 'Google fields.CE (summary)');
+    if (ceCheck.warning) {
+      warnings.push(ceCheck.warning);
+      primary = { ...primary, google: { ...primary.google, fields: { ...primary.google.fields, CE: '' } } };
+    }
+  }
+  if (primary.attio?.fields.last_meeting_summary) {
+    const summaryCheck = sanitizeField(primary.attio.fields.last_meeting_summary, 'Attio last_meeting_summary');
+    if (summaryCheck.warning) {
+      warnings.push(summaryCheck.warning);
+      primary = { ...primary, attio: { ...primary.attio, fields: { ...primary.attio.fields, last_meeting_summary: '' } } };
+    }
+  }
+  if (primary.personal_context) {
+    const { personal_notes_extract, topics_of_interest_extract } = primary.personal_context;
+    let notesExtract = personal_notes_extract;
+    let topicsExtract = topics_of_interest_extract;
+    if (notesExtract) {
+      const check = sanitizeField(notesExtract, 'personal_context.personal_notes_extract');
+      notesExtract = check.value;
+      if (check.warning) warnings.push(check.warning);
+    }
+    if (topicsExtract) {
+      const check = sanitizeField(topicsExtract, 'personal_context.topics_of_interest_extract');
+      topicsExtract = check.value;
+      if (check.warning) warnings.push(check.warning);
+    }
+    primary = { ...primary, personal_context: { ...primary.personal_context, personal_notes_extract: notesExtract, topics_of_interest_extract: topicsExtract } };
+  }
+  const sanitizedTasks = input.tasks.map((task) => {
+    const check = sanitizeField(task.description, `task description ("${task.description.slice(0, 30)}...")`);
+    if (!check.warning) return task;
+    warnings.push(check.warning);
+    return { ...task, description: check.value };
+  });
+  const tasks = sanitizedTasks;
 
   // Fetch the Attio person record ONCE, up front, and reuse it for LinkedIn
   // extraction below AND both personal-context reads in 4b.5 — not three
@@ -349,7 +416,12 @@ export async function writeRow(
       else secAttioOk = true;
     }
 
-    const roleNote = secondary.attio?.fields.last_meeting_summary || 'Secondary contact on this thread.';
+    const roleNoteCheck = sanitizeField(
+      secondary.attio?.fields.last_meeting_summary || 'Secondary contact on this thread.',
+      `secondary ${secondary.bhc_id} role note`,
+    );
+    if (roleNoteCheck.warning) secWarnings.push(roleNoteCheck.warning);
+    const roleNote = roleNoteCheck.value || 'Secondary contact on this thread.'; // sanitizeField can return '' on a hit — fall back to the same generic line rather than write nothing
     const secActivityId = makeActivityId(now);
 
     let secOk = true;

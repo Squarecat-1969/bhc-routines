@@ -458,3 +458,111 @@ describe('writeRow — 4f secondary contacts (lighter loop)', () => {
     expect(activityAppends).toHaveLength(1); // primary only
   });
 });
+
+describe('writeRow — sensitive-data gate (added after the fact, found missing while building confirm.ts)', () => {
+  it('blanks a running summary containing a credit card number and flags it, rather than writing it', async () => {
+    const { sheets, attio, masterId } = await setup({
+      entries: [], people: {}, masterId: MASTER_ID_ROWS, contactsHeader: [], contacts: [],
+    });
+    const result = await writeRow(sheets, attio, masterId, baseInput({
+      runningSummary: 'Alice said her card is 4111111111111111, please use it for the deposit.',
+    }));
+
+    expect(result.warnings.some((w) => w.includes('credit_card'))).toBe(true);
+    expect(result.warnings.some((w) => w.includes('4111111111111111'))).toBe(false); // never echoes the secret itself
+
+    const append = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Activity_Log!A1');
+    const row = (append!.body as { values: unknown[][] }).values[0]!;
+    expect(row[9]).toBe(''); // J Body — blanked, not the original text with the card number
+  });
+
+  it('blanks a subject line containing an SSN and flags it', async () => {
+    const { sheets, attio, masterId } = await setup({
+      entries: [], people: {}, masterId: MASTER_ID_ROWS, contactsHeader: [], contacts: [],
+    });
+    const result = await writeRow(sheets, attio, masterId, baseInput({ subject: 'SSN 123-45-6789 for the file' }));
+    expect(result.warnings.some((w) => w.includes('ssn'))).toBe(true);
+    const append = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Activity_Log!A1');
+    const row = (append!.body as { values: unknown[][] }).values[0]!;
+    expect(row[8]).toBe(''); // I Subject — blanked
+  });
+
+  it('blanks Attio last_meeting_summary when it contains a credential, still writes the rest of the row', async () => {
+    const { sheets, attio, masterId } = await setup({
+      entries: [],
+      people: { 'rec-alice': { name: 'Alice Nguyen', bhcContactId: 'BHC-1' } },
+      masterId: MASTER_ID_ROWS, contactsHeader: [], contacts: [],
+    });
+    const result = await writeRow(sheets, attio, masterId, baseInput({}, {
+      primary: { bhc_id: 'BHC-1', attio: { record_id: 'rec-alice', fields: { last_meeting_summary: 'password: hunter2 shared for the portal' } } },
+    }));
+
+    expect(result.warnings.some((w) => w.includes('credential'))).toBe(true);
+    expect(backend.patched.get('rec-alice')?.['last_meeting_summary']).toBe('');
+    expect(result.ok).toBe(true); // the row still completes — sensitive-data withholding is per-field, not a whole-row abort
+  });
+
+  it('blanks a personal_context extract containing a bank account number', async () => {
+    const { sheets, attio, masterId } = await setup({
+      entries: [], people: {}, masterId: MASTER_ID_ROWS, contactsHeader: [], contacts: [],
+    });
+    await writeRow(sheets, attio, masterId, baseInput({}, {
+      primary: {
+        bhc_id: 'BHC-1',
+        google: { google_row: 10, fields: { BZ: 'x', CA: 'Email', CB: 'Inbound', CD: 'x', CE: 'x', CG: 'Positive' } },
+        personal_context: { personal_notes_extract: 'account number: 000123456789 for the wire', topics_of_interest_extract: '', conversation_trigger_extract: '' },
+      },
+    }));
+    // No Contacts!AI write at all — the extract was blanked before the personal-context block even had non-empty text to act on
+    const aiWrite = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range?.startsWith('Contacts!AI'));
+    expect(aiWrite).toBeUndefined();
+  });
+
+  it('blanks a task description containing a credit card number, keeps the task itself (with due date/priority intact)', async () => {
+    const { sheets, attio, masterId } = await setup({
+      entries: [], people: {}, masterId: MASTER_ID_ROWS, contactsHeader: [], contacts: [],
+    });
+    const result = await writeRow(sheets, attio, masterId, baseInput({
+      tasks: [{ description: 'Charge card 4111111111111111 for the deposit', due_date: '2026-07-25', priority: 'High' }],
+    }));
+    expect(result.warnings.some((w) => w.includes('credit_card'))).toBe(true);
+    const append = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Tasks_Open!A1');
+    const row = (append!.body as { values: unknown[][] }).values[0]!;
+    expect(row[6]).toBe(''); // G Task description — blanked
+    expect(row[7]).toBe('2026-07-25'); // H due date — untouched
+    expect(row[9]).toBe('High'); // J priority — untouched
+  });
+
+  it('blanks a secondary\'s role note when it contains sensitive data, independent of the primary', async () => {
+    const { sheets, attio, masterId } = await setup({
+      entries: [],
+      people: { 'rec-bob': { name: 'Bob Chen', bhcContactId: 'BHC-2' } },
+      masterId: [...MASTER_ID_ROWS, ['BHC-2', 'Bob Chen', 'ATTIO', '', 'rec-bob', '']],
+      contactsHeader: [], contacts: [],
+    });
+    const result = await writeRow(sheets, attio, masterId, baseInput({}, {
+      primary: { bhc_id: 'BHC-1' },
+      secondary: [{ bhc_id: 'BHC-2', attio: { record_id: 'rec-bob', fields: { last_meeting_summary: 'SSN 123-45-6789 on file' } } }],
+    }));
+    expect(result.secondaries[0]!.warnings.some((w) => w.includes('ssn'))).toBe(true);
+    // Falls back to the generic role-note line rather than writing nothing at all
+    const activityAppends = backend.sheetsWrites.filter((w) => (w.body as { range?: string }).range === 'Activity_Log!A1');
+    const secRow = (activityAppends[1]!.body as { values: unknown[][] }).values[0]!;
+    expect(secRow[9]).toBe('Secondary contact on this thread.');
+  });
+
+  it('leaves an ordinary row completely untouched — no false positives on normal content', async () => {
+    const { sheets, attio, masterId } = await setup({
+      entries: [], people: {}, masterId: MASTER_ID_ROWS, contactsHeader: [], contacts: [],
+    });
+    const result = await writeRow(sheets, attio, masterId, baseInput({
+      subject: 'Re: Q3 contract renewal',
+      runningSummary: 'Alice confirmed the terms and wants a call next Tuesday at 3pm.',
+    }));
+    expect(result.warnings.filter((w) => w.includes('Sensitive data'))).toHaveLength(0);
+    const append = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Activity_Log!A1');
+    const row = (append!.body as { values: unknown[][] }).values[0]!;
+    expect(row[8]).toBe('Re: Q3 contract renewal');
+    expect(row[9]).toBe('Alice confirmed the terms and wants a call next Tuesday at 3pm.');
+  });
+});
