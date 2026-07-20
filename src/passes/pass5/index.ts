@@ -18,7 +18,7 @@ import { loadBrainCompleteRowsForRun } from './brain-complete-read.js';
 import { computeCounts } from './counts.js';
 import { writeDailyBrief } from './daily-brief-write.js';
 import { computeMissionStatus, deriveEntryStages } from './mission-status.js';
-import { buildPlanItems } from './plan.js';
+import { buildOverflowItems, buildPlanItems } from './plan.js';
 import { countMeetingsToReview } from './zoom-review-count.js';
 import type { CadenceRow, GamePlan, Pass5Options, Pass5Report } from './types.js';
 
@@ -35,6 +35,7 @@ function emptyReport(partial: { runId: string; dryRun: boolean; startedAt: strin
     pipelineEntryCount: 0,
     meetingsToReviewCount: 0,
     planItemCount: 0,
+    overflowItemCount: 0,
     written: false,
     gamePlan: null,
     warnings: [],
@@ -104,6 +105,7 @@ async function runPass5Inner(opts: Pass5Options, deps: RunPass5Deps, startedAt: 
 
   logger.info('5d — building the plan');
   const plan = buildPlanItems(openTasks, brainCompleteRows, cadenceResults, today);
+  const overflow = buildOverflowItems(openTasks, brainCompleteRows, cadenceResults, today, plan);
 
   logger.info('5e — generating brief text');
   const brief = buildBriefText(counts, brainCompleteRows, missionStatus, plan[0] ?? null);
@@ -113,6 +115,7 @@ async function runPass5Inner(opts: Pass5Options, deps: RunPass5Deps, startedAt: 
     missionStatus,
     counts,
     plan,
+    overflow,
     generatedAt: new Date().toISOString(),
     runId,
   };
@@ -136,7 +139,7 @@ async function runPass5Inner(opts: Pass5Options, deps: RunPass5Deps, startedAt: 
     }
   }
 
-  logger.info(`5.done — plan_items=${plan.length} written=${written}`);
+  logger.info(`5.done — plan_items=${plan.length} overflow_items=${overflow.length} written=${written}`);
 
   return {
     runId,
@@ -150,6 +153,7 @@ async function runPass5Inner(opts: Pass5Options, deps: RunPass5Deps, startedAt: 
     pipelineEntryCount: entries.length,
     meetingsToReviewCount,
     planItemCount: plan.length,
+    overflowItemCount: overflow.length,
     written,
     gamePlan,
     warnings,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildPlanItems } from '../../src/passes/pass5/plan.js';
+import { buildOverflowItems, buildPlanItems } from '../../src/passes/pass5/plan.js';
 import type { CadenceRow, OpenTask, Pass5BrainCompleteRow } from '../../src/passes/pass5/types.js';
 
 const TODAY = '2026-07-19' as never;
@@ -168,5 +168,67 @@ describe('buildPlanItems — merge, dedup, trim, priority', () => {
     const rows = Array.from({ length: 20 }, (_, i) => brainRow({ threadId: `T${i}`, bhcId: `BHC-${i}`, actionRequired: 'REPLY_NEEDED' }));
     const items = buildPlanItems([], rows, [], TODAY);
     expect(items.length).toBeLessThanOrEqual(10);
+  });
+});
+
+describe('buildOverflowItems', () => {
+  it('is empty when every candidate fit inside its bucket cap and the plan', () => {
+    const openTasks = [task({ taskId: 'T1', contactId: 'BHC-1', priority: 'High', dueDate: '2026-07-01' })];
+    const plan = buildPlanItems(openTasks, [], [], TODAY);
+    const overflow = buildOverflowItems(openTasks, [], [], TODAY, plan);
+    expect(overflow).toHaveLength(0);
+  });
+
+  it("surfaces candidates beyond a bucket's own cap (bucket 2 caps at 4 replies)", () => {
+    const rows = Array.from({ length: 6 }, (_, i) => brainRow({ threadId: `T${i}`, bhcId: `BHC-${i}`, contactName: `C${i}` }));
+    const plan = buildPlanItems([], rows, [], TODAY);
+    const overflow = buildOverflowItems([], rows, [], TODAY, plan);
+    expect(plan.filter((i) => i.type === 'reply')).toHaveLength(4); // unchanged bucket cap
+    expect(overflow.filter((i) => i.type === 'reply')).toHaveLength(2); // the 2 that didn't fit
+    expect(overflow.map((i) => i.contact)).toEqual(['C4', 'C5']); // next in the same sort order
+  });
+
+  it('surfaces a contact dropped by cross-bucket dedup, not silently — the exact scenario from the dedup test above', () => {
+    const openTasks = [task({ contactId: 'BHC-1', priority: 'High', dueDate: '2026-07-01' })];
+    const brainRows = [brainRow({ bhcId: 'BHC-1', actionRequired: 'REPLY_NEEDED' })];
+    const plan = buildPlanItems(openTasks, brainRows, [], TODAY);
+    const overflow = buildOverflowItems(openTasks, brainRows, [], TODAY, plan);
+
+    expect(plan).toHaveLength(1);
+    expect(plan[0]!.type).toBe('task'); // bucket 1 claimed BHC-1's plan slot
+
+    // BHC-1's reply-needed item didn't just disappear — it's in overflow,
+    // not silently dropped, even though it was WITHIN bucket 2's own cap.
+    expect(overflow).toHaveLength(1);
+    expect(overflow[0]!.type).toBe('reply');
+    expect(overflow[0]!.bhcId).toBe('BHC-1');
+  });
+
+  it("continues priority numbering from 11 onward, after the plan's 1..10", () => {
+    const rows = Array.from({ length: 5 }, (_, i) => brainRow({ threadId: `T${i}`, bhcId: `BHC-${i}`, contactName: `C${i}` }));
+    const plan = buildPlanItems([], rows, [], TODAY);
+    const overflow = buildOverflowItems([], rows, [], TODAY, plan);
+    expect(overflow.map((i) => i.priority)).toEqual([11]);
+  });
+
+  it("a contact's second, different-type need shows in overflow even when their first need made it into the plan", () => {
+    // BHC-1 has a 5th-in-line reply (beyond bucket 2's 4-item cap) AND a
+    // stale relationship (bucket 3). Bucket 2's cap excludes BHC-1's reply
+    // from `plan`, but bucket 3 has no competing claim on BHC-1's bhcId yet
+    // (plan's own dedup is bhcId-only, and nothing else claimed BHC-1
+    // ahead of bucket 3) — so BHC-1's OUTREACH item legitimately ends up in
+    // `plan`, and only the REPLY belongs in overflow. Verified by tracing
+    // actual output, not assumed — this is the real, correct behavior of
+    // plan's existing bhcId-only dedup rule, unchanged by this feature.
+    const rows = [
+      ...Array.from({ length: 4 }, (_, i) => brainRow({ threadId: `T${i}`, bhcId: `BHC-filler-${i}`, contactName: `C${i}` })),
+      brainRow({ threadId: 'T-overflow', bhcId: 'BHC-1', contactName: 'Overflow Contact' }), // 5th reply
+    ];
+    const cadence = [cadenceRow({ bhcId: 'BHC-1', name: 'Overflow Contact', nextCheckIn: TODAY })];
+    const plan = buildPlanItems([], rows, cadence, TODAY);
+    const overflow = buildOverflowItems([], rows, cadence, TODAY, plan);
+
+    expect(plan.filter((i) => i.bhcId === 'BHC-1').map((i) => i.type)).toEqual(['outreach']);
+    expect(overflow.filter((i) => i.bhcId === 'BHC-1').map((i) => i.type)).toEqual(['reply']);
   });
 });

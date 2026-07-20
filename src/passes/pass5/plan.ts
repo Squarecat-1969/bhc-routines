@@ -13,6 +13,20 @@
  * sort governs which candidates fill that bucket's slots; the generic
  * 3-key rule's real work — dedup, trim, final priority numbering — happens
  * once across the merged pool.
+ *
+ * Overflow (2026-07-19, Bobby's own request): the per-bucket caps below
+ * (3/4/4/3) and the global 10-item cap are BY DESIGN — deliberately keeping
+ * the daily plan short enough not to be overwhelming. What shouldn't happen
+ * is candidates beyond those caps just vanishing with no trace. Every
+ * bucket-building function below now returns its FULL sorted candidate
+ * list, uncapped — buildPlanItems applies the same caps as before (so its
+ * output is byte-for-byte unchanged, safe for every existing test), and the
+ * new buildOverflowItems uses the same full lists to surface everyone who
+ * didn't make today's top 10, for Aida's "beyond today's 10" twirldown.
+ * Deliberately NOT a second, separately-maintained copy of the bucket
+ * filter/sort logic — that would be a real drift risk (change bucket 1's
+ * sort in one place, forget the other). One definition of "what's a bucket
+ * N candidate," two different things done with the result.
  */
 
 import { diffDays, iso, isSameOrBefore, parseFlexibleDate, type CivilDate } from '../../lib/dates.js';
@@ -20,6 +34,20 @@ import type { CadenceRow, OpenTask, Pass5BrainCompleteRow, PlanItem, PlanItemTyp
 
 const REASON_TRUNCATE_LEN = 100;
 const OVERDUE_PRIORITIES = new Set(['High', 'Urgent']);
+
+/** Per-bucket caps for the PRIORITY plan (unchanged from the original spec numbers). */
+const BUCKET_CAPS = { task: 3, reply: 4, outreach: 4, action: 3 } as const;
+
+const PLAN_CAP = 10;
+/**
+ * Defensive size backstop, not an expected real-world ceiling. The
+ * Daily_Brief write already refuses anything over its own 45k-char safety
+ * margin (daily-brief-write.ts) regardless of this number — this just
+ * avoids handing that guard an unreasonably large blob to reject on a truly
+ * unusual day, and keeps Aida's twirldown from ever needing to render
+ * hundreds of rows.
+ */
+const OVERFLOW_CAP = 40;
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) : s;
@@ -43,7 +71,14 @@ function blankItem(type: PlanItemType, contact: string, bhcId: string, reason: s
   };
 }
 
-function buildBucket1(openTasks: readonly OpenTask[], today: CivilDate): readonly Omit<PlanItem, 'priority'>[] {
+/** The dedup/overflow-exclusion key — same fallback rule everywhere: bhcId when present, else a type+contact pair. */
+function itemKey(item: { bhcId: string; type: PlanItemType; contact: string }): string {
+  return item.bhcId || `${item.type}:${item.contact}`;
+}
+
+// ─── Full (uncapped) bucket candidate lists — one definition, two uses ───────
+
+function buildBucket1Full(openTasks: readonly OpenTask[], today: CivilDate): readonly Omit<PlanItem, 'priority'>[] {
   const overdue = openTasks
     .map((t) => {
       const due = parseFlexibleDate(t.dueDate);
@@ -54,7 +89,7 @@ function buildBucket1(openTasks: readonly OpenTask[], today: CivilDate): readonl
 
   overdue.sort((a, b) => b.daysOverdue - a.daysOverdue); // days overdue desc
 
-  return overdue.slice(0, 3).map(({ t, due }) => {
+  return overdue.map(({ t, due }) => {
     // due is guaranteed non-null here — the filter above already required
     // daysOverdue > 0, which only happens when parseFlexibleDate succeeded.
     // Real bug found on a live run (2026-07-19): using the raw t.dueDate
@@ -73,9 +108,9 @@ function buildBucket1(openTasks: readonly OpenTask[], today: CivilDate): readonl
   });
 }
 
-function buildBucket2(brainCompleteRows: readonly Pass5BrainCompleteRow[]): readonly Omit<PlanItem, 'priority'>[] {
+function buildBucket2Full(brainCompleteRows: readonly Pass5BrainCompleteRow[]): readonly Omit<PlanItem, 'priority'>[] {
   const pending = brainCompleteRows.filter((r) => r.actionRequired === 'REPLY_NEEDED');
-  return pending.slice(0, 4).map((r) => ({
+  return pending.map((r) => ({
     ...blankItem('reply', r.contactName, r.bhcId, truncate(r.brainNotes || r.runningSummary, REASON_TRUNCATE_LEN)),
     channel: 'email',
     subject: r.subject,
@@ -85,7 +120,7 @@ function buildBucket2(brainCompleteRows: readonly Pass5BrainCompleteRow[]): read
   }));
 }
 
-function buildBucket3(cadenceResults: readonly CadenceRow[], today: CivilDate): readonly Omit<PlanItem, 'priority'>[] {
+function buildBucket3Full(cadenceResults: readonly CadenceRow[], today: CivilDate): readonly Omit<PlanItem, 'priority'>[] {
   const due = cadenceResults.filter((r) => isSameOrBefore(r.nextCheckIn, today));
   due.sort((a, b) => {
     if (a.stalled !== b.stalled) return a.stalled ? -1 : 1; // stalled desc
@@ -94,49 +129,114 @@ function buildBucket3(cadenceResults: readonly CadenceRow[], today: CivilDate): 
     return bDays - aDays; // days_since desc
   });
 
-  return due.slice(0, 4).map((r) => ({
+  return due.map((r) => ({
     ...blankItem('outreach', r.name ?? r.masterName ?? r.bhcId ?? r.recordId, r.bhcId ?? '', r.followUpReason),
     channel: (r.touchMode || 'email').toLowerCase(),
     attioRecordId: r.recordId,
   }));
 }
 
-function buildBucket4(brainCompleteRows: readonly Pass5BrainCompleteRow[]): readonly Omit<PlanItem, 'priority'>[] {
+function buildBucket4Full(brainCompleteRows: readonly Pass5BrainCompleteRow[]): readonly Omit<PlanItem, 'priority'>[] {
   const actionItems = brainCompleteRows.filter((r) => r.actionRequired === 'ACTION_ITEM');
-  return actionItems.slice(0, 3).map((r) => ({
+  return actionItems.map((r) => ({
     ...blankItem('action', r.contactName, r.bhcId, truncate(r.runningSummary, REASON_TRUNCATE_LEN)),
     channel: 'email',
     subject: r.subject,
   }));
 }
 
+function fullBuckets(
+  openTasks: readonly OpenTask[],
+  brainCompleteRows: readonly Pass5BrainCompleteRow[],
+  cadenceResults: readonly CadenceRow[],
+  today: CivilDate,
+): readonly (readonly Omit<PlanItem, 'priority'>[])[] {
+  return [
+    buildBucket1Full(openTasks, today),
+    buildBucket2Full(brainCompleteRows),
+    buildBucket3Full(cadenceResults, today),
+    buildBucket4Full(brainCompleteRows),
+  ];
+}
+
+const BUCKET_CAP_BY_INDEX = [BUCKET_CAPS.task, BUCKET_CAPS.reply, BUCKET_CAPS.outreach, BUCKET_CAPS.action];
+
+/**
+ * The daily plan — deliberately short, deliberately capped, unchanged in
+ * every respect from before overflow existed. "Fill bucket slots in order,
+ * dedup by bhcId (keep highest-priority item per contact)." Buckets are
+ * already in priority order (1 before 2 before 3 before 4), so
+ * first-occurrence-wins dedup is exactly "keep highest-priority."
+ */
 export function buildPlanItems(
   openTasks: readonly OpenTask[],
   brainCompleteRows: readonly Pass5BrainCompleteRow[],
   cadenceResults: readonly CadenceRow[],
   today: CivilDate,
 ): readonly PlanItem[] {
-  const buckets = [
-    buildBucket1(openTasks, today),
-    buildBucket2(brainCompleteRows),
-    buildBucket3(cadenceResults, today),
-    buildBucket4(brainCompleteRows),
-  ];
+  const buckets = fullBuckets(openTasks, brainCompleteRows, cadenceResults, today).map((full, i) =>
+    full.slice(0, BUCKET_CAP_BY_INDEX[i]),
+  );
 
-  // "Fill bucket slots in order, dedup by bhcId (keep highest-priority item
-  // per contact)." Buckets are already in priority order (1 before 2 before
-  // 3 before 4), so first-occurrence-wins dedup is exactly "keep
-  // highest-priority."
   const seen = new Set<string>();
   const merged: Omit<PlanItem, 'priority'>[] = [];
   for (const bucket of buckets) {
     for (const item of bucket) {
-      const key = item.bhcId || `${item.type}:${item.contact}`; // fall back to contact name when bhcId is blank
+      const key = itemKey(item);
       if (seen.has(key)) continue;
       seen.add(key);
       merged.push(item);
     }
   }
 
-  return merged.slice(0, 10).map((item, i) => ({ ...item, priority: i + 1 }));
+  return merged.slice(0, PLAN_CAP).map((item, i) => ({ ...item, priority: i + 1 }));
+}
+
+/**
+ * Everyone who was a legitimate candidate for today but didn't end up in
+ * `plan` — whether because their own bucket's cap (3/4/4/3) was already
+ * full, or because the global 10-item cap cut them, or because a different
+ * bucket already claimed that contact via cross-bucket dedup (e.g. a
+ * contact with both an overdue task AND a reply-needed thread only ever
+ * shows once in `plan`; their other item belongs here, not nowhere).
+ *
+ * Exclusion is by (type, bhcId), not bhcId alone — deliberately different
+ * from buildPlanItems' own dedup. plan's dedup is correctly bhcId-only ("one
+ * plan slot per contact, whichever's highest priority"), but overflow is
+ * answering a different question: "is THIS SPECIFIC item — not just this
+ * contact — already represented in the plan." A contact whose task claimed
+ * their one plan slot still has a real, separate reply-needed item; using a
+ * bhcId-only key here would wrongly treat that reply as "already accounted
+ * for" and drop it too, defeating the entire point of this function.
+ *
+ * `planItems` must be the exact result of buildPlanItems for the same
+ * inputs — the caller is responsible for that pairing, this function
+ * doesn't recompute `plan` itself to guarantee there's exactly one
+ * source of truth for what "already in the plan" means.
+ */
+export function buildOverflowItems(
+  openTasks: readonly OpenTask[],
+  brainCompleteRows: readonly Pass5BrainCompleteRow[],
+  cadenceResults: readonly CadenceRow[],
+  today: CivilDate,
+  planItems: readonly PlanItem[],
+): readonly PlanItem[] {
+  const compoundKey = (item: { type: PlanItemType; bhcId: string; contact: string }) => `${item.type}:${itemKey(item)}`;
+  const planKeys = new Set(planItems.map(compoundKey));
+  const buckets = fullBuckets(openTasks, brainCompleteRows, cadenceResults, today);
+
+  const seen = new Set<string>();
+  const overflow: Omit<PlanItem, 'priority'>[] = [];
+  for (const bucket of buckets) {
+    for (const item of bucket) {
+      const key = compoundKey(item);
+      if (planKeys.has(key) || seen.has(key)) continue;
+      seen.add(key);
+      overflow.push(item);
+      if (overflow.length >= OVERFLOW_CAP) break;
+    }
+    if (overflow.length >= OVERFLOW_CAP) break;
+  }
+
+  return overflow.map((item, i) => ({ ...item, priority: PLAN_CAP + i + 1 }));
 }

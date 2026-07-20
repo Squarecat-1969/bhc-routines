@@ -59,6 +59,16 @@ export interface GamePlan {
   readonly missionStatus: MissionStatus;
   readonly counts: GamePlanCounts;
   readonly plan: readonly PlanItem[];
+  /**
+   * Everyone who was a legitimate candidate for today but didn't make the
+   * top 10 (bucket-capped or globally-capped or cross-bucket-deduped away —
+   * see buildOverflowItems' own doc comment). Bobby's own request
+   * (2026-07-19): the 10-item cap is deliberate, keeping the daily plan
+   * short enough not to be overwhelming — but anyone cut by it should still
+   * be visible somewhere, not silently gone. Aida renders this behind a
+   * collapsed "beyond today's 10" expansion, not inline with the plan.
+   */
+  readonly overflow: readonly PlanItem[];
   readonly generatedAt: string;
   readonly runId: string;
 }
@@ -81,6 +91,7 @@ export interface Pass5Report {
   readonly pipelineEntryCount: number;
   readonly meetingsToReviewCount: number;
   readonly planItemCount: number;
+  readonly overflowItemCount: number;
   readonly written: boolean;
 
   readonly gamePlan: GamePlan | null;

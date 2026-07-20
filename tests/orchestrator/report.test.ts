@@ -44,7 +44,7 @@ function baseReport(overrides: Partial<LateEditionReport> = {}): LateEditionRepo
     pass5: {
       runId: 'RUN-1', dryRun: true, startedAt: '', finishedAt: '', aborted: false, abortReason: null,
       openTaskCount: 0, brainCompleteRowCount: 0, pipelineEntryCount: 0, meetingsToReviewCount: 0,
-      planItemCount: 0, written: false, gamePlan: null, warnings: [],
+      planItemCount: 0, overflowItemCount: 0, written: false, gamePlan: null, warnings: [],
     },
     ...overrides,
   };

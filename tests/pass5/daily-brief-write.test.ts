@@ -17,6 +17,7 @@ function gamePlan(overrides: Partial<GamePlan> = {}): GamePlan {
     },
     counts: { emailsPending: 0, tasksOverdue: 0, pipelineTouches: 0, staleRelationships: 0, meetingsToReview: 0 },
     plan: [],
+    overflow: [],
     generatedAt: '2026-07-19T00:00:00.000Z',
     runId: 'RUN-1',
     ...overrides,
