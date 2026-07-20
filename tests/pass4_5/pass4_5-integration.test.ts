@@ -262,13 +262,28 @@ describe('PASS 4.5 — name-conflict enqueue (4.5h)', () => {
     expect(report.nameConflictsEnqueued).toHaveLength(1);
     expect(report.nameConflictsEnqueued[0]).toMatchObject({ oldName: 'Bob Smith', newName: 'Robert Smith' });
 
-    const append = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Name_Conflicts!A2:M');
+    const append = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Name_Conflicts!A2:N');
     expect(append).toBeDefined();
     const row = (append!.body as { values: unknown[][] }).values[0]!;
     expect(row[3]).toBe('BHC-00002'); // D BHC_ID
     expect(row[4]).toBe('ATTIO'); // E Scope
     expect(row[5]).toBe('Bob Smith'); // F Old_Name
     expect(row[6]).toBe('Robert Smith'); // G New_Name
+    expect(row[13]).toBe('STRUCTURAL'); // N Conflict_Type — "Smith" shared, but not a diacritic variant
+  });
+
+  it('tags a real diacritic-only candidate as DIACRITIC_ONLY in the written row', async () => {
+    const config = baseConfig({
+      masterId: [['BHC-00003', 'Rafael Emidio', 'ATTIO', '', 'rec-rafael', '']],
+      entries: [],
+      people: { 'rec-rafael': { name: 'Rafael Emídio', bhcContactId: 'BHC-00003' } },
+    });
+    const { backend } = await run(config, { dryRun: false });
+
+    const append = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Name_Conflicts!A2:N');
+    expect(append).toBeDefined();
+    const row = (append!.body as { values: unknown[][] }).values[0]!;
+    expect(row[13]).toBe('DIACRITIC_ONLY'); // N Conflict_Type
   });
 
   it('never enqueues a BOTH-location target — that is Reconciler I1 territory', async () => {

@@ -41,7 +41,12 @@ import { loadMasterId, type MasterIdEntry } from '../pass4/load.js';
 import { normalizeTier, resolveActiveStage } from '../pass4/cadence.js';
 import { loadContactsWide } from './contacts.js';
 import { buildCacheRow, cacheRowToSheetRow } from './cache.js';
-import { classifyNameDrift, shouldEnqueue, type ExistingNameConflictRow } from './name-conflicts.js';
+import {
+  classifyConflictType,
+  classifyNameDrift,
+  shouldEnqueue,
+  type ExistingNameConflictRow,
+} from './name-conflicts.js';
 import type { CacheRow, NameConflictEnqueue, Pass45Report, WithheldTarget } from './types.js';
 import type { Track } from '../../config/constants.js';
 import { TOUCH_MODES, type TouchMode } from '../../config/constants.js';
@@ -273,6 +278,7 @@ async function runPass45Inner(
           attioRecordId: target.attioRecordId,
           oldName: target.fullName,
           newName: attioName,
+          conflictType: classifyConflictType(target.fullName, attioName),
         });
       }
     }
@@ -348,6 +354,7 @@ async function runPass45Inner(
             '',
             new Date().toISOString(),
             'ATTIO-only name drift (PASS 4.5)',
+            candidate.conflictType,
           ],
         ]);
       }

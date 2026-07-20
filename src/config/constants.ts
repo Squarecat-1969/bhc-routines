@@ -99,8 +99,8 @@ export const RANGES = {
   pipelineCacheHeader: 'Pipeline_Cache!A1:R1',
   pipelineCachePriorIds: 'Pipeline_Cache!A2:A',
   pipelineCacheWrite: 'Pipeline_Cache!A2:R',
-  nameConflictsAll: 'Name_Conflicts!A2:M',
-  nameConflictsAppend: 'Name_Conflicts!A2:M',
+  nameConflictsAll: 'Name_Conflicts!A2:N',
+  nameConflictsAppend: 'Name_Conflicts!A2:N',
   // PASS 1 targets.
   brainCompleteData: 'Brain_Complete!A2:AD',
   threadStagingData: 'Thread_Staging!A2:W',

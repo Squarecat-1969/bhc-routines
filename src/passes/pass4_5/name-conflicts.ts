@@ -9,8 +9,8 @@
  *      already been resolved (or is already awaiting) in Name_Conflicts?
  */
 
-import { verifyName } from '../../lib/name-verify.js';
-import type { NameDriftVerdict } from './types.js';
+import { isDiacriticOnlyVariant, verifyName } from '../../lib/name-verify.js';
+import type { ConflictType, NameDriftVerdict } from './types.js';
 
 /**
  * Spec 4.5h gate:
@@ -38,6 +38,17 @@ export function classifyNameDrift(oldName: string, newName: string): NameDriftVe
   // fall through to the Reconciler rather than raising a card we can't back
   // with a confident comparison.
   return 'LEAVE_FOR_RECONCILER';
+}
+
+/**
+ * Only call this when classifyNameDrift already returned CANDIDATE — it
+ * doesn't re-check EXACT or LEAVE_FOR_RECONCILER, it just further classifies
+ * a card that's already been decided worth raising. See ConflictType (types.ts)
+ * and isDiacriticOnlyVariant (lib/name-verify.ts) for the reasoning behind
+ * the split.
+ */
+export function classifyConflictType(oldName: string, newName: string): ConflictType {
+  return isDiacriticOnlyVariant(oldName, newName) ? 'DIACRITIC_ONLY' : 'STRUCTURAL';
 }
 
 export type NameConflictStatus = 'RESOLVED_OLD' | 'RESOLVED_NEW' | '' | string;

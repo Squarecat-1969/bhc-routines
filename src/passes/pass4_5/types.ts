@@ -44,12 +44,24 @@ export interface WithheldTarget {
 
 export type NameDriftVerdict = 'EXACT' | 'CANDIDATE' | 'LEAVE_FOR_RECONCILER';
 
+/**
+ * Only meaningful when NameDriftVerdict is CANDIDATE. DIACRITIC_ONLY means
+ * the old and new names differ solely in accent marks (see
+ * lib/name-verify.ts isDiacriticOnlyVariant) — low-risk enough to surface for
+ * one-click batch review rather than one-at-a-time manual comparison.
+ * STRUCTURAL covers everything else a CANDIDATE verdict can mean: nickname
+ * drift, an appended company tag, malformed punctuation, a genuine judgment
+ * call — anything where the difference isn't purely cosmetic.
+ */
+export type ConflictType = 'DIACRITIC_ONLY' | 'STRUCTURAL';
+
 export interface NameConflictEnqueue {
   readonly bhcId: string;
   readonly masterRow: number;
   readonly attioRecordId: string;
   readonly oldName: string;
   readonly newName: string;
+  readonly conflictType: ConflictType;
 }
 
 export interface Pass45Report {
