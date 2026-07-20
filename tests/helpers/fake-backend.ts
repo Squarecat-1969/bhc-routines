@@ -57,6 +57,7 @@ export interface FakeBackendConfig {
   nameConflicts?: unknown[][];
   /** Rows for Brain_Complete!A2:AD — PASS 1 housekeeping input. */
   brainComplete?: unknown[][];
+  contactHistory?: unknown[][];
   /** Rows for Thread_Staging!A2:W — PASS 1 working-set input. */
   threadStaging?: unknown[][];
   /** Rows for Activity_Log!A2:U — PASS 0 placeholder input. */
@@ -81,13 +82,53 @@ export interface RecordedRequest {
   body: unknown;
 }
 
+/**
+ * A1-style column letters -> 0-based index. 'A'->0, 'Z'->25, 'AA'->26,
+ * 'BZ'->77, 'CA'->78, 'CG'->84. Standard base-26 with no zero digit.
+ */
+function columnLetterToIndex(letters: string): number {
+  let n = 0;
+  for (const ch of letters) n = n * 26 + (ch.charCodeAt(0) - 64);
+  return n - 1;
+}
+
+/**
+ * Parses a single-row A1 range like "Contacts!BZ10:CG10" or "Contacts!AI5:AI5".
+ * Returns null for anything else (multi-row ranges, whole-column ranges,
+ * etc.) — the Contacts row-store below only needs to handle the
+ * single-row-single-write shape QA's read-back and write-row.ts's own
+ * updates actually use.
+ */
+function parseSingleRowRange(range: string): { sheet: string; startCol: number; endCol: number; row: number } | null {
+  const m = /^([^!]+)!([A-Z]+)(\d+):([A-Z]+)(\d+)$/.exec(range);
+  if (!m) return null;
+  const [, sheet, startColLetters, startRowStr, endColLetters, endRowStr] = m;
+  if (startRowStr !== endRowStr) return null; // multi-row — not handled by the row-store
+  return {
+    sheet: sheet!,
+    startCol: columnLetterToIndex(startColLetters!),
+    endCol: columnLetterToIndex(endColLetters!),
+    row: Number(startRowStr),
+  };
+}
+
 export class FakeBackend {
   private server: Server | null = null;
   readonly requests: RecordedRequest[] = [];
   readonly patched = new Map<string, Record<string, unknown>>();
   readonly createdTasks: { taskId: string; content: string; body: unknown }[] = [];
+  /**
+   * Per-row, per-column Contacts overrides — reflects sheets.update writes
+   * on the very next sheets.read of the same cells, same "real Sheets
+   * reflects a write immediately" principle already used for Brain_Complete
+   * and Activity_Log appends, just for row/column UPDATES instead of
+   * appends. Without this, QA read-back tests can't observe writes
+   * write-row.ts itself made within the same test — the whole point of
+   * a read-back check.
+   */
+  readonly contactsRowStore = new Map<number, Map<number, string>>();
 
-  constructor(private readonly config: FakeBackendConfig) {}
+  constructor(readonly config: FakeBackendConfig) {}
 
   private personToValues(person: FakePerson): Record<string, unknown> {
     const values: Record<string, unknown> = {};
@@ -157,7 +198,16 @@ export class FakeBackend {
         if (range === RANGES.nameConflictsAll) return send(200, { values: this.config.nameConflicts ?? [] });
         if (range === RANGES.brainCompleteData) return send(200, { values: this.config.brainComplete ?? [] });
         if (range === RANGES.threadStagingData) return send(200, { values: this.config.threadStaging ?? [] });
-        if (range?.startsWith('Activity_Log')) return send(200, { values: this.config.activityLog ?? [] });
+        if (range?.startsWith('Activity_Log')) {
+          const rows = this.config.activityLog ?? [];
+          const parsed = range === 'Activity_Log!A2:A' ? null : parseSingleRowRange(range); // A2:A is a whole-column range, not single-row — let it fall through to the full-array behavior below (only col A is ever read from it, so no slicing is needed there)
+          if (parsed) {
+            const fullRow = (rows[parsed.row - 2] ?? []) as unknown[]; // data starts at row 2
+            const slice = fullRow.slice(parsed.startCol, parsed.endCol + 1).map((v) => String(v ?? ''));
+            return send(200, { values: [slice] });
+          }
+          return send(200, { values: rows });
+        }
         if (range === RANGES.tasksOpenData) return send(200, { values: this.config.tasksOpen ?? [] });
         if (range === RANGES.zoomStagingStatus) return send(200, { values: this.config.zoomStagingStatuses ?? [] });
         if (range === RANGES.dailyBriefDates) return send(200, { values: this.config.dailyBriefDates ?? [] });
@@ -167,7 +217,19 @@ export class FakeBackend {
           return send(200, { values: this.config.masterId });
         }
         if (range === RANGES.contactsHeader) return send(200, { values: [this.config.contactsHeader] });
-        if (range?.startsWith('Contacts')) return send(200, { values: this.config.contacts });
+        if (range?.startsWith('Contacts')) {
+          const parsed = parseSingleRowRange(range);
+          if (parsed) {
+            const rowStore = this.contactsRowStore.get(parsed.row);
+            const values: string[] = [];
+            for (let col = parsed.startCol; col <= parsed.endCol; col++) {
+              values.push(rowStore?.get(col) ?? '');
+            }
+            return send(200, { values: [values] });
+          }
+          return send(200, { values: this.config.contacts });
+        }
+        if (range?.startsWith('Contact_History')) return send(200, { values: this.config.contactHistory ?? [] });
         return send(200, { values: [] });
       }
 
@@ -175,10 +237,12 @@ export class FakeBackend {
         // Real Sheets reflects a write on the very next read. Scoped to the
         // specific tabs that actually need this within a single fake
         // backend instance: Brain_Complete (a cross-pass test writes then
-        // reads back), and Activity_Log (Part D's write-row.ts re-reads
-        // col A to find the row it just appended, for the col-T follow-up
-        // write — same live-lookup principle as everywhere else in this
-        // project, applied to a row written a moment earlier).
+        // reads back), Activity_Log (Part D's write-row.ts re-reads col A
+        // to find the row it just appended, for the col-T follow-up write),
+        // and Contact_History (qa-readback.ts re-reads it to verify
+        // write-row.ts's own append landed) — all the same live-lookup
+        // principle as everywhere else in this project, applied to a row
+        // written a moment earlier within the same test.
         if (range?.startsWith('Brain_Complete')) {
           const newRows = ((body as { values?: unknown[][] })?.values ?? []) as unknown[][];
           this.config.brainComplete = [...(this.config.brainComplete ?? []), ...newRows];
@@ -186,6 +250,43 @@ export class FakeBackend {
         if (range?.startsWith('Activity_Log')) {
           const newRows = ((body as { values?: unknown[][] })?.values ?? []) as unknown[][];
           this.config.activityLog = [...(this.config.activityLog ?? []), ...newRows];
+        }
+        if (range?.startsWith('Contact_History')) {
+          const newRows = ((body as { values?: unknown[][] })?.values ?? []) as unknown[][];
+          this.config.contactHistory = [...(this.config.contactHistory ?? []), ...newRows];
+        }
+      }
+
+      if (action === 'update' && range?.startsWith('Contacts')) {
+        const parsed = parseSingleRowRange(range);
+        if (parsed) {
+          const newValues = (((body as { values?: unknown[][] })?.values ?? [[]])[0] ?? []) as unknown[];
+          let rowStore = this.contactsRowStore.get(parsed.row);
+          if (!rowStore) {
+            rowStore = new Map<number, string>();
+            this.contactsRowStore.set(parsed.row, rowStore);
+          }
+          newValues.forEach((v, i) => rowStore!.set(parsed.startCol + i, String(v ?? '')));
+        }
+      }
+
+      if (action === 'update' && (range?.startsWith('Activity_Log') || range?.startsWith('Contact_History'))) {
+        // A correction write (qa-readback.ts) needs to actually modify the
+        // stored full-row array, not just be acknowledged — otherwise the
+        // re-read qa-readback.ts does immediately after would still see the
+        // pre-correction value, and every "corrects on retry" test would be
+        // unable to observe the correction actually working.
+        const parsed = parseSingleRowRange(range);
+        if (parsed) {
+          const store = range.startsWith('Activity_Log') ? this.config.activityLog : this.config.contactHistory;
+          if (store) {
+            const idx = parsed.row - 2; // both tabs' data starts at row 2
+            const fullRow = (store[idx] ?? []) as unknown[];
+            const newValues = (((body as { values?: unknown[][] })?.values ?? [[]])[0] ?? []) as unknown[];
+            const updated = [...fullRow];
+            newValues.forEach((v, i) => { updated[parsed.startCol + i] = v; });
+            store[idx] = updated;
+          }
         }
       }
 

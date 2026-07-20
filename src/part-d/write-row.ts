@@ -59,6 +59,7 @@ import { textOf } from '../lib/attio.js';
 import type { MasterIdIndex } from '../passes/pass4/load.js';
 import type { SheetsClient } from '../lib/sheets.js';
 import { iso, isBefore, parseFlexibleDate, type CivilDate } from '../lib/dates.js';
+import { verifyAttioRecordOwnership, verifyGoogleRowOwnership } from './identity-gate.js';
 import type { SecondaryWriteResult, StagedTask, WriteRowInput, WriteRowResult } from './types.js';
 
 const OUTCOME_DEFAULT = 'Neutral';
@@ -82,24 +83,6 @@ function makeTaskId(now: Date = new Date()): string {
  * belongs to this bhcId RIGHT NOW — it does not re-derive or second-guess
  * anything else WriteTargets claims. "Verify, don't re-derive."
  */
-function verifyGoogleRowOwnership(masterId: MasterIdIndex, bhcId: string, claimedGoogleRow: number): string | null {
-  const entry = masterId.byBhcId.get(bhcId);
-  if (!entry) return `Master_ID has no entry for ${bhcId} — withholding Google write.`;
-  if (entry.googleRow !== claimedGoogleRow) {
-    return `Master_ID's Google_Row for ${bhcId} is ${entry.googleRow ?? '(none)'}, not the staged ${claimedGoogleRow} — Master_ID shifted since staging. Withholding Google write.`;
-  }
-  return null;
-}
-
-function verifyAttioRecordOwnership(masterId: MasterIdIndex, bhcId: string, claimedRecordId: string): string | null {
-  const entry = masterId.byBhcId.get(bhcId);
-  if (!entry) return `Master_ID has no entry for ${bhcId} — withholding Attio write.`;
-  if (entry.attioRecordId !== claimedRecordId) {
-    return `Master_ID's Attio_Record_ID for ${bhcId} is ${entry.attioRecordId || '(none)'}, not the staged ${claimedRecordId} — Master_ID shifted since staging. Withholding Attio write.`;
-  }
-  return null;
-}
-
 export async function writeRow(
   sheets: SheetsClient,
   attio: AttioClient,
@@ -459,7 +442,7 @@ export async function writeRow(
  * up), just applied to a row we ourselves wrote a moment ago instead of one
  * someone else wrote earlier.
  */
-async function currentActivityLogRowFor(sheets: SheetsClient, activityId: string): Promise<number> {
+export async function currentActivityLogRowFor(sheets: SheetsClient, activityId: string): Promise<number> {
   const rows = await sheets.read('Activity_Log!A2:A');
   for (let i = 0; i < rows.length; i++) {
     if (String(rows[i]?.[0] ?? '') === activityId) return i + 2;
