@@ -23,6 +23,9 @@ export interface FakePerson {
   relationshipTier?: string;
   /** Primary email first. */
   emailAddresses?: string[];
+  /** For Part D's personal-context read-first-then-append writes. */
+  personalNotes?: string;
+  topicsOfInterest?: string;
   /** Force the read-back to return this instead of what was PATCHed. */
   readBackOverride?: string;
   /** Make GET/PATCH fail with this status. */
@@ -68,6 +71,8 @@ export interface FakeBackendConfig {
   reconciliationQueue?: unknown[][];
   /** Attio people-search-by-email results, keyed by lowercase email. */
   emailSearchResults?: Record<string, FakePerson[]>;
+  /** When set, Attio task creation fails with this status — for testing write-row.ts's failure handling. */
+  taskCreateFailWith?: number;
 }
 
 export interface RecordedRequest {
@@ -80,6 +85,7 @@ export class FakeBackend {
   private server: Server | null = null;
   readonly requests: RecordedRequest[] = [];
   readonly patched = new Map<string, Record<string, unknown>>();
+  readonly createdTasks: { taskId: string; content: string; body: unknown }[] = [];
 
   constructor(private readonly config: FakeBackendConfig) {}
 
@@ -98,6 +104,8 @@ export class FakeBackend {
       values['relationship_tier'] = [{ option: { title: person.relationshipTier } }];
     if (person.emailAddresses !== undefined)
       values['email_addresses'] = person.emailAddresses.map((e) => ({ email_address: e }));
+    if (person.personalNotes !== undefined) values['personal_notes'] = [{ value: person.personalNotes }];
+    if (person.topicsOfInterest !== undefined) values['topics_of_interest'] = [{ value: person.topicsOfInterest }];
     return values;
   }
 
@@ -149,7 +157,7 @@ export class FakeBackend {
         if (range === RANGES.nameConflictsAll) return send(200, { values: this.config.nameConflicts ?? [] });
         if (range === RANGES.brainCompleteData) return send(200, { values: this.config.brainComplete ?? [] });
         if (range === RANGES.threadStagingData) return send(200, { values: this.config.threadStaging ?? [] });
-        if (range === RANGES.activityLogData) return send(200, { values: this.config.activityLog ?? [] });
+        if (range?.startsWith('Activity_Log')) return send(200, { values: this.config.activityLog ?? [] });
         if (range === RANGES.tasksOpenData) return send(200, { values: this.config.tasksOpen ?? [] });
         if (range === RANGES.zoomStagingStatus) return send(200, { values: this.config.zoomStagingStatuses ?? [] });
         if (range === RANGES.dailyBriefDates) return send(200, { values: this.config.dailyBriefDates ?? [] });
@@ -164,15 +172,20 @@ export class FakeBackend {
       }
 
       if (action === 'append') {
-        // Real Sheets reflects a write on the very next read. No single-pass
-        // test ever needed that (each only checks the write's shape via
-        // sheetsWrites), but a genuine cross-pass test does — PASS 2 writes
-        // a Brain_Complete row, PASS 3 reads it back, both within the same
-        // fake backend instance. Scoped to just Brain_Complete since that's
-        // the one case that currently needs it.
+        // Real Sheets reflects a write on the very next read. Scoped to the
+        // specific tabs that actually need this within a single fake
+        // backend instance: Brain_Complete (a cross-pass test writes then
+        // reads back), and Activity_Log (Part D's write-row.ts re-reads
+        // col A to find the row it just appended, for the col-T follow-up
+        // write — same live-lookup principle as everywhere else in this
+        // project, applied to a row written a moment earlier).
         if (range?.startsWith('Brain_Complete')) {
           const newRows = ((body as { values?: unknown[][] })?.values ?? []) as unknown[][];
           this.config.brainComplete = [...(this.config.brainComplete ?? []), ...newRows];
+        }
+        if (range?.startsWith('Activity_Log')) {
+          const newRows = ((body as { values?: unknown[][] })?.values ?? []) as unknown[][];
+          this.config.activityLog = [...(this.config.activityLog ?? []), ...newRows];
         }
       }
 
@@ -209,6 +222,15 @@ export class FakeBackend {
         values: this.personToValues(person),
       }));
       return send(200, { data });
+    }
+
+    // --- Attio: create task (Part D's write-row.ts) ---
+    if (path === '/tasks' && req.method === 'POST') {
+      const data = (body as { data?: { content?: string; linked_records?: unknown[] } })?.data;
+      if (this.config.taskCreateFailWith) return send(this.config.taskCreateFailWith, { error: 'forced task-create failure' });
+      const taskId = `fake-task-${this.requests.length}`;
+      this.createdTasks.push({ taskId, content: data?.content ?? '', body: data });
+      return send(200, { data: { id: { workspace_id: 'ws', task_id: taskId } } });
     }
 
     // --- Attio: person record ---

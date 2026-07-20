@@ -210,6 +210,51 @@ export class AttioClient {
       body: JSON.stringify({ data: { values } }),
     });
   }
+
+  /**
+   * Create an Attio task linked to a person record. Built for Part D's STEP
+   * 4d ("create Attio task: content, format: plaintext, linked_records:
+   * [record_id], assignees: [ATTIO_BOBBY_MEMBER]").
+   *
+   * UNVERIFIED — this is the one genuinely new capability in this file, and
+   * unlike everything else here (read/list/search/update-record, all
+   * cross-checked against bhc-aida's own live-working code), no task
+   * *creation* call exists anywhere in either repo to confirm this shape
+   * against. bhc-aida's tasks/route.ts and current-state/route.ts both READ
+   * tasks (RawAttioTask: linked_records as {target_object, target_record_id}[],
+   * assignees as {referenced_actor_id}[]) and PATCH is_completed — the shape
+   * below mirrors that confirmed read shape for the create body, on the
+   * reasonable assumption Attio's create/read shapes match, but that's an
+   * assumption, not a live-checked fact. Needs a real --dump-shapes-style
+   * dry-run against one real task before this is trusted in production —
+   * same discipline PASS 4's own field-slug verification used before going
+   * live. Do not remove this comment until that verification has happened.
+   */
+  async createTask(params: {
+    readonly content: string;
+    readonly deadlineAt: string | null; // ISO date, or null for no deadline
+    readonly linkedRecordId: string;
+    readonly linkedRecordObject?: string; // defaults to 'people'
+    readonly assigneeId: string;
+  }): Promise<{ taskId: string }> {
+    const body = {
+      content: params.content,
+      format: 'plaintext',
+      deadline_at: params.deadlineAt,
+      is_completed: false,
+      linked_records: [
+        { target_object: params.linkedRecordObject ?? 'people', target_record_id: params.linkedRecordId },
+      ],
+      assignees: [{ referenced_actor_type: 'workspace-member', referenced_actor_id: params.assigneeId }],
+    };
+    const res = await this.request<{ data?: { id?: { task_id?: string } } }>('/tasks', {
+      method: 'POST',
+      body: JSON.stringify({ data: body }),
+    });
+    const taskId = res.data?.id?.task_id;
+    if (!taskId) throw new Error('createTask: response had no task_id — cannot confirm the task was created');
+    return { taskId };
+  }
 }
 
 export interface FetchBatchedOptions {
