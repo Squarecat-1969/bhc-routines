@@ -34,6 +34,9 @@
     "late-edition": "tsx src/cli/run-late-edition.ts",
     "late-edition:dry": "tsx src/cli/run-late-edition.ts --dry-run",
     "late-edition:live": "tsx src/cli/run-late-edition.ts --live",
+    "part-d": "tsx src/cli/run-part-d.ts",
+    "part-d:dry": "tsx src/cli/run-part-d.ts --dry-run",
+    "part-d:live": "tsx src/cli/run-part-d.ts --live",
     "inspect:activity-log": "tsx src/cli/inspect-activity-log.ts"
   },
   "dependencies": {

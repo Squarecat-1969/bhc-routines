@@ -1,0 +1,109 @@
+name: Part D
+
+# workflow_dispatch ONLY — no schedule at all. Part D is triggered by a
+# person clicking Resolve/Proceed/Corrections/Mixed in Aida, never by a
+# clock, so there's no cron and no DST guard to worry about (unlike
+# late-edition.yml, which needed both).
+#
+# command_text is the literal string parseCommand (STEP 1) expects — e.g.
+# "RESOLVE LATE-EDITION-1784499863693", or for CORRECTIONS/MIXED, that same
+# first line followed by one {n}: {note} / {n}:ACTION per line. Multi-line
+# workflow_dispatch inputs work fine when the run is triggered via the API
+# (which is how resolve/route.ts will trigger this, not yet built — the
+# manual "Run workflow" UI form field is a poor fit for typing multi-line
+# text by hand, but that's a UI inconvenience for manual testing, not a
+# limitation of the trigger mechanism itself).
+#
+# Passed through as an env var and written to a file in the run step below,
+# not interpolated directly into a shell command — the safe way to handle a
+# value that could contain newlines or shell-meaningful characters,
+# regardless of how it's actually typed in Brain_Complete's staged content.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'dry-run parses the command and loads the run set but calls no writes (OUTER-LEVEL dry-run only, weaker than other passes -- see src/part-d/index.ts doc comment); live runs the real thing'
+        required: true
+        default: 'dry-run'
+        type: choice
+        options:
+          - dry-run
+          - live
+      command_text:
+        description: 'Exactly what Aida would have sent to Part D -- first line "COMMAND RUN-ID", further lines for CORRECTIONS/MIXED payloads'
+        required: true
+        type: string
+
+concurrency:
+  # Never let two Part D runs act on the same records at once. Deliberately
+  # its OWN group, separate from late-edition's -- this does NOT prevent a
+  # Part D run from overlapping with a concurrently-running Late Edition
+  # chain (different concurrency groups don't block each other). That
+  # cross-workflow overlap is a real, currently-accepted gap, not solved
+  # here: Part D acts on rows Late Edition already finished staging hours
+  # earlier in the normal case, so realistic overlap risk is low but not
+  # zero. Worth a real cross-workflow lock if that ever actually happens,
+  # not preemptively built for a risk that hasn't been observed yet.
+  group: part-d
+  cancel-in-progress: false
+
+jobs:
+  part-d:
+    name: Part D -- resolve handler
+    runs-on: ubuntu-latest
+    # No real production timing data yet -- Part D has never run live end
+    # to end. Reasonable starting guess (npm ci/typecheck/test overhead
+    # alone is a couple of minutes; per-row processing does several
+    # Sheets/Attio round trips each, with retry backoff on transient
+    # failures), not a measured figure the way Late Edition's 30-minute
+    # budget is. Worth revisiting once real runs establish a baseline.
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      - name: Write command_text to a file
+        env:
+          COMMAND_TEXT: ${{ inputs.command_text }}
+        run: |
+          mkdir -p /tmp/part-d
+          printf '%s' "$COMMAND_TEXT" > /tmp/part-d/command.txt
+
+      - name: Run Part D
+        env:
+          BRAIN_API_TOKEN: ${{ secrets.BRAIN_API_TOKEN }}
+          ATTIO_API_KEY: ${{ secrets.ATTIO_API_KEY }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          FLAGS="--command-text-file /tmp/part-d/command.txt --json-out out/part-d-report.json"
+          if [ "${{ inputs.mode }}" = "live" ]; then
+            FLAGS="$FLAGS --live"
+          else
+            FLAGS="$FLAGS --dry-run"
+          fi
+          npx tsx src/cli/run-part-d.ts $FLAGS
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: part-d-report-${{ github.run_id }}
+          path: out/part-d-report.json
+          # Doesn't itself contain thread content the way Late Edition's
+          # report does (PartDReport is counts/outcomes, not summaries or
+          # draft text) -- same short retention anyway, no reason to keep
+          # execution logs around longer than necessary.
+          retention-days: 7
+          if-no-files-found: warn
