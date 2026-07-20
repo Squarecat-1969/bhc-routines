@@ -73,3 +73,31 @@ export interface WriteRowResult {
    */
   readonly secondaries: readonly SecondaryWriteResult[];
 }
+
+/**
+ * Top-level entry point types for index.ts. StopReason names the four
+ * places Part D can halt before ever reaching branch.ts — three post a
+ * specific message (see confirm.ts), one ("empty_run_set") posts nothing
+ * at all, per spec: "If empty: stop silently... a prior run already
+ * confirmed this digest."
+ */
+export type StopReason = 'no_run_id' | 'unrecognized_command' | 'empty_run_set' | 'no_valid_item_actions';
+
+export interface PartDOptions {
+  readonly commandText: string;
+  readonly dryRun: boolean;
+}
+
+export interface PartDReport {
+  readonly runId: string | null; // null only when parsing never got far enough to extract one
+  readonly dryRun: boolean;
+  readonly startedAt: string;
+  readonly finishedAt: string;
+  readonly aborted: boolean; // a genuine crash (proxy unreachable, etc.), distinct from a normal stop
+  readonly abortReason: string | null;
+  readonly command: 'PROCEED' | 'CORRECTIONS' | 'RESOLVE' | 'MIXED' | null;
+  readonly stopReason: StopReason | null;
+  readonly runSetSize: number;
+  readonly posted: boolean;
+  readonly confirmationMessage: string | null;
+}
