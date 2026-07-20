@@ -59,7 +59,7 @@ import { textOf } from '../lib/attio.js';
 import type { MasterIdIndex } from '../passes/pass4/load.js';
 import type { SheetsClient } from '../lib/sheets.js';
 import { iso, isBefore, parseFlexibleDate, type CivilDate } from '../lib/dates.js';
-import type { StagedTask, WriteRowInput, WriteRowResult } from './types.js';
+import type { SecondaryWriteResult, StagedTask, WriteRowInput, WriteRowResult } from './types.js';
 
 const OUTCOME_DEFAULT = 'Neutral';
 const ACTIVITY_LOG_APPEND_RANGE = 'Activity_Log!A1'; // append target — actual landing row determined by the API, same convention as PASS 0's own Activity_Log appends
@@ -336,6 +336,109 @@ export async function writeRow(
     writes.push(`Tasks_Open ${taskId} appended`);
   }
 
+  // ── 4f. Secondary contacts (lighter loop) ────────────────────────────────
+  // No Tasks_Log, no personal_context for secondaries (spec, explicit).
+  // Each secondary's failure is caught independently — one bad secondary
+  // never blocks another secondary or the primary's already-determined
+  // V=TRUE eligibility ("Secondary QA failure flags that secondary but does
+  // NOT block primary V=TRUE").
+  //
+  // No google branch here despite the spec's own STEP 4f prose ("Google
+  // BZ:CG: only if secondary has google object with google_row") —
+  // WriteTargetsSecondary (pass2/write-targets.ts) has no google field at
+  // all; buildSecondary never produces one. Confirmed against the real
+  // type, not assumed away — TypeScript itself would refuse to compile a
+  // reference to a field that doesn't exist on the type.
+  //
+  // Role-note text for Activity_Log's Body: the only place a secondary's
+  // role note survives into Write_Targets_JSON is inside
+  // attio.fields.last_meeting_summary, when an attio target exists at all
+  // (SecondaryTargetInput.roleNote feeds ONLY that field in buildSecondary,
+  // nothing separate). A secondary with no attio target has no role-note
+  // source data left to reconstruct — falls back to a generic line.
+  const secondaries: SecondaryWriteResult[] = [];
+  for (const secondary of writeTargets.secondary) {
+    const secWarnings: string[] = [];
+    let secAttioOk = false;
+    if (secondary.attio) {
+      const problem = verifyAttioRecordOwnership(masterId, secondary.bhc_id, secondary.attio.record_id);
+      if (problem) secWarnings.push(problem);
+      else secAttioOk = true;
+    }
+
+    const roleNote = secondary.attio?.fields.last_meeting_summary || 'Secondary contact on this thread.';
+    const secActivityId = makeActivityId(now);
+
+    let secOk = true;
+    try {
+      const secActivityRow: unknown[] = [
+        secActivityId, // A
+        nowIso, // B
+        secondary.bhc_id, // C
+        '', // D LinkedIn_URL — not looked up for secondaries, lighter loop
+        '', // E Contact_Name — not carried in WriteTargetsSecondary; blank rather than guessed
+        'Email', // F
+        'Email', // G
+        direction, // H
+        `[cc] ${subject}`, // I Subject
+        roleNote, // J Body
+        '', '', '', // K-M
+        'Neutral', // N Outcome — secondaries have no outcome field to draw from
+        '', '', // O, P — no next-action for secondaries
+        'late_edition', // Q
+        'Part D Resolve Handler', // R
+        secAttioOk ? 'ATTIO' : '', // S Source_CRM
+        '', // T
+        '', // U
+      ];
+      await sheets.append(ACTIVITY_LOG_APPEND_RANGE, [secActivityRow]);
+      writes.push(`Activity_Log ${secActivityId} appended (secondary ${secondary.bhc_id})`);
+    } catch (e) {
+      secOk = false;
+      secWarnings.push(`Secondary Activity_Log append failed: ${String(e)}`);
+    }
+
+    if (secAttioOk && secondary.attio) {
+      try {
+        await attio.updatePersonRecord(secondary.attio.record_id, { last_meeting_summary: roleNote });
+        writes.push(`Attio last_meeting_summary updated @ ${secondary.attio.record_id} (secondary)`);
+      } catch (e) {
+        secOk = false;
+        secWarnings.push(`Secondary Attio update failed: ${String(e)}`);
+      }
+    }
+
+    try {
+      const secContactHistoryRow: unknown[] = [
+        '', // Run_ID
+        secondary.bhc_id,
+        '', // Contact_Name — not carried in WriteTargetsSecondary
+        nowIso,
+        'Email', 'Email',
+        direction,
+        `[cc] ${subject}`,
+        roleNote,
+        '', '', '', '', '', // Key_Commitments, Personal_Details_Flag, Company_Intel, blank, blank
+        '', // Email_Thread_ID
+        'Late_Edition',
+        secActivityId, // Activity_Log_Ref = the SECONDARY's own fresh ACT- id, per spec
+      ];
+      await sheets.append(CONTACT_HISTORY_APPEND_RANGE, [secContactHistoryRow]);
+      writes.push(`Contact_History appended for secondary ${secActivityId}`);
+    } catch (e) {
+      secOk = false;
+      secWarnings.push(`Secondary Contact_History append failed: ${String(e)} — UNVERIFIED shape, see module doc comment`);
+    }
+
+    secondaries.push({
+      bhcId: secondary.bhc_id,
+      activityId: secActivityId,
+      attioRecordId: secAttioOk ? (secondary.attio?.record_id ?? null) : null,
+      ok: secOk,
+      warnings: secWarnings,
+    });
+  }
+
   // Reaching this point means Activity_Log succeeded — and Google BZ:CG too,
   // if it was attempted — since neither is wrapped in try/catch above (a
   // failure there is meant to propagate and stop the row, matching the
@@ -344,7 +447,7 @@ export async function writeRow(
   // So `ok` here just means "completed without a fatal, uncaught error" —
   // callers wanting to know about partial failures should check
   // warnings.length, which is the real, itemized signal, not this boolean.
-  return { ok: true, bhcId, activityId, writes, warnings, taskIds };
+  return { ok: true, bhcId, activityId, writes, warnings, taskIds, secondaries };
 }
 
 /**

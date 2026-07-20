@@ -38,6 +38,14 @@ export interface WriteRowInput {
   readonly brainCompleteRow: number;
 }
 
+export interface SecondaryWriteResult {
+  readonly bhcId: string;
+  readonly activityId: string | null;
+  readonly attioRecordId: string | null; // null when this secondary had no attio target, or it was withheld by the identity gate
+  readonly ok: boolean;
+  readonly warnings: readonly string[];
+}
+
 export interface WriteRowResult {
   readonly ok: boolean;
   readonly bhcId: string;
@@ -47,4 +55,12 @@ export interface WriteRowResult {
   readonly warnings: readonly string[];
   /** Attio task IDs created in 4d — QA reads these back; if exactly one, it's also written to Activity_Log col T per spec. */
   readonly taskIds: readonly string[];
+  /**
+   * 4f's lighter loop, one entry per secondary in writeTargets.secondary.
+   * Per spec: "Secondary QA failure flags that secondary but does NOT block
+   * primary V=TRUE" — each secondary's own ok/warnings are tracked
+   * independently of the primary's, and independently of each other, for
+   * exactly that reason.
+   */
+  readonly secondaries: readonly SecondaryWriteResult[];
 }

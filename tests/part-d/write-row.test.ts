@@ -356,3 +356,105 @@ describe('writeRow — Source_CRM reflects what was actually written, not merely
     expect(row[18]).toBe('GOOGLE'); // S — not BOTH, since Attio was withheld
   });
 });
+
+describe('writeRow — 4f secondary contacts (lighter loop)', () => {
+  it('writes Activity_Log + Attio + Contact_History for each secondary, independent of the primary', async () => {
+    const { sheets, attio, masterId } = await setup({
+      entries: [],
+      people: { 'rec-bob': { name: 'Bob Chen', bhcContactId: 'BHC-2' } },
+      masterId: [...MASTER_ID_ROWS, ['BHC-2', 'Bob Chen', 'ATTIO', '', 'rec-bob', '']],
+      contactsHeader: [], contacts: [],
+    });
+    const result = await writeRow(sheets, attio, masterId, baseInput({}, {
+      primary: { bhc_id: 'BHC-1' },
+      secondary: [{ bhc_id: 'BHC-2', attio: { record_id: 'rec-bob', fields: { last_meeting_summary: 'CC\'d on the contract thread.' } } }],
+    }));
+
+    expect(result.secondaries).toHaveLength(1);
+    expect(result.secondaries[0]!.bhcId).toBe('BHC-2');
+    expect(result.secondaries[0]!.ok).toBe(true);
+    expect(result.secondaries[0]!.attioRecordId).toBe('rec-bob');
+
+    const activityAppends = backend.sheetsWrites.filter((w) => (w.body as { range?: string }).range === 'Activity_Log!A1');
+    expect(activityAppends).toHaveLength(2); // primary + secondary
+    const secRow = (activityAppends[1]!.body as { values: unknown[][] }).values[0]!;
+    expect(secRow[2]).toBe('BHC-2'); // C Contact_ID
+    expect(secRow[8]).toBe('[cc] Re: contract'); // I Subject
+    expect(secRow[9]).toBe("CC'd on the contract thread."); // J Body — the role note
+
+    expect(backend.patched.get('rec-bob')?.['last_meeting_summary']).toBe("CC'd on the contract thread.");
+
+    const historyAppends = backend.sheetsWrites.filter((w) => (w.body as { range?: string }).range === 'Contact_History!A1');
+    expect(historyAppends).toHaveLength(2); // primary + secondary
+    const secHistoryRow = (historyAppends[1]!.body as { values: unknown[][] }).values[0]!;
+    expect(secHistoryRow[1]).toBe('BHC-2'); // BHC_ID
+    expect(secHistoryRow[16]).toBe(result.secondaries[0]!.activityId); // Activity_Log_Ref = the SECONDARY's own ACT- id
+  });
+
+  it('falls back to a generic role note when the secondary has no attio target at all', async () => {
+    const { sheets, attio, masterId } = await setup({
+      entries: [], people: {}, masterId: MASTER_ID_ROWS, contactsHeader: [], contacts: [],
+    });
+    await writeRow(sheets, attio, masterId, baseInput({}, {
+      primary: { bhc_id: 'BHC-1' },
+      secondary: [{ bhc_id: 'BHC-2' }], // no attio block — no role-note source data survives
+    }));
+    const activityAppends = backend.sheetsWrites.filter((w) => (w.body as { range?: string }).range === 'Activity_Log!A1');
+    const secRow = (activityAppends[1]!.body as { values: unknown[][] }).values[0]!;
+    expect(secRow[9]).toBe('Secondary contact on this thread.');
+  });
+
+  it('withholds a secondary\'s Attio write when Master_ID ownership mismatches, without affecting the primary or other secondaries', async () => {
+    const { sheets, attio, masterId } = await setup({
+      entries: [],
+      people: { 'rec-bob-real': { name: 'Bob Chen', bhcContactId: 'BHC-2' } },
+      masterId: [...MASTER_ID_ROWS, ['BHC-2', 'Bob Chen', 'ATTIO', '', 'rec-bob-real', '']],
+      contactsHeader: [], contacts: [],
+    });
+    const result = await writeRow(sheets, attio, masterId, baseInput({}, {
+      primary: {
+        bhc_id: 'BHC-1',
+        google: { google_row: 10, fields: { BZ: 'x', CA: 'Email', CB: 'Inbound', CD: 'x', CE: 'x', CG: 'Positive' } },
+      },
+      secondary: [{ bhc_id: 'BHC-2', attio: { record_id: 'rec-bob-stale', fields: { last_meeting_summary: 'x' } } }],
+    }));
+
+    expect(result.secondaries[0]!.attioRecordId).toBeNull(); // withheld
+    expect(result.secondaries[0]!.warnings.some((w) => w.includes('Master_ID'))).toBe(true);
+    expect(backend.patched.has('rec-bob-stale')).toBe(false);
+    // Primary's Google write is completely unaffected by the secondary's identity-gate failure
+    const googleWrite = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range?.startsWith('Contacts!BZ'));
+    expect(googleWrite).toBeDefined();
+  });
+
+  it('one failing secondary does not block another secondary from writing', async () => {
+    const { sheets, attio, masterId } = await setup({
+      entries: [],
+      people: { 'rec-charlie': { name: 'Charlie', bhcContactId: 'BHC-3' } },
+      masterId: [...MASTER_ID_ROWS, ['BHC-3', 'Charlie', 'ATTIO', '', 'rec-charlie', '']], // BHC-2 has no Master_ID entry at all
+      contactsHeader: [], contacts: [],
+    });
+    const result = await writeRow(sheets, attio, masterId, baseInput({}, {
+      primary: { bhc_id: 'BHC-1' },
+      secondary: [
+        { bhc_id: 'BHC-2', attio: { record_id: 'rec-nonexistent', fields: { last_meeting_summary: 'x' } } }, // no Master_ID entry
+        { bhc_id: 'BHC-3', attio: { record_id: 'rec-charlie', fields: { last_meeting_summary: 'Good secondary' } } },
+      ],
+    }));
+
+    expect(result.secondaries).toHaveLength(2);
+    expect(result.secondaries[0]!.attioRecordId).toBeNull(); // BHC-2 withheld
+    expect(result.secondaries[1]!.ok).toBe(true); // BHC-3 still succeeded
+    expect(backend.patched.get('rec-charlie')?.['last_meeting_summary']).toBe('Good secondary');
+  });
+
+  it('does not attempt any secondary writes when writeTargets.secondary is empty', async () => {
+    const { sheets, attio, masterId } = await setup({
+      entries: [], people: {}, masterId: MASTER_ID_ROWS, contactsHeader: [], contacts: [],
+    });
+    const result = await writeRow(sheets, attio, masterId, baseInput());
+    expect(result.secondaries).toHaveLength(0);
+    const activityAppends = backend.sheetsWrites.filter((w) => (w.body as { range?: string }).range === 'Activity_Log!A1');
+    expect(activityAppends).toHaveLength(1); // primary only
+  });
+});
