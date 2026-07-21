@@ -27,6 +27,23 @@
  * filter/sort logic — that would be a real drift risk (change bucket 1's
  * sort in one place, forget the other). One definition of "what's a bucket
  * N candidate," two different things done with the result.
+ *
+ * Stalled-relationship visibility (2026-07-21, real bug found and fixed,
+ * not a defensive guess): buildBucket3Full's candidate filter used to be
+ * isSameOrBefore(nextCheckIn, today) alone. Traced directly against
+ * cadence.ts (PASS 4): computeCadence's own "overdue catch-up" rule pushes
+ * nextCheckIn forward to today + cadenceDays/2 for ANY overdue contact —
+ * intentional, so the date doesn't pile up looking ever-more-overdue as
+ * time passes uncorrected. But stalled (daysSince > 2*cadenceDays) always
+ * implies overdue, so every stalled contact got this exact same
+ * forward-push applied to nextCheckIn too. The precise code that computes
+ * stalled=true is the same code that made a nextCheckIn-only filter blind
+ * to them. Result: counts.ts's staleRelationships count (its own separate
+ * r.stalled filter, unaffected by this bug) was always correct, while the
+ * actual list — what a person could see or act on — silently never
+ * included a relationship stalled badly enough to have already been
+ * caught by the catch-up rule. Fixed with "|| r.stalled" in bucket 3's
+ * filter below.
  */
 
 import { diffDays, iso, isSameOrBefore, parseFlexibleDate, type CivilDate } from '../../lib/dates.js';
@@ -121,7 +138,19 @@ function buildBucket2Full(brainCompleteRows: readonly Pass5BrainCompleteRow[]): 
 }
 
 function buildBucket3Full(cadenceResults: readonly CadenceRow[], today: CivilDate): readonly Omit<PlanItem, 'priority'>[] {
-  const due = cadenceResults.filter((r) => isSameOrBefore(r.nextCheckIn, today));
+  // "|| r.stalled" is the actual fix here, not a defensive extra clause —
+  // found by tracing cadence.ts directly, not assumed. computeCadence's own
+  // "overdue catch-up" rule pushes nextCheckIn forward to today + cadenceDays/2
+  // for ANY overdue contact, so the date doesn't just pile up looking
+  // ever-more-overdue as time passes. But stalled (daysSince > 2*cadenceDays)
+  // always implies overdue -- so every stalled contact gets this exact same
+  // forward-push applied to nextCheckIn too. The precise code that flags
+  // someone as stalled is the same code that hides them from a nextCheckIn-
+  // only filter. Without this clause, a stalled relationship's
+  // staleRelationships count (counts.ts, its own separate r.stalled filter)
+  // would keep incrementing while the contact never once became a candidate
+  // for the plan or the overflow twirldown -- correct count, invisible list.
+  const due = cadenceResults.filter((r) => isSameOrBefore(r.nextCheckIn, today) || r.stalled);
   due.sort((a, b) => {
     if (a.stalled !== b.stalled) return a.stalled ? -1 : 1; // stalled desc
     const aDays = a.daysSince ?? -1;

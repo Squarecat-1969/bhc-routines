@@ -113,6 +113,20 @@ describe('buildPlanItems — bucket 3: pipeline touches due', () => {
     expect(items.filter((i) => i.type === 'outreach')).toHaveLength(1);
   });
 
+  it('includes a stalled contact even when nextCheckIn is in the future — cadence.ts\'s own overdue-catch-up rule pushes every stalled contact\'s nextCheckIn forward, so a date-only filter would silently exclude exactly the relationships that need surfacing most', () => {
+    const items = buildPlanItems(
+      [],
+      [],
+      [
+        cadenceRow({ recordId: '1', bhcId: 'BHC-1', name: 'PushedForwardButStalled', stalled: true, nextCheckIn: '2026-08-15' as never, daysSince: 200 }),
+        cadenceRow({ recordId: '2', bhcId: 'BHC-2', name: 'NotDueNotStalled', stalled: false, nextCheckIn: '2026-08-15' as never }),
+      ],
+      TODAY,
+    );
+    const outreach = items.filter((i) => i.type === 'outreach');
+    expect(outreach.map((i) => i.contact)).toEqual(['PushedForwardButStalled']); // only the stalled one, not the merely-not-due one
+  });
+
   it('sorts stalled first, then by days_since descending', () => {
     const items = buildPlanItems(
       [],
@@ -186,6 +200,16 @@ describe('buildOverflowItems', () => {
     expect(plan.filter((i) => i.type === 'reply')).toHaveLength(4); // unchanged bucket cap
     expect(overflow.filter((i) => i.type === 'reply')).toHaveLength(2); // the 2 that didn't fit
     expect(overflow.map((i) => i.contact)).toEqual(['C4', 'C5']); // next in the same sort order
+  });
+
+  it('surfaces a stalled contact (with a future, catch-up-pushed nextCheckIn) in the overflow twirldown when crowded out of bucket 3\'s own 4-item cap — the actual point of the stalled-visibility fix: it is never simply invisible, worst case it lands here instead of the top 10', () => {
+    const stalledRows = Array.from({ length: 5 }, (_, i) =>
+      cadenceRow({ recordId: `${i}`, bhcId: `BHC-${i}`, name: `Stalled${i}`, stalled: true, nextCheckIn: '2026-09-01' as never, daysSince: 200 - i }),
+    );
+    const plan = buildPlanItems([], [], stalledRows, TODAY);
+    const overflow = buildOverflowItems([], [], stalledRows, TODAY, plan);
+    expect(plan.filter((i) => i.type === 'outreach')).toHaveLength(4); // bucket 3's own cap
+    expect(overflow.filter((i) => i.type === 'outreach')).toHaveLength(1); // the 5th stalled contact — NOT dropped, just not in the top 10
   });
 
   it('surfaces a contact dropped by cross-bucket dedup, not silently — the exact scenario from the dedup test above', () => {
