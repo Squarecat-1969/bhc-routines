@@ -67,13 +67,49 @@ jobs:
             echo "Manual dispatch — skipping the time guard."
             exit 0
           fi
-          LA_HOUR=$(TZ='America/Los_Angeles' date +%H)
-          if [ "$LA_HOUR" = "23" ]; then
+          # REAL BUG, FOUND LIVE 2026-07-22, NOT A DEFENSIVE GUESS: the
+          # original guard checked "is the CURRENT Pacific hour 23 right
+          # now" -- but GitHub Actions cron is "best effort," and this
+          # specific workflow was observed running 2-3 hours late on
+          # BOTH nights it's been enabled (confirmed via the Actions API:
+          # nominal fire 06:00/07:00 UTC, actual execution 08:35-09:28 UTC
+          # both nights). By the time a delayed run's guard step actually
+          # checked the clock, the Pacific hour had already drifted well
+          # past 23 -- so BOTH of that night's cron-pair fires missed the
+          # exact-hour match and BOTH got skipped, every single night.
+          # Late Edition silently never ran at all via cron since it was
+          # enabled -- confirmed against Bobby's own #aida Slack history
+          # showing zero real digest posts, only Part D confirmations and
+          # Zoom notifications in between.
+          #
+          # Fix: check WHICH cron expression triggered this run
+          # (github.event.schedule -- a fixed string GitHub sets at
+          # trigger time, immune to any later execution delay) against
+          # which DST regime Pacific Time is CURRENTLY in (a date's DST
+          # status doesn't drift by a few hours of delay the way an exact
+          # clock-hour check does -- DST flips twice a year, not hourly).
+          TZ_ABBR=$(TZ='America/Los_Angeles' date +%Z)
+          echo "Pacific timezone abbreviation right now: $TZ_ABBR"
+          echo "Cron expression that triggered this run: ${{ github.event.schedule }}"
+          if [ "$TZ_ABBR" = "PDT" ] && [ "${{ github.event.schedule }}" = "0 6 * * 1-5" ]; then
             echo "should_run=true" >> "$GITHUB_OUTPUT"
-            echo "Current Pacific hour is 23 — this is the correct cron fire for today's DST regime, proceeding."
+            echo "PDT is active and this run came from the PDT-matching cron (0 6 * * 1-5) -- proceeding."
+          elif [ "$TZ_ABBR" = "PST" ] && [ "${{ github.event.schedule }}" = "0 7 * * 1-5" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "PST is active and this run came from the PST-matching cron (0 7 * * 1-5) -- proceeding."
+          elif [ "$TZ_ABBR" != "PDT" ] && [ "$TZ_ABBR" != "PST" ]; then
+            # Fail OPEN, not closed, on a genuinely unexpected TZ result.
+            # A double-run some rare night is wasteful but harmless --
+            # Late Edition's own idempotency (blank-col-V filters, PASS
+            # 2.5 reconciliation) already tolerates re-invocation safely.
+            # A silent skip is the worse, more visible failure -- it's
+            # the exact problem this whole fix exists to stop happening
+            # again.
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "Unexpected TZ abbreviation '$TZ_ABBR' -- failing open (run anyway) rather than risk another silent skip."
           else
             echo "should_run=false" >> "$GITHUB_OUTPUT"
-            echo "Current Pacific hour is $LA_HOUR, not 23 — this is the DST-mismatched cron fire (the other expression already ran, or will), skipping."
+            echo "Cron ${{ github.event.schedule }} does not match the current DST regime ($TZ_ABBR) -- this is the other expression's redundant twin, skipping."
           fi
 
       - uses: actions/checkout@v4
