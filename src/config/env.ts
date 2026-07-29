@@ -8,7 +8,7 @@ import { z } from 'zod';
 const EnvSchema = z.object({
   BRAIN_API_TOKEN: z.string().min(1, 'BRAIN_API_TOKEN is required'),
   ATTIO_API_KEY: z.string().min(1, 'ATTIO_API_KEY is required'),
-  SLACK_WEBHOOK_URL: z.string().url().optional(),
+  ZAPIER_SLACK_HOOK_URL: z.string().url().optional(),
   ANTHROPIC_BHC_ROUTINES_API: z.string().min(1).optional(),
   RUN_TIMEZONE: z.string().min(1).default('UTC'),
   SHEETS_PROXY_URL: z.string().url().default('https://aida.hougham.us/api/brain/sheets'),
@@ -26,7 +26,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   const parsed = EnvSchema.safeParse({
     BRAIN_API_TOKEN: blankToUndefined(source.BRAIN_API_TOKEN),
     ATTIO_API_KEY: blankToUndefined(source.ATTIO_API_KEY),
-    SLACK_WEBHOOK_URL: blankToUndefined(source.SLACK_WEBHOOK_URL),
+    ZAPIER_SLACK_HOOK_URL: blankToUndefined(source.ZAPIER_SLACK_HOOK_URL),
     ANTHROPIC_BHC_ROUTINES_API: blankToUndefined(source.ANTHROPIC_BHC_ROUTINES_API),
     RUN_TIMEZONE: blankToUndefined(source.RUN_TIMEZONE),
     SHEETS_PROXY_URL: blankToUndefined(source.SHEETS_PROXY_URL),

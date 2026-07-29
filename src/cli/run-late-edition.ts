@@ -88,10 +88,10 @@ async function main(): Promise<void> {
     onRetry: ({ attempt, delayMs }) => logger.warn(`  anthropic retry ${attempt} in ${delayMs}ms`),
   });
   const slack =
-    !args.dryRun && env.SLACK_WEBHOOK_URL
-      ? createSlackPoster(env.SLACK_WEBHOOK_URL)
+    !args.dryRun && env.ZAPIER_SLACK_HOOK_URL
+      ? createSlackPoster({ hookUrl: env.ZAPIER_SLACK_HOOK_URL })
       : createNoopSlackPoster((text) => {
-          logger.info(`Slack post skipped (${args.dryRun ? 'dry run' : 'no SLACK_WEBHOOK_URL'}). Would post:`);
+          logger.info(`Slack post skipped (${args.dryRun ? 'dry run' : 'no ZAPIER_SLACK_HOOK_URL'}). Would post:`);
           logger.info(text);
         });
 

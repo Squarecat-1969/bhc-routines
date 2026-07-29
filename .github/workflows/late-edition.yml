@@ -135,7 +135,7 @@ jobs:
         env:
           BRAIN_API_TOKEN: ${{ secrets.BRAIN_API_TOKEN }}
           ATTIO_API_KEY: ${{ secrets.ATTIO_API_KEY }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          ZAPIER_SLACK_HOOK_URL: ${{ secrets.ZAPIER_SLACK_HOOK_URL }}
           ANTHROPIC_BHC_ROUTINES_API: ${{ secrets.ANTHROPIC_BHC_ROUTINES_API }}
           RUN_TIMEZONE: UTC
         run: |

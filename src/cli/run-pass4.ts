@@ -121,10 +121,10 @@ async function main(): Promise<void> {
 
   const addendum = buildSlackAddendum(report);
   const slack =
-    !args.dryRun && env.SLACK_WEBHOOK_URL
-      ? createSlackPoster(env.SLACK_WEBHOOK_URL)
+    !args.dryRun && env.ZAPIER_SLACK_HOOK_URL
+      ? createSlackPoster({ hookUrl: env.ZAPIER_SLACK_HOOK_URL })
       : createNoopSlackPoster((text) => {
-          logger.info(`Slack post skipped (${args.dryRun ? 'dry run' : 'no SLACK_WEBHOOK_URL'}). Would post:`);
+          logger.info(`Slack post skipped (${args.dryRun ? 'dry run' : 'no ZAPIER_SLACK_HOOK_URL'}). Would post:`);
           console.log(text);
         });
   await slack.post(addendum);

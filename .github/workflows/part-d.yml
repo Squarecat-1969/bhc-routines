@@ -85,7 +85,7 @@ jobs:
         env:
           BRAIN_API_TOKEN: ${{ secrets.BRAIN_API_TOKEN }}
           ATTIO_API_KEY: ${{ secrets.ATTIO_API_KEY }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          ZAPIER_SLACK_HOOK_URL: ${{ secrets.ZAPIER_SLACK_HOOK_URL }}
         run: |
           FLAGS="--command-text-file /tmp/part-d/command.txt --json-out out/part-d-report.json"
           if [ "${{ inputs.mode }}" = "live" ]; then
