@@ -1,38 +1,54 @@
 name: Late Edition
 
-# Runs automatically 11pm Sun-Thu (Pacific time). GitHub Actions cron is
-# always UTC and does NOT observe DST, so a single expression can't hold
-# "11:00 PM Pacific" year-round — two expressions cover both halves of the
-# year (see docs/pass4-notes.md #1 for the full reasoning):
+# Triggered by the "Late Edition Launcher" Zap: Schedule by Zapier at 11:00 PM
+# America/Los_Angeles, filtered to Sun-Thu, POSTing to this workflow's
+# workflow_dispatch endpoint with mode=live. Zapier fires on the minute;
+# GitHub's own cron is explicitly best-effort and was running this 2.5-4 hours
+# late every single night (run #21 on 2026-08-03: nominal 23:00 PT, actual
+# execution 02:53 PT). The schedule triggers below are commented out as of
+# 2026-08-03 so the two paths can't both fire and double-write.
 #
-#   11:00 PM PDT (UTC-7, ~Mar-Nov) = 06:00 UTC the NEXT day  -> '0 6 * * 1-5'
-#   11:00 PM PST (UTC-8, ~Nov-Mar) = 07:00 UTC the NEXT day  -> '0 7 * * 1-5'
+# CONSEQUENCE OF HAVING NO `schedule:` TRIGGER: `github.event_name` is never
+# "schedule", so the guard step below always passes and its cron-matching
+# logic is dormant. --live now comes SOLELY from the Zap's `inputs.mode`. If
+# that input is ever dropped, GitHub falls back to the `dry-run` default and
+# this workflow runs green while writing nothing — a missing #aida digest is
+# the symptom, not a red X.
 #
-# CRITICAL: both expressions fire EVERY weekday, year-round, unconditionally
-# — cron itself has no concept of "only in summer." Without a runtime guard,
-# this means the ENTIRE routine (real Sheets/Attio writes, a real Slack
-# post) would run TWICE every night, one hour apart, since
-# cancel-in-progress: false means the second run queues rather than getting
-# skipped. The "check the current time" step below is that guard: it reads
-# the actual current Pacific hour and only proceeds if it's really 11pm
-# there right now, so only one of the two cron fires ever does real work on
-# any given night, regardless of season.
+# TO REVERT to GitHub-native cron, uncomment the block below. The `schedule:`
+# key and its two cron lines must be uncommented TOGETHER — a bare `schedule:`
+# with no entries is an invalid workflow file and would break
+# workflow_dispatch along with it. The guard step is retained, dormant, for
+# exactly this path. Its reasoning, still accurate and worth preserving:
 #
-# Note the day shift: a Sunday-Thursday run in Los Angeles is Monday-Friday
-# in UTC. Using '* * 0-4' would fire on the wrong days.
+#   GitHub Actions cron is always UTC and does NOT observe DST, so a single
+#   expression can't hold "11:00 PM Pacific" year-round — two expressions
+#   cover both halves of the year (see docs/pass4-notes.md #1 for the full
+#   reasoning):
 #
-# Manual runs via workflow_dispatch skip this guard entirely (they're
-# intentional) and remain available for testing (dry-run by default).
+#     11:00 PM PDT (UTC-7, ~Mar-Nov) = 06:00 UTC the NEXT day -> '0 6 * * 1-5'
+#     11:00 PM PST (UTC-8, ~Nov-Mar) = 07:00 UTC the NEXT day -> '0 7 * * 1-5'
+#
+#   CRITICAL: both expressions fire EVERY weekday, year-round, unconditionally
+#   — cron itself has no concept of "only in summer." Without a runtime guard,
+#   the ENTIRE routine (real Sheets/Attio writes, a real Slack post) would run
+#   TWICE every night, one hour apart, since cancel-in-progress: false means
+#   the second run queues rather than getting skipped. The guard step below is
+#   what stops that: it checks WHICH cron expression fired against the DST
+#   regime Pacific Time is currently in, so only one of the two fires ever
+#   does real work on any given night, regardless of season.
+#
+#   Note the day shift: a Sunday-Thursday run in Los Angeles is Monday-Friday
+#   in UTC. Using '* * 0-4' would fire on the wrong days.
+#
+# Dispatch runs (the Zap's, and any manual "Run workflow" click) skip the
+# guard entirely — they're intentional by definition. Manual runs remain
+# available for testing and default to dry-run.
 
 on:
-  schedule:
-    # Superseded by the "Late Edition Launcher" Zap (Schedule by Zapier,
-    # 11:00 PM America/Los_Angeles → workflow_dispatch). GitHub's own cron
-    # is best-effort and was firing 2.5–4 hours late every night; Zapier
-    # fires on the minute. Re-enable only if the Zap is retired, and if you
-    # do, restore the DST guard's reason for existing.
-    # - cron: '0 6 * * 1-5'   # 11pm PDT Sun-Thu (summer)
-    # - cron: '0 7 * * 1-5'   # 11pm PST Sun-Thu (winter)
+  # schedule:
+  #   - cron: '0 6 * * 1-5'   # 11pm PDT Sun-Thu (summer)
+  #   - cron: '0 7 * * 1-5'   # 11pm PST Sun-Thu (winter)
   workflow_dispatch:
     inputs:
       mode:
