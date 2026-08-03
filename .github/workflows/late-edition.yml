@@ -26,8 +26,13 @@ name: Late Edition
 
 on:
   schedule:
-    - cron: '0 6 * * 1-5'   # 11pm PDT Sun-Thu (summer)
-    - cron: '0 7 * * 1-5'   # 11pm PST Sun-Thu (winter)
+    # Superseded by the "Late Edition Launcher" Zap (Schedule by Zapier,
+    # 11:00 PM America/Los_Angeles → workflow_dispatch). GitHub's own cron
+    # is best-effort and was firing 2.5–4 hours late every night; Zapier
+    # fires on the minute. Re-enable only if the Zap is retired, and if you
+    # do, restore the DST guard's reason for existing.
+    # - cron: '0 6 * * 1-5'   # 11pm PDT Sun-Thu (summer)
+    # - cron: '0 7 * * 1-5'   # 11pm PST Sun-Thu (winter)
   workflow_dispatch:
     inputs:
       mode:
