@@ -1,0 +1,427 @@
+# Contacts Triage — build notes
+
+Resolutions, deliberate deviations, and open questions from building the
+Contacts Triage routine against its build spec. Same purpose as
+`pass4-notes.md` and friends: where the spec was ambiguous or where the
+implementation had to depart from it, the reasoning is recorded here rather
+than being quietly baked into the code.
+
+---
+
+## 0a. FIRST LIVE WRITE ATTEMPT — FAILED, 2026-08-09
+
+**Current state of the sheet: one header write landed, ZERO data rows on
+either tab.** Verified by reading both tabs back after the failure, not
+inferred from the error.
+
+| | State |
+|---|---|
+| `Contacts_Triage_Queue` header | **24 columns — extended by this run** |
+| `Contacts_Triage_Queue` data | **0 rows** |
+| `Contact_Exclusions` header | 7 columns (untouched, already correct) |
+| `Contact_Exclusions` data | **0 rows** |
+
+The queue write aborted with:
+
+```
+HTTP 400 — Requested writing within range [Contacts_Triage_Queue!A2:V98],
+           but tried writing to column [W]
+```
+
+**Cause: a hardcoded column letter.** `writeQueue` built its range as
+`A2:V{n}` by hand while the row serializer had grown to 24 columns when
+`provenance_source` and `connection_strength` were appended (#0b). Sheets
+refuses a 24-wide row into a 22-wide range and rejects the whole batch.
+
+**Why every test passed anyway** — the more important half. The fake Sheets
+backend accepted a write of any width into any range; real Sheets does not.
+The fake was more permissive than the thing it stood in for, so a whole class
+of range/width bug was invisible to the suite. Both ends are now closed:
+
+- `QUEUE_LAST_COLUMN` is derived from `QUEUE_COLUMNS`; no write range spells a
+  column letter by hand.
+- `writeQueue` refuses a row whose width isn't `QUEUE_COLUMNS`, so the failure
+  is a legible local error rather than a 400 after the run has already spent
+  its enumeration and its LLM calls.
+- The fake backend now reproduces Sheets' own rejection, message and all.
+  Reverting the fix fails 5 tests, including one written specifically for this.
+
+**Not retried, per instruction.** A partial write is diagnostically useful; a
+retry on top of one is not. The run is safe to repeat — the queue is empty, the
+merge treats an empty tab as "all new", and no exclusion rows were appended, so
+nothing will be double-written.
+
+**The header extension is worth noting on its own.** The tab was believed to
+already carry all 24 columns; it had 22. The preflight's
+extend-a-short-header path (#14) — kept in on the grounds that it was "correct
+behaviour for the next tab that's short" — turned out to be needed on this
+tab, immediately.
+
+## 0b. Live dry-run results, 2026-08-08 (read-only, nothing written)
+
+First execution against production Attio. **STEP 1 and STEP 2 completed and
+match the spec's predictions exactly. STEP 3 onward is blocked on one API-key
+scope**, so there is no band histogram yet.
+
+| | Result | Spec expected |
+|---|---|---|
+| Total people in Attio | 2,505 | — |
+| With `bhc_contact_id` | 2,223 | — |
+| **Unbridged** | **282** | ~282 ✅ |
+| **2026-07-22 compromise blast** | **170** | ~170 ✅ |
+| thenewblank.com internal | 7 | — |
+| Bobby's own addresses | 3 | — |
+| Unattended role/no-reply | 0 | — |
+| **Total excluded** | **180** | — |
+| **Candidates to score** | **102** | ~111 |
+| Enumeration cross-check | **passed** | — |
+
+Two things were fixed as a direct result of this run — see #2 and #3.
+
+### BLOCKER: the Attio API key lacks the Emails scope
+
+```
+GET /v2/emails -> 403
+"The API Key provided is not authorized to perform the requested action.
+ This request requires scopes: Read access to the Emails scope.
+ Admins can grant additional scopes to this API key at
+ Workspace settings -> Developers -> [the key]"
+```
+
+**The endpoint path was right.** `/v2/emails` exists (probed alongside
+`/threads`, `/activities`, `/interactions`, `/messages` — the last three return
+a genuine 404 "Could not find endpoint"). Attio's workspace has only two
+objects, `people` and `companies`, so email data is not an object-records
+endpoint; `/v2/emails` is its own thing, exactly as assumed.
+
+The fix is a permission grant, not code: **Workspace settings → Developers →
+the bhc-routines key → grant read access to the Emails scope.**
+
+The record-scoping query parameter still can't be confirmed — Attio checks the
+scope *before* it validates parameters, so `?linked_record_id=`,
+`?record_id=` and a deliberately bogus `?wibble=` all return the identical
+403. Once the scope is granted, one command settles it:
+
+```bash
+npm run contacts-triage -- --dump-email-shapes <attio_person_record_id>
+```
+
+and `ATTIO_EMAILS_RECORD_PARAM` absorbs the answer if it isn't the default.
+
+Scoring was **not** run on partial data. Direction, count, span and
+client-team coherence all come from the email metadata, so an
+attributes-only histogram would be missing the heaviest weight in the model
+for every contact and would be actively misleading as a tuning input. The
+run aborts instead, which is the guard working as designed.
+
+---
+
+## 1. Enumeration is a full client-side walk, not a server-side filter
+
+**Spec:** "Attio REST, list people, filter bhc_contact_id empty. Paginate...
+Use run-basic-report style counts to verify your enumeration total matches
+(total people) − (people with bhc_contact_id) before proceeding."
+
+**What was built:** every person record is fetched via `records/query` and split
+into bridged/unbridged in `enumerate.ts`. No server-side emptiness filter.
+
+**Why:** the spec asks for both a filtered enumeration and a cross-check of that
+enumeration against a count. If the enumeration itself came from a filter, the
+cross-check would be the same query asked twice — it would confirm nothing.
+Walking everything makes the count ground truth and leaves the filtered query
+free to be a genuinely independent check.
+
+Cost is modest: ~2,900 people at 500/page is six requests.
+
+The walk also carries a structural guard the spec doesn't mention. Offset
+pagination without an explicit sort can repeat or skip a record if the
+underlying order shifts mid-walk; `listAllPeople` dedupes by record id and
+reports any repeat, and the routine **aborts** on one. A duplicate at a page
+boundary is the visible symptom of exactly the silent under-enumeration the
+spec says is worse than no run.
+
+`sorts` is deliberately not sent on the query. An unsupported sort expression
+would 400 the entire enumeration — a worse failure than the one it guards
+against.
+
+## 2. "Cross-check failed" and "cross-check unavailable" are different outcomes
+
+**Spec:** "If it doesn't [match], stop and report."
+
+**Corrected after the 2026-08-08 live run.** The original implementation used
+`{bhc_contact_id: {$not_empty: true}}`. Attio rejects it:
+
+```
+"Invalid operator \"$not_empty\" for field \"value\", must be one of
+ (\"$contains\", \"$ends_with\", \"$eq\", \"$in\", \"$starts_with\")"
+```
+
+The check now filters `$starts_with` against **the longest common prefix of
+the bridged IDs the walk itself observed** (`BHC-` in this workspace, from
+values like `BHC-00337`). Derived rather than hardcoded, so it doesn't quietly
+break if the ID format changes; if the observed IDs share no usable prefix, the
+check reports `unavailable` rather than guessing. **This now passes live**:
+2,505 total − 2,223 matching = 282 unbridged, matching the walk.
+
+That the check was written against an unsupported operator and *reported
+itself as unavailable* rather than passing is exactly the behaviour below
+working as intended:
+
+- **failed** — the check ran and the numbers disagree → **abort**, exactly as
+  the spec says.
+- **unavailable** — the check could not run at all (unsupported operator, HTTP
+  error) → loud warning in the console report, in the `#aida` post, and in
+  `warnings[]`; the run continues on the full walk.
+
+Refusing to run because an unverified operator isn't supported would be failing
+closed on the wrong signal. If the check turns out to be permanently
+unavailable, that is worth knowing and fixing — the warning makes it visible
+rather than letting it pass as a green run.
+
+## 3. Attio email metadata — path confirmed, scope missing
+
+**Status after 2026-08-08:** the field shape is confirmed by Bobby against live
+data (sender, recipients as a full array, `sent_at`, `subject_line`, `summary`;
+`sender === bobby@thenewblank.com` is outbound), and the REST path `/v2/emails`
+is confirmed to exist. What blocks the run is the **API key's Emails scope** —
+see #0. The record-scoping parameter remains unconfirmed because Attio's scope
+check precedes parameter validation.
+
+The confirmed field names now lead their candidate lists in the `FIELDS` table.
+The alternates stay: the confirmation was against the data Bobby inspected, and
+the REST response may name things differently from what he saw.
+
+Mitigations, all in place and all still earning their keep:
+
+- **Path and record parameter are configuration**, not literals:
+  `ATTIO_EMAILS_PATH` and `ATTIO_EMAILS_RECORD_PARAM`. Correcting them is a
+  secret change, not a code change and a deploy.
+- **The parser accepts several plausible namings per field** and returns null
+  rather than guessing when none match. `tests/contacts-triage/attio-emails.test.ts`
+  exercises every shape it claims to tolerate.
+- **`--dump-email-shapes <record_id>`** prints the raw payload for one record —
+  the same discipline PASS 4's `--dump-shapes` used before it was trusted.
+- **A contact whose emails can't be fetched is flagged, never silently scored
+  as "no history."** `emailDataAvailable: false` suppresses the direction and
+  count contributions entirely (missing evidence is not negative evidence),
+  falls back to the record's own `first_email_interaction` /
+  `last_email_interaction` attributes for span, and puts "email history
+  unavailable" at the front of the reason line where Bobby will see it.
+- **If it fails for every candidate, the run aborts** rather than producing a
+  full queue scored on almost nothing.
+
+**Verification sequence, once the Emails scope is granted:**
+
+```bash
+npm run contacts-triage -- --dump-email-shapes <a_real_attio_person_record_id>
+```
+
+Read off the real field names, set `ATTIO_EMAILS_RECORD_PARAM` if the scoping
+parameter isn't `linked_record_id`, extend the `FIELDS` table in
+`lib/attio-emails.ts` if any name differs, then:
+
+```bash
+npm run contacts-triage:dry -- --no-llm
+```
+
+and confirm `emailFetchFailures` is 0 before anything is staged.
+
+## 4. FLAGGED CONTRADICTION — "junk ASC (shakiest junk calls surface first)"
+
+**Spec, STEP 5:** "keepers and unclear DESC, junk ASC (shakiest junk calls
+surface first, where they'll actually be read)."
+
+These two halves disagree. Ascending by `keeper_probability` puts a 3 first —
+the *most* confident junk call. The shakiest junk call is a 24, at the top of
+the band, which ascending order buries at the bottom.
+
+**Implemented literally** (junk ascending), because the same paragraph says
+"Sorting is Aida's job, but record enough for it" — the routine's actual
+obligation is to record `column` and `keeper_probability`, which it does, and
+the tab's own order is cosmetic. The comparator is one line in
+`queue.ts#sortMerged` if Bobby confirms the parenthetical was the intent.
+
+## 5. Clamp events are routed to Unclear
+
+**Spec:** "Violent disagreement means something is wrong, and it should surface
+as an Unclear card rather than a confident verdict."
+
+Implemented as: when a clamp fires, `column` is forced to `unclear` regardless
+of where the clamped score lands. Without this, a deterministic 84 against an
+LLM 100 clamps to 100 and presents as a confident keeper — which is exactly the
+confident verdict the spec says a violent disagreement should not produce.
+
+Both scores are stored (`deterministic_score`, `llm_score`) and the clamp is
+recorded in `clamped` and named in the reason line, so nothing is hidden by the
+reband. Clamp rate is reported, and the console report calls it out explicitly
+above 25% of calls — "frequent clamping means the thresholds or the
+deterministic weights need tuning."
+
+## 6. Recoverable, per exclusion reason
+
+The spec only mandates recoverable for the compromise cohort. The rest:
+
+| Reason | Recoverable | Why |
+|---|---|---|
+| 2026-07-22 compromise blast | **TRUE** | Spec-mandated. ~64% had genuine prior correspondence; they're low-value, not "not a person." |
+| bobby own address | FALSE | Never a contact to track, under any later reconsideration. |
+| thenewblank.com internal | FALSE | Same. |
+| unattended role/no-reply address | FALSE | Not a person at all. |
+| only interaction is a hard bounce | **TRUE** | A stale address is a data problem, not a verdict about the human. |
+
+## 7. `mail.com` and the bare-subdomain rule
+
+**Spec, STEP 2d:** "bare subdomain senders like `email.*`, `mail.*`,
+`notifications.*`".
+
+Taken literally, `mail.*` hard-excludes `mail.com` — a real consumer mailbox
+provider people actually use — and a hard exclude never becomes a card at all.
+The rule therefore requires the domain to have **three or more labels**, so it
+matches `mail.notion.so` but not `mail.com`.
+
+This asymmetry drives every judgment call in `excludes.ts`: a wrongly-excluded
+contact disappears silently, while a wrongly-kept one costs Bobby one junk card
+he archives in a second. Every rule matches narrowly and is extended
+deliberately.
+
+Related: the role-address exclusion only fires when **every** address on the
+record is a role address. A record with `orders@shop.com` *and*
+`jane.doe@shop.com` is a person with a shared mailbox attached, not a mailbox.
+
+## 8. The weights are a hypothesis, and the report is built to tune them
+
+`score.ts#WEIGHTS` is a single exported table, and `scoreContact` returns the
+itemized contributions that produced the score. The console report prints the
+**deterministic** band distribution as a labelled histogram, marked as "the
+number to tune against", separately from the final post-LLM distribution.
+
+Structural properties the weights are built to preserve, asserted in
+`score.test.ts`:
+
+- Two-way correspondence outweighs any other single signal.
+- Every count bonus is gated behind span — "12 emails in one hour is one event,
+  not a relationship" can never score as a relationship.
+- Client-team coherence is positive; blast is negative; recipient count on its
+  own contributes nothing to the score.
+
+## 9. Rows are only dropped on positive evidence
+
+STEP 6 says to skip anything that has acquired a `bhc_contact_id` and anything
+in `Contact_Exclusions`. Both are implemented as **drops** from the queue —
+they're finished.
+
+A row whose contact simply wasn't seen in this run's enumeration is **kept**,
+with a warning. Deleted-in-Attio and half-completed-enumeration look identical
+from inside the merge, and one of those two silently discards Bobby's pending
+decisions. If stale rows accumulate, the warning is the signal to look.
+
+Relatedly, a row with an **unrecognized** status is treated as a decision to
+preserve, not as pending. A typo in that column should not be enough to
+overwrite a verdict.
+
+## 10. Dry run and the LLM
+
+A dry run makes **real Anthropic calls** for in-band contacts, matching PASS 2's
+convention (`pass2:dry` "writes nothing to Sheets, but DOES call the real
+Anthropic API"). `--no-llm` gives a free run showing only the deterministic
+distribution — which is the number the thresholds get tuned against anyway, so
+that is the recommended first command.
+
+## 11. Tabs are not created by this routine
+
+The Sheets proxy supports read/update/append — it cannot create a tab. A
+missing tab therefore **aborts a live run** with a message naming the tab and
+its required header, and lets a **dry run continue** (showing the distribution
+before anything is staged is the dry run's entire job).
+
+Both tabs must be created by hand before the first live run:
+
+- **`Contacts_Triage_Queue`** — 22 columns, A–V, in `QUEUE_HEADER` order.
+- **`Contact_Exclusions`** — 7 columns, A–G, in `EXCLUSIONS_HEADER` order.
+
+The routine writes the header row itself if the tab exists but is empty, and
+**refuses to write into a tab whose header doesn't match** — Aida reads the
+queue positionally, so the column order is a contract.
+
+## 12. Auto-replies are interactions, never replies (correction, 2026-08-08)
+
+An out-of-office was counting as inbound correspondence. Live example: Rachel
+Ross's only inbound message is an OOO — enough, under the original logic, to
+register as two-way correspondence and collect the single heaviest weight in
+the model. Every OOO in the CRM would have become evidence of a relationship,
+and the compromise cohort would have lit up with them.
+
+`isAutoReply` matches, case-insensitively and after stripping any Re:/Fwd:
+wrappers: `automatic reply`, `out of office`, `auto:`. Auto-replies are
+excluded from direction detection **entirely** — including from the outbound
+side, symmetrically — and from the client-team reply requirement, while still
+counting toward volume, span and distinct days. `autoReplyCount` is carried in
+the signals and named in the LLM prompt.
+
+**One extension beyond the correction as given:** auto-replies are also
+deprioritised in the provenance line. Fewest-recipients wins, and an OOO is
+almost always a one-recipient message, so without this "Automatic reply: Out of
+office" would routinely be handed to Bobby as the single most identifying thing
+about a contact. Non-auto-reply emails are preferred; auto-replies are used only
+when there is nothing else. Flagged here because it wasn't asked for.
+
+## 13. Direction is thread-level, not person-level (correction, 2026-08-08)
+
+The original implementation required the reply to come from one of the
+contact's **own** addresses — and shipped with a comment defending that and a
+test asserting it. It was wrong, and wrong in the expensive direction: on a
+10-recipient client thread, everyone who didn't personally type a reply scores
+one-way and falls toward junk.
+
+Live example: "DSG6269 — LOYALTY 15 MOVE app Delivery", 27 Jul – 4 Aug, eight
+@dcsg.com recipients. Andrew Kobliska replied; Rachel Ross did not. All eight
+are legitimate contacts. A live thread is evidence about everyone on it.
+
+Now: a reply from **any** address at the contact's company domain makes the
+contact two-way. Restricted to non-freemail domains — "another gmail.com user
+replied" says nothing about a gmail.com contact.
+
+Both kinds are recorded rather than collapsed:
+
+- `inboundCount` — the contact replied personally.
+- `teamInboundCount` — a colleague at their domain replied.
+- `replySource` — `contact` | `team` | `none`, surfaced in the reason line and
+  in the LLM prompt.
+
+`WEIGHTS.directionTwoWayTeam` (28) sits below a personal reply (35) and far
+above outbound-only (3): a colleague's reply is real evidence the thread is
+live, while a personal reply is *additionally* evidence about that individual.
+The gap is small enough that it cannot push a client-team member toward junk —
+tested against the real DSG6269 shape, where Rachel Ross scores as a keeper.
+**Set the two weights equal to collapse the distinction** if that's preferred.
+
+## 14. A short header is extended, not treated as a conflict (2026-08-08)
+
+The first live dry run aborted on the preflight: `Contact_Exclusions` exists
+with its first five columns correct and `recoverable` / `source` absent, and
+the guard treated any length difference as a shape conflict.
+
+A header that *disagrees* at some position is a different tab and is still
+never written into. A header that agrees as far as it goes but stops short is
+merely under-specified: a live run now extends it, a dry run warns. Extra
+trailing columns beyond the expected header are left alone with a warning —
+writes are scoped to A:V and A:G and never reach them.
+
+**`Contact_Exclusions` still needs its two columns added** (or the next live
+run will add them): `recoverable` in F, `source` in G.
+
+## Open questions for Bobby
+
+1. **BLOCKING — grant the Emails scope** to the bhc-routines Attio API key
+   (#0). Nothing downstream of STEP 2 can run until then. Then one
+   `--dump-email-shapes` call to confirm the scoping parameter.
+2. **`Contact_Exclusions` needs columns F and G** — `recoverable`, `source`
+   (#14). A live run will add them; adding them by hand is equally fine.
+3. **Team-reply weight** (#13) — 28 vs 35 for a personal reply. Collapse them
+   if a colleague's reply should count identically.
+4. **Junk sort order** (#4) — literal ASC, or the parenthetical's "shakiest
+   first"?
+5. **Weights and thresholds** (#8) — expected to change after run one's
+   histogram, which does not exist yet.
+6. **Schedule.** The workflow is `workflow_dispatch`-only, deliberately. Wire
+   it to a Launcher Zap once run one's distribution has been reviewed.

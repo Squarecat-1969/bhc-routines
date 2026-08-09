@@ -1,0 +1,100 @@
+name: Contacts Triage
+
+# MANUAL DISPATCH ONLY, DELIBERATELY.
+#
+# This routine has never been run. Two things have to happen before it earns a
+# schedule, both documented in docs/contacts-triage-notes.md:
+#
+#   1. The Attio email-metadata endpoint is UNVERIFIED (notes #3). Run
+#      `npm run contacts-triage -- --dump-email-shapes <record_id>` against a
+#      real record and confirm the field names before trusting any score.
+#   2. The 30/85 thresholds and the deterministic weights are a starting
+#      hypothesis (notes #8). Run one's band distribution is what tunes them,
+#      and Bobby reviews that distribution before anything is staged.
+#
+# When it does earn a schedule, follow Late Edition's path rather than GitHub's
+# cron: a "Contacts Triage Launcher" Zap POSTing to this workflow's dispatch
+# endpoint with mode=live. GitHub's own cron is explicitly best-effort and was
+# observed running Late Edition 2.5-4 hours late every night — see the comment
+# block at the top of late-edition.yml for that whole history.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'dry-run scores and reports without writing either tab; live writes Contacts_Triage_Queue and Contact_Exclusions'
+        required: true
+        default: 'dry-run'
+        type: choice
+        options:
+          - dry-run
+          - live
+      no_llm:
+        description: 'Skip STEP 4 entirely — deterministic scores only, no Anthropic calls. Recommended for the first run.'
+        required: false
+        default: false
+        type: boolean
+      limit:
+        description: 'Optional cap on contacts scored — blank = all. Smoke-test convenience.'
+        required: false
+        type: string
+
+concurrency:
+  # Two runs writing the same queue at once would interleave a full-block
+  # rewrite with another run's, and the read-back would fail on whichever
+  # finished second.
+  group: contacts-triage
+  cancel-in-progress: false
+
+jobs:
+  contacts-triage:
+    name: Contacts triage — score and stage
+    runs-on: ubuntu-latest
+    # Enumeration is ~6 requests; the email fetch is one per candidate (~110
+    # expected, batched 10 at a time); STEP 4 is 50-60 LLM calls on run one.
+    # Generous margin over that for retry backoff on a bad network night.
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+      - name: Run Contacts Triage
+        env:
+          BRAIN_API_TOKEN: ${{ secrets.BRAIN_API_TOKEN }}
+          ATTIO_API_KEY: ${{ secrets.ATTIO_API_KEY }}
+          ZAPIER_SLACK_HOOK_URL: ${{ secrets.ZAPIER_SLACK_HOOK_URL }}
+          ANTHROPIC_BHC_ROUTINES_API: ${{ secrets.ANTHROPIC_BHC_ROUTINES_API }}
+          # Unset unless the --dump-email-shapes verification found a different
+          # path or parameter — see docs/contacts-triage-notes.md #3.
+          ATTIO_EMAILS_PATH: ${{ secrets.ATTIO_EMAILS_PATH }}
+          ATTIO_EMAILS_RECORD_PARAM: ${{ secrets.ATTIO_EMAILS_RECORD_PARAM }}
+        run: |
+          FLAGS="--json-out out/contacts-triage-report.json"
+          if [ "${{ inputs.mode }}" = "live" ]; then
+            FLAGS="$FLAGS --live"
+          else
+            FLAGS="$FLAGS --dry-run"
+          fi
+          if [ "${{ inputs.no_llm }}" = "true" ]; then FLAGS="$FLAGS --no-llm"; fi
+          if [ -n "${{ inputs.limit }}" ]; then FLAGS="$FLAGS --limit ${{ inputs.limit }}"; fi
+          npx tsx src/cli/run-contacts-triage.ts $FLAGS
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contacts-triage-report-${{ github.run_id }}
+          path: out/contacts-triage-report.json
+          # Contains contact names, email addresses and subject lines — keep
+          # the retention window short.
+          retention-days: 7
+          if-no-files-found: warn

@@ -12,6 +12,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 
 import { RANGES } from '../../src/config/constants.js';
+import { EXCLUSIONS_HEADER, QUEUE_HEADER, TRIAGE_RANGES } from '../../src/config/triage-constants.js';
 
 export interface FakePerson {
   name?: string;
@@ -30,6 +31,19 @@ export interface FakePerson {
   readBackOverride?: string;
   /** Make GET/PATCH fail with this status. */
   failWith?: number;
+  // --- Contacts Triage additions ---
+  /** Record-level created_at (ISO). Drives the compromise-cohort predicate. */
+  createdAt?: string;
+  description?: string;
+  /** Attio's computed connection signals — the primary scoring input. */
+  strengthLegacy?: number;
+  strengthLabel?: string;
+  firstInteractionAt?: string;
+  lastInteractionAt?: string;
+  lastInteractionSubject?: string;
+  lastInteractionDirection?: string;
+  lastMeetingSummary?: string;
+  companyRecordId?: string;
 }
 
 export interface FakeEntry {
@@ -74,6 +88,30 @@ export interface FakeBackendConfig {
   emailSearchResults?: Record<string, FakePerson[]>;
   /** When set, Attio task creation fails with this status — for testing write-row.ts's failure handling. */
   taskCreateFailWith?: number;
+
+  // --- Contacts Triage ---
+  /** Existing Contacts_Triage_Queue!A2:V rows. Mutated in place by writes, so a read-back sees them. */
+  triageQueue?: unknown[][];
+  /** Existing Contact_Exclusions!A2:G rows. Appends land here. */
+  triageExclusions?: unknown[][];
+  /** Simulate the Contacts_Triage_Queue tab not existing (its header read fails). */
+  triageQueueTabMissing?: boolean;
+  /** Simulate the Contact_Exclusions tab not existing. */
+  triageExclusionsTabMissing?: boolean;
+  /** Return a header row that doesn't match QUEUE_HEADER — the shape-contract guard. */
+  triageQueueHeaderOverride?: unknown[];
+  /** Return an empty header row, as a brand-new tab would. */
+  triageQueueHeaderEmpty?: boolean;
+  /** Make the unfiltered people-enumeration query fail with this status. */
+  peopleQueryFailWith?: number;
+  /** Make the bhc_contact_id cross-check query fail — simulates an unsupported filter operator. */
+  crossCheckFailWith?: number;
+  /** Page size at which the enumeration query paginates. Default 500 (matches production). */
+  peoplePageSize?: number;
+  /** Company record_id -> name, for resolving people's `company` references. */
+  companies?: Record<string, string>;
+  /** Make the companies query fail — the company column degrades to blank. */
+  companiesFailWith?: number;
 }
 
 export interface RecordedRequest {
@@ -86,6 +124,18 @@ export interface RecordedRequest {
  * A1-style column letters -> 0-based index. 'A'->0, 'Z'->25, 'AA'->26,
  * 'BZ'->77, 'CA'->78, 'CG'->84. Standard base-26 with no zero digit.
  */
+/** 0-based index -> A1 letters, for reproducing Sheets' own error messages. */
+function columnIndexToLetter(index: number): string {
+  let n = index + 1;
+  let out = '';
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    out = String.fromCharCode(65 + rem) + out;
+    n = Math.floor((n - 1) / 26);
+  }
+  return out;
+}
+
 function columnLetterToIndex(letters: string): number {
   let n = 0;
   for (const ch of letters) n = n * 26 + (ch.charCodeAt(0) - 64);
@@ -110,6 +160,33 @@ function parseSingleRowRange(range: string): { sheet: string; startCol: number; 
     endCol: columnLetterToIndex(endColLetters!),
     row: Number(startRowStr),
   };
+}
+
+/**
+ * Parses a multi-row A1 range like "Contacts_Triage_Queue!A2:V57". Returns
+ * null for open-ended ranges ("A2:V"), which the callers treat as "the whole
+ * data block" rather than a specific window.
+ */
+function parseBlockRange(range: string): { sheet: string; startCol: number; endCol: number; startRow: number; endRow: number } | null {
+  const m = /^([^!]+)!([A-Z]+)(\d+):([A-Z]+)(\d+)$/.exec(range);
+  if (!m) return null;
+  const [, sheet, startColLetters, startRowStr, endColLetters, endRowStr] = m;
+  return {
+    sheet: sheet!,
+    startCol: columnLetterToIndex(startColLetters!),
+    endCol: columnLetterToIndex(endColLetters!),
+    startRow: Number(startRowStr),
+    endRow: Number(endRowStr),
+  };
+}
+
+/** Real Sheets omits trailing all-blank rows from a read; the blank-trailing-rows logic depends on that. */
+function trimTrailingBlankRows(rows: unknown[][]): unknown[][] {
+  const out = [...rows];
+  while (out.length > 0 && (out[out.length - 1] ?? []).every((v) => v === '' || v === null || v === undefined)) {
+    out.pop();
+  }
+  return out;
 }
 
 export class FakeBackend {
@@ -147,11 +224,47 @@ export class FakeBackend {
       values['email_addresses'] = person.emailAddresses.map((e) => ({ email_address: e }));
     if (person.personalNotes !== undefined) values['personal_notes'] = [{ value: person.personalNotes }];
     if (person.topicsOfInterest !== undefined) values['topics_of_interest'] = [{ value: person.topicsOfInterest }];
+    if (person.description !== undefined) values['description'] = [{ value: person.description }];
+    if (person.strengthLegacy !== undefined)
+      values['strongest_connection_strength_legacy'] = [{ value: person.strengthLegacy, attribute_type: 'number' }];
+    if (person.strengthLabel !== undefined)
+      values['strongest_connection_strength'] = [{ option: { title: person.strengthLabel } }];
+    if (person.firstInteractionAt !== undefined)
+      values['first_interaction'] = [{ interaction_type: 'email', interacted_at: person.firstInteractionAt }];
+    if (person.lastInteractionAt !== undefined)
+      values['last_interaction'] = [{ interaction_type: 'email', interacted_at: person.lastInteractionAt }];
+    if (person.lastInteractionSubject !== undefined)
+      values['last_interaction_subject'] = [{ value: person.lastInteractionSubject }];
+    if (person.lastInteractionDirection !== undefined)
+      values['last_interaction_direction'] = [{ option: { title: person.lastInteractionDirection } }];
+    if (person.lastMeetingSummary !== undefined)
+      values['last_meeting_summary'] = [{ value: person.lastMeetingSummary }];
+    if (person.companyRecordId !== undefined)
+      values['company'] = [{ target_object: 'companies', target_record_id: person.companyRecordId }];
     return values;
   }
 
+  /** One row of a `records/query` response, including the top-level created_at Contacts Triage keys off. */
+  private personToQueryRow(id: string, person: FakePerson): Record<string, unknown> {
+    return {
+      id: { record_id: id },
+      ...(person.createdAt !== undefined ? { created_at: person.createdAt } : {}),
+      values: this.personToValues(person),
+    };
+  }
+
+  /**
+   * Requests that actually change something. Method alone isn't enough:
+   * Attio's list-entries and records-query endpoints are reads that happen to
+   * be POSTs (the filter goes in the body), so they're excluded by path. The
+   * /sheets path is excluded here because writes to it are asserted through
+   * `sheetsWrites`, which can tell a read from an update.
+   */
   get mutatingRequests(): RecordedRequest[] {
-    return this.requests.filter((r) => r.method !== 'GET' && !r.path.endsWith('/entries/query') && r.path !== '/sheets');
+    const READ_ONLY_POSTS = ['/entries/query', '/records/query'];
+    return this.requests.filter(
+      (r) => r.method !== 'GET' && !READ_ONLY_POSTS.some((p) => r.path.endsWith(p)) && r.path !== '/sheets',
+    );
   }
 
   get sheetsWrites(): RecordedRequest[] {
@@ -190,6 +303,24 @@ export class FakeBackend {
       const { action, range } = (body ?? {}) as { action?: string; range?: string };
 
       if (action === 'read') {
+        // --- Contacts Triage tabs ---
+        if (range === TRIAGE_RANGES.queueHeader) {
+          if (this.config.triageQueueTabMissing) return send(400, { error: 'Unable to parse range: Contacts_Triage_Queue!A1:V1' });
+          if (this.config.triageQueueHeaderEmpty) return send(200, { values: [] });
+          if (this.config.triageQueueHeaderOverride) return send(200, { values: [this.config.triageQueueHeaderOverride] });
+          return send(200, { values: [[...QUEUE_HEADER]] });
+        }
+        if (range === TRIAGE_RANGES.exclusionsHeader) {
+          if (this.config.triageExclusionsTabMissing) return send(400, { error: 'Unable to parse range: Contact_Exclusions!A1:G1' });
+          return send(200, { values: [[...EXCLUSIONS_HEADER]] });
+        }
+        if (range === TRIAGE_RANGES.queueData) {
+          return send(200, { values: trimTrailingBlankRows(this.config.triageQueue ?? []) });
+        }
+        if (range === TRIAGE_RANGES.exclusionsData) {
+          return send(200, { values: this.config.triageExclusions ?? [] });
+        }
+
         if (range === RANGES.pipelineCacheHeader) {
           if (this.config.pipelineCacheTabMissing) return send(400, { error: 'Unable to parse range: Pipeline_Cache!A1:R1' });
           return send(200, { values: [['BHC_ID']] });
@@ -246,6 +377,47 @@ export class FakeBackend {
         }
         if (range?.startsWith('Contact_History')) return send(200, { values: this.config.contactHistory ?? [] });
         return send(200, { values: [] });
+      }
+
+      // --- Contacts Triage writes. The queue is a full-block rewrite plus a
+      // trailing blank-out, and the routine reads it straight back to verify —
+      // so the store has to reflect both, exactly like real Sheets does.
+      if (action === 'update' && range?.startsWith('Contacts_Triage_Queue')) {
+        const parsed = parseBlockRange(range);
+        const newRows = ((body as { values?: unknown[][] })?.values ?? []) as unknown[][];
+        if (parsed) {
+          // Real Sheets rejects a row wider than its target range. A live run
+          // on 2026-08-09 died on exactly that ("tried writing to column [W]")
+          // while every test passed, because this fake accepted any width.
+          // Now it doesn't.
+          const rangeWidth = parsed.endCol - parsed.startCol + 1;
+          const tooWide = newRows.find((r) => r.length > rangeWidth);
+          if (tooWide) {
+            return send(400, {
+              error: {
+                code: 400,
+                message: `Requested writing within range [${range}], but tried writing to column [${columnIndexToLetter(parsed.startCol + tooWide.length - 1)}]`,
+                status: 'INVALID_ARGUMENT',
+              },
+            });
+          }
+          const store = [...(this.config.triageQueue ?? [])];
+          if (parsed.startRow === 1) {
+            // Header write on a brand-new tab — not part of the data block.
+            this.config.triageQueueHeaderEmpty = false;
+          } else {
+            newRows.forEach((row, i) => {
+              store[parsed.startRow - 2 + i] = row;
+            });
+            this.config.triageQueue = store;
+          }
+        }
+        return send(200, {});
+      }
+      if (action === 'append' && range?.startsWith('Contact_Exclusions')) {
+        const newRows = ((body as { values?: unknown[][] })?.values ?? []) as unknown[][];
+        this.config.triageExclusions = [...(this.config.triageExclusions ?? []), ...newRows];
+        return send(200, {});
       }
 
       if (action === 'append') {
@@ -331,14 +503,56 @@ export class FakeBackend {
       return send(200, { data: page });
     }
 
-    // --- Attio: search people by email (PASS 2's resolution cascade) ---
+    // --- Attio: people query. Three callers share this endpoint, told apart
+    // by their filter: PASS 2's email search, Contacts Triage's bhc_contact_id
+    // cross-check, and Contacts Triage's unfiltered full enumeration.
     if (path === '/objects/people/records/query' && req.method === 'POST') {
-      const filter = (body as { filter?: { email_addresses?: { $contains?: string } } })?.filter;
-      const email = (filter?.email_addresses?.$contains ?? '').toLowerCase();
-      const results = this.config.emailSearchResults?.[email] ?? [];
-      const data = results.map((person, i) => ({
-        id: { record_id: `search-result-${i}` },
-        values: this.personToValues(person),
+      const parsedBody = (body ?? {}) as {
+        filter?: Record<string, unknown>;
+        limit?: number;
+        offset?: number;
+      };
+      const filter = parsedBody.filter;
+
+      if (filter && 'email_addresses' in filter) {
+        const contains = (filter['email_addresses'] as { $contains?: string })?.$contains ?? '';
+        const results = this.config.emailSearchResults?.[contains.toLowerCase()] ?? [];
+        const data = results.map((person, i) => ({
+          id: { record_id: `search-result-${i}` },
+          values: this.personToValues(person),
+        }));
+        return send(200, { data });
+      }
+
+      if (filter && 'bhc_contact_id' in filter) {
+        if (this.config.crossCheckFailWith) {
+          return send(this.config.crossCheckFailWith, { error: 'unsupported filter operator' });
+        }
+        // Live Attio only supports $starts_with here (not $not_empty) — honour
+        // the prefix so the fake can't pass a filter the real API would reject.
+        const prefix = (filter['bhc_contact_id'] as { $starts_with?: string })?.$starts_with ?? '';
+        const bridged = Object.entries(this.config.people).filter(([, p]) =>
+          (p.bhcContactId ?? '') !== '' && (p.bhcContactId ?? '').startsWith(prefix),
+        );
+        return send(200, { data: bridged.map(([id, p]) => this.personToQueryRow(id, p)) });
+      }
+
+      if (this.config.peopleQueryFailWith) {
+        return send(this.config.peopleQueryFailWith, { error: 'forced people-query failure' });
+      }
+      const pageSize = parsedBody.limit ?? this.config.peoplePageSize ?? 500;
+      const offset = parsedBody.offset ?? 0;
+      const all = Object.entries(this.config.people);
+      const page = all.slice(offset, offset + pageSize).map(([id, p]) => this.personToQueryRow(id, p));
+      return send(200, { data: page });
+    }
+
+    // --- Attio: companies, for resolving people's `company` references ---
+    if (path === '/objects/companies/records/query' && req.method === 'POST') {
+      if (this.config.companiesFailWith) return send(this.config.companiesFailWith, { error: 'forced companies failure' });
+      const data = Object.entries(this.config.companies ?? {}).map(([id, name]) => ({
+        id: { record_id: id },
+        values: { name: [{ value: name }] },
       }));
       return send(200, { data });
     }

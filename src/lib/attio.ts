@@ -20,6 +20,15 @@ export type AttioValues = Record<string, unknown>;
 export interface AttioPersonRecord {
   readonly recordId: string;
   readonly values: AttioValues;
+  /**
+   * Record-level creation timestamp (ISO-8601), read from the payload's
+   * top-level `created_at` with the `values.created_at` attribute as fallback.
+   * Optional because the two pre-existing consumers (PASS 4, PASS 4.5) never
+   * asked for it; Contacts Triage's compromise-cohort predicate is defined
+   * entirely in terms of it, so for that routine an absent value is a fact
+   * worth reporting rather than a default worth inventing.
+   */
+  readonly createdAt?: string | null;
 }
 
 export interface AttioPipelineEntry {
@@ -99,6 +108,77 @@ export function emailOf(values: AttioValues | undefined, slug: string): string |
   return null;
 }
 
+/**
+ * Record-level `created_at`, preferring the payload's own top-level field and
+ * falling back to the `created_at` attribute inside `values`. Returns null
+ * rather than a guess — a routine that keys an exclusion off creation time
+ * needs to be able to tell "created outside the window" from "no idea when".
+ */
+function readCreatedAt(row: Record<string, unknown> | undefined): string | null {
+  if (!row) return null;
+  const top = row['created_at'];
+  if (typeof top === 'string' && top !== '') return top;
+  const fromValues = textOf(row['values'] as AttioValues | undefined, 'created_at');
+  return fromValues !== null && fromValues !== '' ? fromValues : null;
+}
+
+/** One row of a `records/query` response -> AttioPersonRecord, or null if it has no usable record_id. */
+function parsePersonRow(raw: unknown): AttioPersonRecord | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const row = raw as Record<string, unknown>;
+  const id = row['id'];
+  const recordId =
+    id && typeof id === 'object' && typeof (id as Record<string, unknown>)['record_id'] === 'string'
+      ? ((id as Record<string, unknown>)['record_id'] as string)
+      : null;
+  if (!recordId) return null;
+  return { recordId, values: (row['values'] as AttioValues) ?? {}, createdAt: readCreatedAt(row) };
+}
+
+/**
+ * Record-reference attribute -> the referenced record's id.
+ *
+ * Attio's people carry `company` as a reference even where the denormalized
+ * `company_name` text is empty (measured live: 81/102 vs 0/102 across the
+ * Contacts Triage candidate set), so reading the reference is the only way to
+ * put a company on the card.
+ */
+export function referenceIdOf(values: AttioValues | undefined, slug: string): string | null {
+  const v = firstValue(values, slug);
+  if (!v) return null;
+  const direct = v['target_record_id'];
+  if (typeof direct === 'string' && direct !== '') return direct;
+  const nested = v['target_record'];
+  if (nested && typeof nested === 'object') {
+    const id = (nested as Record<string, unknown>)['record_id'];
+    if (typeof id === 'string' && id !== '') return id;
+  }
+  return null;
+}
+
+/**
+ * EVERY address on an email-address attribute, lowercased, in payload order
+ * (primary first). `emailOf` returns only the primary, which is the right
+ * answer for display; deciding "did this contact reply" needs all of them,
+ * because people write from their second address constantly.
+ */
+export function emailsOf(values: AttioValues | undefined, slug: string): string[] {
+  const arr = values?.[slug];
+  if (!Array.isArray(arr)) return [];
+  const out: string[] = [];
+  for (const entry of arr) {
+    if (typeof entry === 'string') {
+      if (entry.includes('@')) out.push(entry.trim().toLowerCase());
+      continue;
+    }
+    if (typeof entry !== 'object' || entry === null) continue;
+    const obj = entry as Record<string, unknown>;
+    const raw = obj['email_address'] ?? obj['value'];
+    if (typeof raw === 'string' && raw.includes('@')) out.push(raw.trim().toLowerCase());
+  }
+  return [...new Set(out)];
+}
+
 export interface AttioClientOptions {
   readonly apiKey: string;
   readonly baseUrl: string;
@@ -156,12 +236,166 @@ export class AttioClient {
     return out;
   }
 
+  /**
+   * Escape hatch for endpoints that don't belong on this class.
+   *
+   * `lib/attio-emails.ts` needs the same auth/retry/base-URL behaviour for an
+   * endpoint whose shape is still unverified; giving it this rather than a
+   * second half-configured client keeps exactly one place where an Attio
+   * request is built. Path is appended to the base URL as-is.
+   */
+  requestRaw<T>(path: string, init: RequestInit): Promise<T> {
+    return this.request<T>(path, init);
+  }
+
   async getPersonRecord(recordId: string): Promise<AttioPersonRecord> {
     const res = await this.request<{ data?: Record<string, unknown> }>(
       `/objects/people/records/${recordId}`,
       { method: 'GET' },
     );
-    return { recordId, values: (res.data?.['values'] as AttioValues) ?? {} };
+    return {
+      recordId,
+      values: (res.data?.['values'] as AttioValues) ?? {},
+      createdAt: readCreatedAt(res.data),
+    };
+  }
+
+  /**
+   * Every person record in the workspace, via offset pagination over
+   * `records/query`.
+   *
+   * Contacts Triage STEP 1 wants "people with no bhc_contact_id" and a count
+   * it can trust. It gets both from one full walk plus a client-side split,
+   * rather than a server-side emptiness filter: the walk is the ground truth,
+   * and a separate filtered query is then free to act as an *independent*
+   * cross-check of it (see `countPeopleMatching`). Filtering server-side would
+   * make the check circular.
+   *
+   * Offset pagination with no explicit sort can in principle repeat or skip a
+   * record if the underlying order shifts mid-walk, so the caller is handed
+   * `duplicateIds` — a page-boundary repeat is the visible symptom of exactly
+   * that, and Contacts Triage treats it as a reason to stop rather than a
+   * curiosity. `sorts` is deliberately not sent: an unsupported sort
+   * expression would 400 the entire enumeration, which is a worse failure
+   * than the one it would be guarding against.
+   */
+  async listAllPeople(
+    opts: {
+      readonly pageSize?: number;
+      readonly maxPages?: number;
+      readonly onPage?: (fetched: number) => void;
+    } = {},
+  ): Promise<{ people: AttioPersonRecord[]; duplicateIds: string[]; pages: number }> {
+    const pageSize = opts.pageSize ?? 500;
+    const maxPages = opts.maxPages ?? 200;
+    const people: AttioPersonRecord[] = [];
+    const duplicateIds: string[] = [];
+    const seen = new Set<string>();
+    let offset = 0;
+    let pages = 0;
+
+    for (;;) {
+      if (pages >= maxPages) {
+        throw new Error(
+          `listAllPeople: hit the ${maxPages}-page backstop at offset ${offset} — pagination is not terminating`,
+        );
+      }
+      const res = await this.request<{ data?: unknown[] }>('/objects/people/records/query', {
+        method: 'POST',
+        body: JSON.stringify({ limit: pageSize, offset }),
+      });
+      const page = Array.isArray(res.data) ? res.data : [];
+      pages += 1;
+
+      for (const raw of page) {
+        const parsed = parsePersonRow(raw);
+        if (!parsed) continue;
+        if (seen.has(parsed.recordId)) {
+          duplicateIds.push(parsed.recordId);
+          continue;
+        }
+        seen.add(parsed.recordId);
+        people.push(parsed);
+      }
+
+      opts.onPage?.(people.length);
+      if (page.length < pageSize) break;
+      offset += page.length;
+    }
+
+    return { people, duplicateIds, pages };
+  }
+
+  /**
+   * Company record_id -> company name, for resolving people's `company`
+   * references. One paginated walk of the companies object rather than a
+   * lookup per person: there are far fewer companies than people, and the map
+   * is reused across the whole run.
+   */
+  async listCompanyNames(pageSize = 500, maxPages = 200): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    let offset = 0;
+    let pages = 0;
+
+    for (;;) {
+      if (pages >= maxPages) throw new Error(`listCompanyNames: hit the ${maxPages}-page backstop`);
+      const res = await this.request<{ data?: unknown[] }>('/objects/companies/records/query', {
+        method: 'POST',
+        body: JSON.stringify({ limit: pageSize, offset }),
+      });
+      const page = Array.isArray(res.data) ? res.data : [];
+      pages += 1;
+      for (const raw of page) {
+        const parsed = parsePersonRow(raw); // same id/values envelope
+        if (!parsed) continue;
+        const name = textOf(parsed.values, 'name');
+        if (name !== null && name !== '') out.set(parsed.recordId, name);
+      }
+      if (page.length < pageSize) break;
+      offset += page.length;
+    }
+
+    return out;
+  }
+
+  /**
+   * Count person records matching an arbitrary Attio filter, by paginating it.
+   *
+   * UNVERIFIED FILTER SYNTAX. Contacts Triage uses this only as a cross-check
+   * of an enumeration it has already completed by other means, and treats a
+   * *failure to run the check* differently from a *check that disagrees* — so
+   * an unsupported operator here degrades to a loud warning rather than
+   * silently corrupting a count. Same caveat as `searchPeopleByEmail`.
+   */
+  async countPeopleMatching(
+    filter: Record<string, unknown>,
+    opts: { readonly pageSize?: number; readonly maxPages?: number } = {},
+  ): Promise<number> {
+    const pageSize = opts.pageSize ?? 500;
+    const maxPages = opts.maxPages ?? 200;
+    const seen = new Set<string>();
+    let offset = 0;
+    let pages = 0;
+
+    for (;;) {
+      if (pages >= maxPages) {
+        throw new Error(`countPeopleMatching: hit the ${maxPages}-page backstop at offset ${offset}`);
+      }
+      const res = await this.request<{ data?: unknown[] }>('/objects/people/records/query', {
+        method: 'POST',
+        body: JSON.stringify({ filter, limit: pageSize, offset }),
+      });
+      const page = Array.isArray(res.data) ? res.data : [];
+      pages += 1;
+      for (const raw of page) {
+        const parsed = parsePersonRow(raw);
+        if (parsed) seen.add(parsed.recordId);
+      }
+      if (page.length < pageSize) break;
+      offset += page.length;
+    }
+
+    return seen.size;
   }
 
   /**
@@ -188,14 +422,8 @@ export class AttioClient {
     const rows = Array.isArray(res.data) ? res.data : [];
     const out: AttioPersonRecord[] = [];
     for (const raw of rows) {
-      const row = raw as Record<string, unknown>;
-      const id = row['id'];
-      const recordId =
-        id && typeof id === 'object' && typeof (id as Record<string, unknown>)['record_id'] === 'string'
-          ? ((id as Record<string, unknown>)['record_id'] as string)
-          : null;
-      if (!recordId) continue;
-      out.push({ recordId, values: (row['values'] as AttioValues) ?? {} });
+      const parsed = parsePersonRow(raw);
+      if (parsed) out.push(parsed);
     }
     return out;
   }
