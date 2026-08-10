@@ -2,6 +2,29 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-08-10 — BHC_Zoom Path B dedups by name as well as email
+
+**One-line class of fix, four confirmed duplicates behind it.** `BHC_Zoom.md` has two record-creation paths and they did not dedup alike. Path A (`new_contact_candidates`) searched Attio by email *and* Master_ID by name. Path B (Google-only contacts — known BHC_ID, no Attio record yet) searched by **email only**, and Path B is the path that handles contacts which already have a BHC_ID.
+
+The spec gave away the failure in its own text: `email_addresses: [{email_address}]` **(omit if none)**. A dedup that searches by email finds nothing when there is no email to search with, falls through to "Not found in Attio", and creates a second record — stamping the already-known BHC_ID onto it. **43 of the 70 api-token-created person records have no email at all**, including all four confirmed duplicates:
+
+| Contact | BHC_ID | Duplicate created | Pre-existing record |
+|---|---|---|---|
+| Steve Andrews | BHC-00147 | `4c609001` 2026-03-16 | `3175e117` 2026-03-14 |
+| Kyle Kendrick | BHC-00143 | `af596b53` 2026-04-10 | `20faf192` 2026-03-14 |
+| Kev McCrae | BHC-02426 | `f79e81c1` 2026-05-15 | `66a53c09` 2026-05-15 |
+| Casey Burianek | BHC-02492 | `f6b456ed` 2026-05-16 | `ea1e5056` 2026-05-13 |
+
+And one worse case, same root cause: **BHC-00218 sits on two different humans.** Path B created "Adam Young" (`4d1b0bb4`, no email, 2026-03-16) and stamped Alison Braman's BHC_ID onto it. No name check meant nothing noticed they were not the same person.
+
+**The change, confined to Path B's dedup step:** search Attio by email AND by name; a match on either skips creation and uses the existing record. Two guards added alongside it — if the found record already carries a *different* `bhc_contact_id`, write nothing and surface it (`google-only:stamp-conflict`), because a name match is fuzzier than an email match and stamping over a populated ID is exactly how BHC-00218 happened; and if a contact has **neither an email nor a name**, do not create it at all (`google-only:unidentifiable`). A record with neither key cannot be deduplicated by anything afterwards — not by this routine, not by the Reconciler, and not by Contacts Triage, which only enumerates unbridged records while this one would be born bridged.
+
+**Worth noting: non-negotiable #4 already required this.** "Dedup by email + name before every mint" — Path B escaped it on a technicality, because it creates a record without minting a new ID. The rule was right; its scope was not.
+
+Neither path was restructured. Survey findings behind this: 70 api-token-created records (44 in March, 23 April, 2 May, 1 August), **all 70 bridged, zero unbridged**, 4 with a twin that pre-dates them per the repo's own `matchCandidates`, and 10 BHC_IDs total stamped on more than one live record (5 involving api-token). Read-only throughout; no Attio or Sheets writes.
+
+**Not yet live.** This is a prompt spec — the file change does nothing until it is pasted into the BHC Zoom routine's cloud config Instructions panel and mirrored to the "Claude Code Routines" Google Doc.
+
 ## 2026-08-09 — Master_ID learns SUPERSEDED; S1 stops clearing BHC_IDs; S4's blank rule written down
 
 Three prompt-spec edits, no `src/` changes. `src/` never writes Master_ID, and its readers already skip superseded rows correctly — `loadMasterId` indexes them by BHC_ID but every consumer filters them out (PASS 4.5 requires `ATTIO`/`BOTH` **and** a populated pointer; PASS 4 iterates from Attio's pipeline list; PASS 2 keys off a live Attio record; Part D withholds and warns rather than repairing). Verified by reconnaissance before writing anything.
