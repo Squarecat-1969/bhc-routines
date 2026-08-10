@@ -99,12 +99,14 @@ If no WRITE rows: log "no WRITE rows" and skip to DISCOVERY.
 
 **For Google-only contacts** (Location=GOOGLE in write_targets — known BHC_ID, no Attio record yet):
 
-1. **Dedup: search Attio by email.**
-   - **Found in Attio:**
+1. **Dedup: search Attio by email AND by name.** Both keys, same as `new_contact_candidates` — a match on *either* is a match. Email alone is not enough: this contact may have no email at all (`email_addresses … omit if none` below), and an email search with nothing to search on returns nothing, falls through to "Not found", and creates a second record for someone who is already in Attio. That is the origin of every known duplicate from this path — Steve Andrews (BHC-00147), Kyle Kendrick (BHC-00143), Kev McCrae (BHC-02426), Casey Burianek (BHC-02492) — each a second record carrying a BHC_ID the routine already knew.
+   - **Found in Attio (by either key):**
      a. If `bhc_contact_id` is empty on the Attio record: PATCH the record → `{"bhc_contact_id": existing_bhc_id}`.
      b. If Master_ID Location is still GOOGLE: update cols C:E → `[["BOTH", existing_google_row, attio_record_id]]`.
      c. Skip creation. Log `google-only:backfilled-existing-attio`.
-   - **Not found in Attio:** proceed to step 2.
+     d. **If `bhc_contact_id` is already set and differs from `existing_bhc_id`: write nothing.** Skip the contact, log `google-only:stamp-conflict`, and surface it in the run report. A name match is fuzzier than an email match, and stamping over a populated ID is how BHC-00218 ended up on two different humans (Alison Braman and "Adam Young").
+   - **Not found by either key:** proceed to step 2.
+   - **No email AND no name:** do NOT create. Skip the contact, log `google-only:unidentifiable`, and surface it in the run report. A record with neither key cannot be deduplicated by anything — not by this routine, not by the Reconciler, not by Contacts triage (which only enumerates unbridged records, and this one would be born bridged). Creating it guarantees a duplicate nobody can detect later.
 
 2. **Create Attio record** (include bhc_contact_id — same as new_contact_candidates):
    `name: [{first_name, last_name, full_name}]`, `email_addresses: [{email_address}]` (omit if none), `bhc_contact_id: existing_bhc_id`, `description: title + company`.
