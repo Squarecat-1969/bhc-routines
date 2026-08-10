@@ -72,11 +72,17 @@ def field_equal(a, b):             # I1 field compare: normalized equality
 
 ### PASS 1 — Load Master_ID
 
-Read Master_ID!A:F. Skip row 1 (header). Skip fully blank rows (no BHC_ID AND no Full_Name AND no Attio_Record_ID — these are intentional gap rows). For each data row capture:
+Read Master_ID!A:F. Skip row 1 (header). Skip fully blank rows (no BHC_ID AND no Full_Name AND no Attio_Record_ID — these are intentional gap rows).
+
+**Also skip every row with `Location = SUPERSEDED`.** A superseded row is a RETIRED IDENTITY, not a defect. It is produced when Aida's Merges view resolves two duplicate Attio records that each already carried a real BHC_ID: Attio's merge keeps the primary's ID and the other is displaced, so its Master_ID row is retired rather than deleted. The row is CORRECT AS IT STANDS — the BHC_ID is deliberately retained so it can never be reallocated, and Full_Name, Google_Row and Attio_Record_ID are deliberately blank (the name is cleared because it is the field that would collide on an identity lookup; it survives as prose in Notes, which nothing searches). Skip it in every structural check (S1–S5) and in every later pass. Do not flag it, do not count it as an issue, do not repair it.
+
+**`Location = SUPERSEDED` is the ONLY signal. Never infer retirement from blank pointers.** A BHC_ID with both pointers blank and a Location of GOOGLE/ATTIO/BOTH is DAMAGED, and the difference matters: row 962 (BHC-00920, Rachel Marantz) has exactly that shape today and is a real defect that should keep being flagged. Retirement is declared, never deduced.
+
+For each data row capture:
 
 - bhc_id (col A)
 - full_name (col B)
-- location (col C) — GOOGLE / ATTIO / BOTH
+- location (col C) — GOOGLE / ATTIO / BOTH / SUPERSEDED (SUPERSEDED rows are skipped, per above)
 - google_row (col D) — numeric or blank
 - attio_record_id (col E) — UUID string or blank
 - notes (col F)
@@ -87,12 +93,14 @@ Hold the full set in memory. Also build two indexes:
 - BHC_ID index — map BHC_ID → list of master rows (to detect duplicate BHC_IDs)
 - Attio ID index — map attio_record_id → list of master rows (to detect duplicate Attio pointers)
 
-Log: total rows loaded, blank BHC_IDs, blank names, gap rows skipped.
+Log: total rows loaded, blank BHC_IDs, blank names, gap rows skipped, **superseded rows skipped**.
+
+Count superseded rows separately and carry that count through to the report and the Slack line. They are neither an issue nor a clean check — folding them into `Clean_count` would inflate the "all clean" denominator with rows that were never examined, and quietly growing that number as retirements accumulate is how a health check stops meaning anything.
 
 
 ### PASS 2 — Detect structural issues (no API calls needed)
 
-Walk the Master_ID rows and flag these without any external lookup:
+Walk the Master_ID rows and flag these without any external lookup. **Superseded rows are already out of the set (PASS 1) — none of S1–S5 applies to them.** S3 in particular would otherwise be the trap: it is written as four positive matches on GOOGLE/ATTIO/BOTH, so a superseded row falls through all four and stays quiet by accident rather than by intent. If S3 is ever generalised to "Location is set but both pointers are blank," that accident disappears and every retirement becomes a HIGH-severity false positive. The PASS 1 skip is what makes the silence deliberate; keep it.
 
 **S1 — Duplicate BHC_ID:** two or more rows share the same BHC_ID. Flag all copies.
 
@@ -236,7 +244,9 @@ Status = "" (awaiting) · Detected_At = ISO now · Notes = "BOTH name drift (Rec
 
 After writing: also write a summary row at the top of the report (row 2, shifting data down, or append a separate summary tab):
 
-Run_ID | Checked_At | Total_Rows_Checked | HIGH_count | MEDIUM_count | LOW_count | INFO_count | Clean_count
+Run_ID | Checked_At | Total_Rows_Checked | HIGH_count | MEDIUM_count | LOW_count | INFO_count | Clean_count | Superseded_count
+
+`Total_Rows_Checked` counts rows actually examined — superseded rows are excluded from it and reported in `Superseded_count` instead.
 
 
 ### PASS 6 — Slack notification
@@ -245,7 +255,7 @@ Post one message to #aida via Zapier (username: "Aida", icon: ":aida:"):
 
 ```
 🔍 Reconciler — {RUN_ID}
-{total_rows} rows checked · {high} HIGH · {medium} MEDIUM · {low} LOW
+{total_rows} rows checked · {high} HIGH · {medium} MEDIUM · {low} LOW{if superseded > 0: " · {superseded} superseded (retired, skipped)"}
 {if high > 0: "⚠ {high} high-severity issues need attention — review Reconciler_Report tab"}
 {if any A5 flags: "  → {a5_count} name-mismatch flag(s) (A5) — pointer may reference wrong person"}
 {if i1_count > 0: "  → {i1_count} identity-field drift(s) (I1) — ReconcilerFix will sync"}
@@ -254,7 +264,7 @@ Post one message to #aida via Zapier (username: "Aida", icon: ":aida:"):
 Review full report: aida.hougham.us (Reconciler_Report tab in the CRM sheet)
 ```
 
-If zero issues found at any severity: `✓ Reconciler {RUN_ID} — {total_rows} rows checked, all clean.`
+If zero issues found at any severity: `✓ Reconciler {RUN_ID} — {total_rows} rows checked, all clean.{if superseded > 0: " {superseded} superseded row(s) skipped."}`
 
 **Language rules for the Slack message:**
 - RECON-FIX-* entries: describe as "prior ReconcilerFix corrections — verify accuracy." Never use "tampering," "fabricated," "forged," or "security incident."
@@ -268,6 +278,8 @@ If zero issues found at any severity: `✓ Reconciler {RUN_ID} — {total_rows} 
 3. Batch Google reads — read `Contacts!A3:DI` once and index, never individual cell reads per row. This routine can check 2,000+ rows; per-row calls would exceed the time budget.
 4. Attio rate-limit handling — groups of 10, pause on rate limit, mark failed lookups as A4 and continue.
 5. Skip fully blank Master_ID rows (no BHC_ID, no name, no Attio ID) — these are intentional gap rows (e.g. row 111), not data errors. Do not flag them.
+5a. **Skip `Location = SUPERSEDED` rows in every check.** They are retired identities, correct as they stand. Judge retirement on the Location value alone — a blank pointer is not evidence of retirement, and a damaged row that happens to look similar (row 962, BHC-00920) must still be flagged.
+5b. **A superseded BHC_ID must remain visible to every max-BHC_ID scan.** This is the one place a superseded row must NOT be skipped. The whole point of retaining the ID in col A is that it can never be handed out again, and four separate allocators depend on seeing it: Aida's `nextBhcId`, `BHC_HF_Import` PASS 0b, `BHC_HF_Segment_Sync` step 0c, and `BHC_Zoom` PASS 1's atomic mint. All four read col A unfiltered and must continue to. **Never add a Location filter to an ID allocator** — a filter there reallocates a retired ID to a different human, which is the exact corruption this design exists to prevent.
 6. Zero issues is a valid result. No minimum threshold required. Report cleanly if all clear.
 7. S5 definition: blank Location field on a row that otherwise has data. Not a separate data-collection problem.
 8. A5 name-check is always performed when a name is available in both systems. ID match alone is not sufficient to confirm pointer integrity.
