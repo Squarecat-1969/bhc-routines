@@ -14,6 +14,8 @@ This repo is being rebuilt from prompt specs into deterministic code. Both layer
 
 **`src/` — the TypeScript rebuild.** Real code, real tests. Ported pass by pass, lowest-risk first; each pass is verified against read-only production data before its writes are switched on.
 
+Sheets access goes through the Aida proxy (BRAIN_API_TOKEN). Never use the Zapier Sheets passthrough — it is metered and expensive.
+
 ```bash
 npm ci
 npm run typecheck
