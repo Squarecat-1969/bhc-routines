@@ -72,16 +72,30 @@ export class SheetsClient {
    * client in the same run; that is still unexplained, and this return value
    * is the instrumentation that will identify it.
    *
-   * `updatedRows` comes from the real API's `updates.updatedRows`. Absent or
-   * malformed responses report 0 — an unverifiable append is treated as one
-   * that did not land, never as one that did.
+   * `updatedRows` comes from the real API's `updates.updatedRows`, and
+   * defaults to 0 — an unverifiable append is treated as one that did not
+   * land, never as one that did.
+   *
+   * `updatesBlockPresent` keeps two different facts apart, because a bare 0
+   * collapses them: Google reporting zero rows written, versus no `updates`
+   * block arriving at all. They point at different causes — the first is the
+   * Sheets API declining to write, the second is the response never carrying
+   * the field through the Aida proxy — and on 2026-08-14 we could not tell
+   * which had happened.
    */
-  async append(range: string, values: readonly SheetRow[]): Promise<{ updatedRows: number }> {
+  async append(
+    range: string,
+    values: readonly SheetRow[],
+  ): Promise<{ updatedRows: number; updatesBlockPresent: boolean }> {
     const res = await this.post<{ updates?: { updatedRows?: number } }>(
       { action: 'append', range, values },
       `sheets:append ${range}`,
     );
-    return { updatedRows: res.updates?.updatedRows ?? 0 };
+    const updates = res.updates;
+    return {
+      updatedRows: updates?.updatedRows ?? 0,
+      updatesBlockPresent: updates !== undefined && updates !== null,
+    };
   }
 }
 

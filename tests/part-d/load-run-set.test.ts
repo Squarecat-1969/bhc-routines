@@ -213,3 +213,28 @@ describe('loadRunSet — identity fallback to Write_Targets_JSON', () => {
     expect(runSet.rowsUsingWriteTargetIdentity).toBe(2);
   });
 });
+
+
+describe('loadRunSet — totalRowsRead', () => {
+  it('reports what the read returned, before any run-id filtering', async () => {
+    const { sheets, backend } = await setup([
+      row({ runId: 'LATE-EDITION-1' }),
+      row({ runId: 'LATE-EDITION-OTHER' }),
+      row({ runId: 'LATE-EDITION-OTHER' }),
+    ]);
+    const runSet = await loadRunSet(sheets, 'LATE-EDITION-1');
+    await backend.stop();
+
+    expect(runSet.rows).toHaveLength(1);   // matched this run
+    expect(runSet.totalRowsRead).toBe(3);  // but the read itself was healthy
+  });
+
+  it('reports 0 when the read returned nothing — the caller uses this to refuse a silent stop', async () => {
+    const { sheets, backend } = await setup([]);
+    const runSet = await loadRunSet(sheets, 'LATE-EDITION-1');
+    await backend.stop();
+
+    expect(runSet.rows).toHaveLength(0);
+    expect(runSet.totalRowsRead).toBe(0);
+  });
+});

@@ -74,6 +74,21 @@ describe('runPartD — stop conditions', () => {
     expect(slack.posts).toEqual([]); // truly nothing — not even the acknowledgment
   });
 
+  it('does NOT stop silently when the Brain_Complete read itself returned nothing', async () => {
+    // A failed read and a resolved digest both produce rows.length === 0,
+    // because SheetsClient.read coerces a malformed response to []. The
+    // silent stop is the legitimate response to one of them and the WORST
+    // response to the other: Bobby clicks Resolve, nothing happens, and
+    // nothing is ever posted. Brain_Complete is never empty in production.
+    const { sheets, attio, slack } = await setup([]); // read returns zero rows
+    const report = await runPartD({ commandText: 'RESOLVE LATE-EDITION-1', dryRun: false }, { sheets, attio, slack, logger: silentLogger });
+
+    expect(report.aborted).toBe(true);
+    expect(report.stopReason).not.toBe('empty_run_set');
+    expect(report.abortReason).toContain('Brain_Complete read returned 0 rows');
+    expect(slack.posts.some((post) => post.includes('halted'))).toBe(true);
+  });
+
   it('posts the no-valid-item-actions message for a MIXED command with nothing parseable', async () => {
     const { sheets, attio, slack } = await setup([row({})]);
     const report = await runPartD({ commandText: 'MIXED LATE-EDITION-1\ngarbage line', dryRun: false }, { sheets, attio, slack, logger: silentLogger });

@@ -161,9 +161,27 @@ async function runPartDInner(opts: PartDOptions, deps: RunPartDDeps, startedAt: 
     );
   }
   if (runSet.rows.length === 0) {
+    // Two very different facts arrive here identically, because
+    // SheetsClient.read coerces a malformed response to []. Discriminate on
+    // what the read actually returned before the run-id filter.
+    if (runSet.totalRowsRead === 0) {
+      // Brain_Complete holds ~199 rows in production. Zero means the read
+      // itself returned nothing — a proxy or auth failure, not a resolved
+      // digest. Throwing routes it to the outer catch, which posts the
+      // "⚠ Part D halted" alert. The alternative is the silent stop below,
+      // which is indistinguishable from success: Bobby clicks Resolve,
+      // nothing happens, and nothing is ever posted.
+      throw new Error(
+        `Brain_Complete read returned 0 rows — the tab is never empty in production (~199 rows). ` +
+          `Treating this as a read failure, not as a resolved digest. Nothing was written.`,
+      );
+    }
     // Per spec: stop SILENTLY. No Slack post at all — a prior run already
     // confirmed this digest, this is not a failure or something to flag.
-    logger.info('STEP 2 — empty run set, stopping silently (no Slack post)');
+    logger.info(
+      `STEP 2 — empty run set (${runSet.totalRowsRead} Brain_Complete row(s) read, none matching ${runLabel}), ` +
+        'stopping silently (no Slack post)',
+    );
     return emptyReport({ runId: runLabel, dryRun, startedAt, command: parsed.kind, stopReason: 'empty_run_set', runSetSize: 0 });
   }
 

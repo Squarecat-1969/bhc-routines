@@ -84,6 +84,22 @@ export interface RunSet {
    * must be visible rather than quietly papered over.
    */
   readonly rowsUsingWriteTargetIdentity: number;
+  /**
+   * Rows the Brain_Complete read returned, BEFORE any run-id filtering.
+   *
+   * This is what separates "a prior run already resolved this digest" from
+   * "the read failed". SheetsClient.read coerces a malformed response to [],
+   * so both produce rows.length === 0 — and STEP 2's legitimate response to
+   * that is to stop SILENTLY, with no Slack post at all. A read failure
+   * therefore looked exactly like a finished digest: Bobby clicks Resolve,
+   * nothing happens, nothing is posted, indefinitely.
+   *
+   * Brain_Complete holds ~199 rows in production, so a read that returns zero
+   * of them is not a legitimate empty. The caller discriminates; the read
+   * coercion is left alone, because Google genuinely omits `values` for an
+   * empty range and other callers depend on that.
+   */
+  readonly totalRowsRead: number;
 }
 
 const NO_ACTION = 'NO_ACTION';
@@ -169,5 +185,9 @@ export async function loadRunSet(sheets: SheetsClient, runId: string): Promise<R
     if (digestPosition !== null) byDigestPosition.set(digestPosition, runSetRow);
   });
 
-  return { runId, rows, byDigestPosition, rowsUsingWriteTargetIdentity: usingWriteTargetIdentity };
+  return {
+    runId, rows, byDigestPosition,
+    rowsUsingWriteTargetIdentity: usingWriteTargetIdentity,
+    totalRowsRead: rawRows.length,
+  };
 }

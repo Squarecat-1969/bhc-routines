@@ -109,11 +109,18 @@ export interface FakeBackendConfig {
   /** Page size at which the enumeration query paginates. Default 500 (matches production). */
   peoplePageSize?: number;
   /**
-   * Range prefix whose appends return HTTP 200 with `updatedRows: 0` — a
-   * success that wrote nothing. Reproduces the unexplained 2026-08-14
-   * Activity_Log behaviour so the instrumentation for it can be tested.
+   * Range prefix whose appends return HTTP 200 with `updates.updatedRows: 0`
+   * — Google itself reporting that nothing was written. One half of the
+   * unexplained 2026-08-14 Activity_Log behaviour.
    */
   appendZeroRowsFor?: string;
+  /**
+   * Range prefix whose appends return HTTP 200 with NO `updates` block at
+   * all — the write is unverifiable rather than reported-as-zero. The other
+   * half, and a different cause: the field never arrived rather than Google
+   * declining the write.
+   */
+  appendNoUpdatesBlockFor?: string;
   /** Company record_id -> name, for resolving people's `company` references. */
   companies?: Record<string, string>;
   /** Make the companies query fail — the company column degrades to blank. */
@@ -496,6 +503,10 @@ export class FakeBackend {
       // wrote nothing.
       if (action === 'append') {
         const rowsSent = ((body as { values?: unknown[][] })?.values ?? []).length;
+        const noBlockFor = this.config.appendNoUpdatesBlockFor;
+        if (noBlockFor && range?.startsWith(noBlockFor)) {
+          return send(200, {}); // 200, but nothing to verify against
+        }
         const zeroFor = this.config.appendZeroRowsFor;
         const landed = zeroFor && range?.startsWith(zeroFor) ? 0 : rowsSent;
         return send(200, { updates: { updatedRows: landed } });

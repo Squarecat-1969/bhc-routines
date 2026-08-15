@@ -586,8 +586,39 @@ describe('Activity_Log append verification', () => {
     const result = await writeRow(sheets, attio, masterId, baseInput());
 
     expect(result.activityLogWritten).toBe(false);
-    expect(result.warnings.join(' ')).toContain('reported 0 rows written');
+    expect(result.warnings.join(' ')).toContain('Google reported 0 rows written');
     expect(result.writes.join(' ')).toContain('NOT written');
+  });
+
+  it('distinguishes "no updates block" from "Google reported 0"', async () => {
+    // Both mean nothing landed; they point at different causes, so the
+    // warning has to name which one it was.
+    const { sheets, attio, masterId } = await setup(CONFIG({ appendNoUpdatesBlockFor: 'Activity_Log' }));
+    const result = await writeRow(sheets, attio, masterId, baseInput());
+
+    expect(result.activityLogWritten).toBe(false);
+    expect(result.warnings.join(' ')).toContain('carried no `updates` block');
+    expect(result.warnings.join(' ')).toContain('unverifiable');
+    expect(result.warnings.join(' ')).not.toContain('Google reported 0');
+  });
+
+  it('says "Google reported 0" when the block arrived and said zero', async () => {
+    const { sheets, attio, masterId } = await setup(CONFIG({ appendZeroRowsFor: 'Activity_Log' }));
+    const result = await writeRow(sheets, attio, masterId, baseInput());
+
+    expect(result.warnings.join(' ')).toContain('Google reported 0 rows written');
+    expect(result.warnings.join(' ')).not.toContain('carried no `updates` block');
+  });
+
+  it('carries the same distinction into a SECONDARY append', async () => {
+    const { sheets, attio, masterId } = await setup(CONFIG({ appendNoUpdatesBlockFor: 'Activity_Log' }));
+    const result = await writeRow(sheets, attio, masterId, baseInput({}, {
+      primary: { bhc_id: 'BHC-1' },
+      secondary: [{ bhc_id: 'BHC-2' }],
+    }));
+
+    expect(result.secondaries[0]!.ok).toBe(false);
+    expect(result.secondaries[0]!.warnings.join(' ')).toContain('carried no `updates` block');
   });
 
   it('treats a normal append as written', async () => {
@@ -595,7 +626,8 @@ describe('Activity_Log append verification', () => {
     const result = await writeRow(sheets, attio, masterId, baseInput());
 
     expect(result.activityLogWritten).toBe(true);
-    expect(result.warnings.join(' ')).not.toContain('reported 0 rows written');
+    expect(result.warnings.join(' ')).not.toContain('Google reported 0 rows written');
+    expect(result.warnings.join(' ')).not.toContain('carried no `updates` block');
   });
 
   it('marks a SECONDARY not-ok when its own append lands 0 rows', async () => {
@@ -608,7 +640,7 @@ describe('Activity_Log append verification', () => {
 
     expect(result.secondaries).toHaveLength(1);
     expect(result.secondaries[0]!.ok).toBe(false);
-    expect(result.secondaries[0]!.warnings.join(' ')).toContain('reported 0 rows written');
+    expect(result.secondaries[0]!.warnings.join(' ')).toContain('Google reported 0 rows written');
   });
 
   it('leaves Contact_History alone — scope is the one path with a known unexplained failure', async () => {

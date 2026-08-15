@@ -84,6 +84,26 @@ function makeTaskId(now: Date = new Date()): string {
  * belongs to this bhcId RIGHT NOW — it does not re-derive or second-guess
  * anything else WriteTargets claims. "Verify, don't re-derive."
  */
+/**
+ * Why an append reported nothing landed — stated as the specific fact, not a
+ * shared "0 rows" that covers both.
+ *
+ * "Google reported 0" and "the `updates` block never arrived" point at
+ * different causes: the Sheets API declining the write, versus the response
+ * losing the field somewhere between Sheets and this process. On 2026-08-14
+ * Activity_Log appends returned 200 and wrote nothing while Contact_History
+ * appends from the same client in the same run landed all seven rows. When
+ * that recurs, the warning has to say which of the two it was.
+ */
+function describeFailedAppend(
+  label: string,
+  result: { updatedRows: number; updatesBlockPresent: boolean },
+): string {
+  return result.updatesBlockPresent
+    ? `${label}: Google reported 0 rows written.`
+    : `${label}: response carried no \`updates\` block — the write is unverifiable, treating as not landed.`;
+}
+
 export async function writeRow(
   sheets: SheetsClient,
   attio: AttioClient,
@@ -256,7 +276,7 @@ export async function writeRow(
   const appendResult = await sheets.append(ACTIVITY_LOG_APPEND_RANGE, [activityLogRow]);
   const activityLogWritten = appendResult.updatedRows > 0;
   if (!activityLogWritten) {
-    warnings.push(`Activity_Log append for ${activityId} reported 0 rows written — the call succeeded but nothing landed.`);
+    warnings.push(describeFailedAppend(`Activity_Log append for ${activityId}`, appendResult));
   }
   writes.push(
     activityLogWritten
@@ -470,7 +490,7 @@ export async function writeRow(
         writes.push(`Activity_Log ${secActivityId} appended (secondary ${secondary.bhc_id})`);
       } else {
         secOk = false;
-        secWarnings.push(`Secondary Activity_Log append for ${secActivityId} reported 0 rows written — the call succeeded but nothing landed.`);
+        secWarnings.push(describeFailedAppend(`Secondary Activity_Log append for ${secActivityId}`, secAppend));
         writes.push(`Activity_Log ${secActivityId} append returned 0 rows — NOT written (secondary ${secondary.bhc_id})`);
       }
     } catch (e) {
