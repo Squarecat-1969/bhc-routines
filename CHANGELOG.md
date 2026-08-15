@@ -21,7 +21,14 @@ The chain: `RunSetRow.bhcId = ""` → `writeRow` hands it to the identity gate �
 
 **Not fixed, deliberately:** `sheets.append` — it works; Contact_History received all seven appends from the failing run.
 
-725/725 tests passing (was 710 — 15 new covering the fallback, preference order, the blank-proof guard, outcome counting, hollow-row detection and its three near-misses, the col U marker, the empty-index guard, and the artifact-content constraint).
+725/725 tests passing at first review (was 710 — 15 new covering the fallback, preference order, the blank-proof guard, outcome counting, hollow-row detection and its near-misses, the col U marker, the empty-index guard, and the artifact-content constraint).
+
+**Follow-ups from review (same change set):**
+
+- **`sheets.append` now returns `{ updatedRows }` instead of `void`**, read from the API's own `updates.updatedRows`, and `activityLogWritten` is gated on it being > 0 rather than on the call not throwing. Setting a flag on "didn't throw" is intent, not outcome — the same class of defect as the unconditional counter it replaced. Each secondary's Activity_Log append gets the same check, feeding the existing per-secondary `ok` flag, because confirm.ts now counts secondaries by that flag and it has to mean "landed". **This is instrumentation, not a fix**: on 2026-08-14 the Activity_Log appends returned successfully and wrote nothing while Contact_History took all seven rows from the same client in the same run. That remains unexplained; the next occurrence will now name itself. Contact_History and Tasks_Open appends are deliberately left unverified — scope stays on the one path with a known unexplained failure. The fake backend was also under-specifying the append response (`{}` where the real API returns `updates.updatedRows`), so it now reports realistic row counts and can simulate the 2026-08-14 shape via `appendZeroRowsFor`.
+- **Partial withholds are surfaced.** `isHollow` keeps its strict definition (total silence) and keeps the col U `WITHHELD` marker. A new `isPartiallyWithheld` covers the case where one named target landed and another didn't — the quietest outcome in the system, and the one the identity gate most exists to catch, since `googleOk` and `attioOk` are independent checks against the same bhcId and a stale Google_Row beside a correct Attio_Record_ID produces exactly it. It also desynchronises the CRMs: Google's BZ says contacted, Attio's `last_interaction_at` stays stale, and PASS 4 computes cadence from Attio — so a wrong next-touch date and a false stall flag on a contact who was just contacted. Slack now appends `⚠ N row(s) partially written — CRMs may be out of sync` on RESOLVE and MIXED, and col U gets a `PARTIAL` marker carrying the same gate warnings (one `appendWithheldMarker` with a prefix parameter, not a second copy). All four states are pinned by test: no target named, full write, partial withhold, full withhold.
+
+736/736 tests passing (was 725).
 
 ## 2026-08-10 — BHC_Zoom Path B dedups by name as well as email
 

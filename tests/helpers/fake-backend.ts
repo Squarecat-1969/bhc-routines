@@ -108,6 +108,12 @@ export interface FakeBackendConfig {
   crossCheckFailWith?: number;
   /** Page size at which the enumeration query paginates. Default 500 (matches production). */
   peoplePageSize?: number;
+  /**
+   * Range prefix whose appends return HTTP 200 with `updatedRows: 0` — a
+   * success that wrote nothing. Reproduces the unexplained 2026-08-14
+   * Activity_Log behaviour so the instrumentation for it can be tested.
+   */
+  appendZeroRowsFor?: string;
   /** Company record_id -> name, for resolving people's `company` references. */
   companies?: Record<string, string>;
   /** Make the companies query fail — the company column degrades to blank. */
@@ -482,6 +488,18 @@ export class FakeBackend {
 
       // update / append: acknowledge. The request is already recorded above
       // (this.requests / this.sheetsWrites) for tests to assert on.
+      //
+      // An append reports `updates.updatedRows`, as the real API does —
+      // write-row.ts now gates activityLogWritten on it, so a fake that
+      // omitted it would report every append as having landed nothing.
+      // `appendZeroRowsFor` simulates the 2026-08-14 behaviour: a 200 that
+      // wrote nothing.
+      if (action === 'append') {
+        const rowsSent = ((body as { values?: unknown[][] })?.values ?? []).length;
+        const zeroFor = this.config.appendZeroRowsFor;
+        const landed = zeroFor && range?.startsWith(zeroFor) ? 0 : rowsSent;
+        return send(200, { updates: { updatedRows: landed } });
+      }
       return send(200, {});
     }
 

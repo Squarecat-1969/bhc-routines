@@ -566,3 +566,57 @@ describe('writeRow — sensitive-data gate (added after the fact, found missing 
     expect(row[9]).toBe('Alice confirmed the terms and wants a call next Tuesday at 3pm.');
   });
 });
+
+
+// ─── Appends are verified, not assumed (the 2026-08-14 behaviour) ─────────────
+//
+// On 2026-08-14 the Activity_Log appends returned successfully and wrote
+// nothing, while Contact_History received all seven rows from the same client
+// in the same run. That is still unexplained. activityLogWritten is gated on
+// Google's own updatedRows so the next occurrence names itself instead of
+// being counted as a success.
+
+describe('Activity_Log append verification', () => {
+  const CONFIG = (extra: Partial<FakeBackendConfig> = {}): FakeBackendConfig => ({
+    entries: [], people: {}, masterId: MASTER_ID_ROWS, contactsHeader: [], contacts: [], ...extra,
+  });
+
+  it('treats a 200 that wrote 0 rows as NOT written, and says so', async () => {
+    const { sheets, attio, masterId } = await setup(CONFIG({ appendZeroRowsFor: 'Activity_Log' }));
+    const result = await writeRow(sheets, attio, masterId, baseInput());
+
+    expect(result.activityLogWritten).toBe(false);
+    expect(result.warnings.join(' ')).toContain('reported 0 rows written');
+    expect(result.writes.join(' ')).toContain('NOT written');
+  });
+
+  it('treats a normal append as written', async () => {
+    const { sheets, attio, masterId } = await setup(CONFIG());
+    const result = await writeRow(sheets, attio, masterId, baseInput());
+
+    expect(result.activityLogWritten).toBe(true);
+    expect(result.warnings.join(' ')).not.toContain('reported 0 rows written');
+  });
+
+  it('marks a SECONDARY not-ok when its own append lands 0 rows', async () => {
+    // confirm.ts counts secondaries by this flag, so it has to mean "landed".
+    const { sheets, attio, masterId } = await setup(CONFIG({ appendZeroRowsFor: 'Activity_Log' }));
+    const result = await writeRow(sheets, attio, masterId, baseInput({}, {
+      primary: { bhc_id: 'BHC-1' },
+      secondary: [{ bhc_id: 'BHC-2' }],
+    }));
+
+    expect(result.secondaries).toHaveLength(1);
+    expect(result.secondaries[0]!.ok).toBe(false);
+    expect(result.secondaries[0]!.warnings.join(' ')).toContain('reported 0 rows written');
+  });
+
+  it('leaves Contact_History alone — scope is the one path with a known unexplained failure', async () => {
+    const { sheets, attio, masterId } = await setup(CONFIG({ appendZeroRowsFor: 'Activity_Log' }));
+    await writeRow(sheets, attio, masterId, baseInput());
+
+    // Contact_History still appended, and still unverified by design.
+    const ch = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range?.startsWith('Contact_History'));
+    expect(ch).toBeDefined();
+  });
+});

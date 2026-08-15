@@ -150,6 +150,38 @@ describe('applyResolve', () => {
     expect(vWrites).toHaveLength(1);
   });
 
+  it('records a PARTIAL marker when one CRM took the write and another did not', async () => {
+    // Google_Row 3 matches Master_ID; the Attio record_id does not. One
+    // independent check passes, the other withholds — pointer drift on one
+    // side only, and the two CRMs end the run disagreeing.
+    const wt = JSON.stringify({
+      primary: {
+        bhc_id: 'BHC-1',
+        google: { google_row: 3, fields: {} },
+        attio: { record_id: 'rec-WRONG', fields: { last_meeting_summary: 'x' } },
+      },
+      secondary: [],
+    });
+    const { sheets, attio, masterId } = await setup(
+      [row({ bhcId: '', writeTargetsJson: wt })],
+      { masterId: [['BHC-1', 'Alice', 'BOTH', 3, 'rec-RIGHT', '']] },
+    );
+    const runSet = await loadRunSet(sheets, 'LATE-EDITION-1');
+    const result = await applyResolve(sheets, attio, masterId, runSet);
+
+    expect(result.applied[0]!.writeResult!.googleWritten).toBe(true);
+    expect(result.applied[0]!.writeResult!.attioWritten).toBe(false);
+
+    const uWrites = backend.sheetsWrites.filter((w) => (w.body as { range?: string }).range?.startsWith('Brain_Complete!U'));
+    expect(uWrites).toHaveLength(1);
+    const written = String(((uWrites[0]!.body as { values: unknown[][] }).values)[0]![0]);
+    expect(written).toMatch(/^PARTIAL \d{4}-\d{2}-\d{2}: /);
+    // The pointer-drift branch of the gate, not the missing-entry branch —
+    // Master_ID HAS BHC-1, its Attio_Record_ID just isn't the staged one.
+    expect(written).toContain("Master_ID's Attio_Record_ID for BHC-1");
+    expect(written).toContain('Withholding Attio write');
+  });
+
   it('writes no WITHHELD marker when the gate lets the write through', async () => {
     const wt = JSON.stringify({
       primary: { bhc_id: 'BHC-1', google: { google_row: 3, fields: {} } },

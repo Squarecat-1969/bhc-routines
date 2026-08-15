@@ -247,12 +247,22 @@ export async function writeRow(
     '', // T — filled after 4d if exactly one task
     '', // U
   ];
-  await sheets.append(ACTIVITY_LOG_APPEND_RANGE, [activityLogRow]);
-  // Set AFTER the append returns, never before — this flag is what confirm.ts
-  // counts, and a flag set on intent would report the same fiction the
-  // unconditional counter did.
-  const activityLogWritten = true;
-  writes.push(`Activity_Log ${activityId} appended`);
+  // Gated on what Google reports LANDED, not on the call returning. "Didn't
+  // throw" is intent; updatedRows is outcome, and this flag is what confirm.ts
+  // counts. On 2026-08-14 these appends returned successfully and wrote
+  // nothing while Contact_History took all seven rows from the same client in
+  // the same run — still unexplained, and this is the instrumentation that
+  // will name it on the next real run.
+  const appendResult = await sheets.append(ACTIVITY_LOG_APPEND_RANGE, [activityLogRow]);
+  const activityLogWritten = appendResult.updatedRows > 0;
+  if (!activityLogWritten) {
+    warnings.push(`Activity_Log append for ${activityId} reported 0 rows written — the call succeeded but nothing landed.`);
+  }
+  writes.push(
+    activityLogWritten
+      ? `Activity_Log ${activityId} appended`
+      : `Activity_Log ${activityId} append returned 0 rows — NOT written`,
+  );
 
   // ── 4b. Google Contacts BZ:CG (update) ───────────────────────────────────
   if (googleOk && primary.google) {
@@ -453,8 +463,16 @@ export async function writeRow(
         '', // T
         '', // U
       ];
-      await sheets.append(ACTIVITY_LOG_APPEND_RANGE, [secActivityRow]);
-      writes.push(`Activity_Log ${secActivityId} appended (secondary ${secondary.bhc_id})`);
+      // Same outcome-not-intent check as the primary. confirm.ts counts
+      // secondaries by this `ok` flag, so it has to mean "landed".
+      const secAppend = await sheets.append(ACTIVITY_LOG_APPEND_RANGE, [secActivityRow]);
+      if (secAppend.updatedRows > 0) {
+        writes.push(`Activity_Log ${secActivityId} appended (secondary ${secondary.bhc_id})`);
+      } else {
+        secOk = false;
+        secWarnings.push(`Secondary Activity_Log append for ${secActivityId} reported 0 rows written — the call succeeded but nothing landed.`);
+        writes.push(`Activity_Log ${secActivityId} append returned 0 rows — NOT written (secondary ${secondary.bhc_id})`);
+      }
     } catch (e) {
       secOk = false;
       secWarnings.push(`Secondary Activity_Log append failed: ${String(e)}`);
@@ -531,6 +549,27 @@ export async function writeRow(
 export function isHollow(result: WriteRowResult): boolean {
   if (!result.googleTargeted && !result.attioTargeted) return false;
   return !result.googleWritten && !result.attioWritten;
+}
+
+/**
+ * A PARTIALLY WITHHELD row: one named target landed, another named target did
+ * not.
+ *
+ * This is the quietest outcome in the system and the one the identity gate
+ * most exists to catch. googleOk and attioOk are independent checks against
+ * the same bhcId, so a Master_ID row carrying a correct Attio_Record_ID and a
+ * stale Google_Row produces exactly this — pointer drift on one side only.
+ *
+ * It also desynchronises the two CRMs, which is why it cannot stay a warning
+ * that expires with the run artifact: Google's BZ says contacted, Attio's
+ * last_interaction_at stays stale, and PASS 4 computes cadence from Attio. The
+ * visible result is a wrong next-touch date and a false stall flag on a
+ * contact who was in fact just contacted.
+ */
+export function isPartiallyWithheld(result: WriteRowResult): boolean {
+  const landed = (result.googleTargeted && result.googleWritten) || (result.attioTargeted && result.attioWritten);
+  const withheld = (result.googleTargeted && !result.googleWritten) || (result.attioTargeted && !result.attioWritten);
+  return landed && withheld;
 }
 
 /**

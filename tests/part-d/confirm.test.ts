@@ -194,13 +194,27 @@ describe('withheld rows are never rendered as a clean success', () => {
     expect(buildResolveMessage(RUN_LABEL, result)).not.toContain('withheld');
   });
 
-  it('does NOT flag a partial write — something did reach a CRM', () => {
+  it('flags a PARTIAL write separately — not withheld, but the CRMs now disagree', () => {
+    // Google took the write, Attio did not. Not silence, so not "withheld" —
+    // but Google's BZ now says contacted while Attio's last_interaction_at is
+    // stale, and PASS 4 computes cadence from Attio.
     const result = branchResult('RESOLVE', [
       resolvedRow({
         writeResult: writeResult({ googleTargeted: true, googleWritten: true, attioTargeted: true, attioWritten: false }),
       }),
     ]);
-    expect(buildResolveMessage(RUN_LABEL, result)).not.toContain('withheld');
+    const msg = buildResolveMessage(RUN_LABEL, result);
+    expect(msg).toContain('⚠ 1 row(s) partially written — CRMs may be out of sync');
+    expect(msg).not.toContain('withheld by identity gate');
+  });
+
+  it('flags partial writes on MIXED too', () => {
+    const result = branchResult('MIXED', [
+      resolvedRow({
+        writeResult: writeResult({ googleTargeted: true, googleWritten: true, attioTargeted: true, attioWritten: false }),
+      }),
+    ]);
+    expect(buildMixedMessage(RUN_LABEL, result)).toContain('⚠ 1 row(s) partially written');
   });
 
   it('flags withheld rows on MIXED too', () => {
@@ -208,5 +222,48 @@ describe('withheld rows are never rendered as a clean success', () => {
       resolvedRow({ writeResult: writeResult({ googleTargeted: true, googleWritten: false }) }),
     ]);
     expect(buildMixedMessage(RUN_LABEL, result)).toContain('⚠ 1 write(s) withheld by identity gate');
+  });
+});
+
+
+// ─── The four states, pinned explicitly ──────────────────────────────────────
+//
+// googleOk and attioOk are independent checks against the same bhcId, so all
+// four combinations are reachable and they mean different things. Only two of
+// them are problems, and they are different problems.
+
+describe('the four write states', () => {
+  const state = (o: Partial<WriteRowResult>) =>
+    buildResolveMessage(RUN_LABEL, branchResult('RESOLVE', [resolvedRow({ writeResult: writeResult(o) })]));
+
+  it('1. no target named — nothing to write, and that is not a fault', () => {
+    const msg = state({ googleTargeted: false, attioTargeted: false });
+    expect(msg).not.toContain('withheld');
+    expect(msg).not.toContain('partially written');
+  });
+
+  it('2. every named target landed — clean', () => {
+    const msg = state({ googleTargeted: true, googleWritten: true, attioTargeted: true, attioWritten: true });
+    expect(msg).not.toContain('withheld');
+    expect(msg).not.toContain('partially written');
+    expect(msg).toContain('1 Google · 1 Attio');
+  });
+
+  it('3. one landed, one withheld — PARTIAL', () => {
+    const msg = state({ googleTargeted: true, googleWritten: true, attioTargeted: true, attioWritten: false });
+    expect(msg).toContain('partially written');
+    expect(msg).not.toContain('withheld by identity gate');
+  });
+
+  it('4. every named target withheld — WITHHELD', () => {
+    const msg = state({ googleTargeted: true, googleWritten: false, attioTargeted: true, attioWritten: false });
+    expect(msg).toContain('withheld by identity gate');
+    expect(msg).not.toContain('partially written');
+  });
+
+  it('a single named target that was withheld is WITHHELD, not partial', () => {
+    const msg = state({ googleTargeted: true, googleWritten: false, attioTargeted: false });
+    expect(msg).toContain('withheld by identity gate');
+    expect(msg).not.toContain('partially written');
   });
 });

@@ -61,9 +61,27 @@ export class SheetsClient {
     await this.post({ action: 'update', range, values }, `sheets:update ${range}`);
   }
 
-  /** Append rows after the last row of data in the given range/sheet. */
-  async append(range: string, values: readonly SheetRow[]): Promise<void> {
-    await this.post({ action: 'append', range, values }, `sheets:append ${range}`);
+  /**
+   * Append rows after the last row of data in the given range/sheet.
+   *
+   * Returns what Google reports actually landed, rather than nothing. A
+   * caller that only knows "the call didn't throw" is asserting intent, not
+   * outcome — the same class of defect as Part D's unconditional activity
+   * counter. On 2026-08-14 Activity_Log appends returned successfully and
+   * wrote nothing while Contact_History received all seven rows from the same
+   * client in the same run; that is still unexplained, and this return value
+   * is the instrumentation that will identify it.
+   *
+   * `updatedRows` comes from the real API's `updates.updatedRows`. Absent or
+   * malformed responses report 0 — an unverifiable append is treated as one
+   * that did not land, never as one that did.
+   */
+  async append(range: string, values: readonly SheetRow[]): Promise<{ updatedRows: number }> {
+    const res = await this.post<{ updates?: { updatedRows?: number } }>(
+      { action: 'append', range, values },
+      `sheets:append ${range}`,
+    );
+    return { updatedRows: res.updates?.updatedRows ?? 0 };
   }
 }
 
