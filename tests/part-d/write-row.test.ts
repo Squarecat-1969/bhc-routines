@@ -610,6 +610,42 @@ describe('Activity_Log append verification', () => {
     expect(result.warnings.join(' ')).not.toContain('carried no `updates` block');
   });
 
+  it('separates a reshaped response from a Sheets refusal', async () => {
+    // Google always emits updatedRows alongside updates, so a block without
+    // the field means something between here and Google reshaped the
+    // response — a proxy-layer fault. Calling it a Sheets refusal would aim
+    // diagnosis at the wrong layer.
+    const { sheets, attio, masterId } = await setup(CONFIG({ appendNoUpdatedRowsFieldFor: 'Activity_Log' }));
+    const result = await writeRow(sheets, attio, masterId, baseInput());
+
+    expect(result.activityLogWritten).toBe(false);
+    expect(result.warnings.join(' ')).toContain('`updates` block with no `updatedRows` field');
+  });
+
+  it('the three failure messages are mutually exclusive', async () => {
+    const messageFor = async (extra: Partial<FakeBackendConfig>): Promise<string> => {
+      const { sheets, attio, masterId } = await setup(CONFIG(extra));
+      const result = await writeRow(sheets, attio, masterId, baseInput());
+      await backend.stop();
+      return result.warnings.join(' ');
+    };
+
+    const sheetsRefusal = await messageFor({ appendZeroRowsFor: 'Activity_Log' });
+    const noBlock = await messageFor({ appendNoUpdatesBlockFor: 'Activity_Log' });
+    const reshaped = await messageFor({ appendNoUpdatedRowsFieldFor: 'Activity_Log' });
+
+    expect(sheetsRefusal).toContain('Google reported 0 rows written');
+    expect(sheetsRefusal).not.toContain('`updates` block');
+
+    expect(noBlock).toContain('carried no `updates` block');
+    expect(noBlock).not.toContain('Google reported 0');
+    expect(noBlock).not.toContain('with no `updatedRows` field');
+
+    expect(reshaped).toContain('`updates` block with no `updatedRows` field');
+    expect(reshaped).not.toContain('Google reported 0');
+    expect(reshaped).not.toContain('carried no `updates` block');
+  });
+
   it('carries the same distinction into a SECONDARY append', async () => {
     const { sheets, attio, masterId } = await setup(CONFIG({ appendNoUpdatesBlockFor: 'Activity_Log' }));
     const result = await writeRow(sheets, attio, masterId, baseInput({}, {

@@ -76,17 +76,28 @@ export class SheetsClient {
    * defaults to 0 — an unverifiable append is treated as one that did not
    * land, never as one that did.
    *
-   * `updatesBlockPresent` keeps two different facts apart, because a bare 0
-   * collapses them: Google reporting zero rows written, versus no `updates`
-   * block arriving at all. They point at different causes — the first is the
-   * Sheets API declining to write, the second is the response never carrying
-   * the field through the Aida proxy — and on 2026-08-14 we could not tell
-   * which had happened.
+   * The two booleans keep THREE facts apart that a bare 0 collapses into one,
+   * because each points at a different layer:
+   *
+   *   updates + updatedRows: 0  Google itself declined to write. A Sheets
+   *                             fault.
+   *   no updates block          The response never carried the field. A
+   *                             transport or proxy fault.
+   *   updates, no updatedRows   Google always emits updatedRows alongside
+   *                             updates, so this shape means something
+   *                             between here and Google RESHAPED the
+   *                             response. A proxy-layer fault specifically —
+   *                             and reporting it as a Sheets refusal would
+   *                             aim diagnosis at the wrong layer, which is
+   *                             the failure this whole distinction exists to
+   *                             prevent.
+   *
+   * On 2026-08-14 we could not tell any of them apart.
    */
   async append(
     range: string,
     values: readonly SheetRow[],
-  ): Promise<{ updatedRows: number; updatesBlockPresent: boolean }> {
+  ): Promise<{ updatedRows: number; updatesBlockPresent: boolean; updatedRowsFieldPresent: boolean }> {
     const res = await this.post<{ updates?: { updatedRows?: number } }>(
       { action: 'append', range, values },
       `sheets:append ${range}`,
@@ -95,6 +106,7 @@ export class SheetsClient {
     return {
       updatedRows: updates?.updatedRows ?? 0,
       updatesBlockPresent: updates !== undefined && updates !== null,
+      updatedRowsFieldPresent: typeof updates?.updatedRows === 'number',
     };
   }
 }

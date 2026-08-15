@@ -30,10 +30,18 @@ The chain: `RunSetRow.bhcId = ""` → `writeRow` hands it to the identity gate �
 
 **Second review pass:**
 
-- **The zero-append signal is now unambiguous.** `res.updates?.updatedRows ?? 0` collapsed two different facts — Google reporting zero rows, versus no `updates` block arriving at all — and they point at different causes. `append` returns `{ updatedRows, updatesBlockPresent }`, `updatedRows` still defaulting to 0 (the safe direction is unchanged), and the warning names which case it was: "Google reported 0 rows written" versus "response carried no `updates` block — the write is unverifiable, treating as not landed". Both cases apply to the secondary appends feeding `ok`, both have a fake-backend shape (`appendZeroRowsFor`, `appendNoUpdatesBlockFor`), and both are pinned by test. When Activity_Log next reports zero, the run will say which of the two happened.
+- **The zero-append signal is now unambiguous.** `res.updates?.updatedRows ?? 0` collapsed two different facts — Google reporting zero rows, versus no `updates` block arriving at all — and they point at different causes. `append` returns `{ updatedRows, updatesBlockPresent, updatedRowsFieldPresent }`, `updatedRows` still defaulting to 0 (the safe direction is unchanged), and the warning names which of **three** cases it was, because each points at a different layer:
+
+  | Response shape | Message | Layer |
+  |---|---|---|
+  | `updates.updatedRows: 0` | "Google reported 0 rows written." | Sheets declined the write |
+  | no `updates` block | "response carried no \`updates\` block — the write is unverifiable…" | transport / proxy |
+  | `updates` with no `updatedRows` | "response carried an \`updates\` block with no \`updatedRows\` field — the write is unverifiable…" | proxy reshaped the response |
+
+  The third was initially folded into the first. Google always emits `updatedRows` alongside `updates`, so that shape means something between the client and Google reshaped the response — a proxy-layer fault, not a Sheets refusal, and reporting it as one would aim diagnosis at the wrong layer, which is precisely what this distinction exists to prevent. All three apply to the secondary appends feeding `ok`, all three have a fake-backend shape (`appendZeroRowsFor`, `appendNoUpdatesBlockFor`, `appendNoUpdatedRowsFieldFor`), and a test asserts the three messages are mutually exclusive. When Activity_Log next reports zero, the run will say which happened.
 - **A failed Brain_Complete read no longer looks like a finished digest.** `SheetsClient.read` coerces a malformed response to `[]`, so a read failure produced `runSet.rows.length === 0` — and STEP 2's legitimate answer to that is to stop SILENTLY with no Slack post, because a prior run may already have resolved the digest. The two were indistinguishable and the failure was the quiet one: Bobby clicks Resolve, nothing happens, nothing is posted, indefinitely. `RunSet.totalRowsRead` now carries what the read returned before run-id filtering, and index.ts discriminates: zero rows read throws (routing to the outer catch, which posts the "⚠ Part D halted" alert), while rows read with none matching stops silently exactly as before. Brain_Complete holds ~199 rows in production, so a read returning zero of them is not a legitimate empty. `read`'s own `[]` coercion is deliberately untouched — Google genuinely omits `values` for an empty range and other callers depend on it; the discrimination belongs at the call site that knows what a legitimate empty looks like, same as `loadMasterId`'s size guard.
 
-742/742 tests passing (was 725 at first review, 736 after the first follow-ups).
+744/744 tests passing (710 before this change set; 725 / 736 / 742 across the three review passes).
 
 ## 2026-08-10 — BHC_Zoom Path B dedups by name as well as email
 

@@ -88,20 +88,26 @@ function makeTaskId(now: Date = new Date()): string {
  * Why an append reported nothing landed — stated as the specific fact, not a
  * shared "0 rows" that covers both.
  *
- * "Google reported 0" and "the `updates` block never arrived" point at
- * different causes: the Sheets API declining the write, versus the response
- * losing the field somewhere between Sheets and this process. On 2026-08-14
- * Activity_Log appends returned 200 and wrote nothing while Contact_History
- * appends from the same client in the same run landed all seven rows. When
- * that recurs, the warning has to say which of the two it was.
+ * Three causes, three layers, three messages. On 2026-08-14 Activity_Log
+ * appends returned 200 and wrote nothing while Contact_History appends from
+ * the same client in the same run landed all seven rows. When that recurs the
+ * warning has to name which layer, because each points somewhere different:
+ * Sheets declining the write, the response never arriving intact, or the
+ * response arriving reshaped. Google always emits `updatedRows` alongside
+ * `updates`, so the third shape is a proxy-layer fault specifically — calling
+ * it a Sheets refusal would aim diagnosis at the wrong layer.
  */
 function describeFailedAppend(
   label: string,
-  result: { updatedRows: number; updatesBlockPresent: boolean },
+  result: { updatedRows: number; updatesBlockPresent: boolean; updatedRowsFieldPresent: boolean },
 ): string {
-  return result.updatesBlockPresent
-    ? `${label}: Google reported 0 rows written.`
-    : `${label}: response carried no \`updates\` block — the write is unverifiable, treating as not landed.`;
+  if (!result.updatesBlockPresent) {
+    return `${label}: response carried no \`updates\` block — the write is unverifiable, treating as not landed.`;
+  }
+  if (!result.updatedRowsFieldPresent) {
+    return `${label}: response carried an \`updates\` block with no \`updatedRows\` field — the write is unverifiable, treating as not landed.`;
+  }
+  return `${label}: Google reported 0 rows written.`;
 }
 
 export async function writeRow(

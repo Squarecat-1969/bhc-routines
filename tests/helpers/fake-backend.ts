@@ -116,11 +116,17 @@ export interface FakeBackendConfig {
   appendZeroRowsFor?: string;
   /**
    * Range prefix whose appends return HTTP 200 with NO `updates` block at
-   * all — the write is unverifiable rather than reported-as-zero. The other
-   * half, and a different cause: the field never arrived rather than Google
-   * declining the write.
+   * all — the write is unverifiable rather than reported-as-zero. A different
+   * cause: the field never arrived rather than Google declining the write.
    */
   appendNoUpdatesBlockFor?: string;
+  /**
+   * Range prefix whose appends return HTTP 200 with an `updates` block that
+   * has no `updatedRows` field. Google always emits the two together, so this
+   * shape means something between the client and Google reshaped the
+   * response — a proxy-layer fault, distinct from a Sheets refusal.
+   */
+  appendNoUpdatedRowsFieldFor?: string;
   /** Company record_id -> name, for resolving people's `company` references. */
   companies?: Record<string, string>;
   /** Make the companies query fail — the company column degrades to blank. */
@@ -506,6 +512,10 @@ export class FakeBackend {
         const noBlockFor = this.config.appendNoUpdatesBlockFor;
         if (noBlockFor && range?.startsWith(noBlockFor)) {
           return send(200, {}); // 200, but nothing to verify against
+        }
+        const noFieldFor = this.config.appendNoUpdatedRowsFieldFor;
+        if (noFieldFor && range?.startsWith(noFieldFor)) {
+          return send(200, { updates: {} }); // block arrived, reshaped in transit
         }
         const zeroFor = this.config.appendZeroRowsFor;
         const landed = zeroFor && range?.startsWith(zeroFor) ? 0 : rowsSent;
