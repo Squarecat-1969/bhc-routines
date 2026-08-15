@@ -65,6 +65,30 @@ export interface WriteRowResult {
   readonly googleWritten: boolean;
   readonly attioWritten: boolean;
   /**
+   * Whether writeTargets NAMED each target at all — distinct from whether it
+   * was written. Without this, "withheld" is indistinguishable from
+   * "FYI-only row with nothing to write": both show googleWritten=false.
+   * Added because confirm.ts sees only WriteRowResult, never the input.
+   */
+  readonly googleTargeted: boolean;
+  readonly attioTargeted: boolean;
+  /**
+   * The identity gate's own warnings, kept separate from the general
+   * `warnings` bag so branch.ts can write them to Brain_Complete col U
+   * without string-matching a human-readable log — the exact coupling the
+   * googleWritten/attioWritten comment below already warns against.
+   */
+  readonly identityGateWarnings: readonly string[];
+  /**
+   * True only once 4a's append has actually returned. confirm.ts counted
+   * activity entries unconditionally — `1 + secondaries.length` on every
+   * resolved row — while google and attio were gated on real booleans, so a
+   * run that wrote nothing rendered as "0 Google · 0 Attio · 7 activity
+   * entries". Two honest zeros either side of a fabricated seven. Counting
+   * outcomes requires a flag set by the outcome.
+   */
+  readonly activityLogWritten: boolean;
+  /**
    * 4f's lighter loop, one entry per secondary in writeTargets.secondary.
    * Per spec: "Secondary QA failure flags that secondary but does NOT block
    * primary V=TRUE" — each secondary's own ok/warnings are tracked
@@ -88,6 +112,29 @@ export interface PartDOptions {
   readonly dryRun: boolean;
 }
 
+/**
+ * One row's outcome, as it appears in the run artifact.
+ *
+ * DELIBERATELY SLIM. writeResult and qa are NOT here: they embed subjects,
+ * running summaries, draft replies and personal-context extracts, and the
+ * report is written to `out/` and uploaded as a CI artifact. Thread content
+ * must not land in a 7-day artifact (project instructions §6 — never
+ * propagate sensitive data). What is here is what a person debugging a
+ * silent run actually needs: which row, whose, what happened, and what the
+ * code itself said about why.
+ *
+ * `warnings` is the load-bearing field. Part D wrote the correct diagnosis —
+ * "Master_ID has no entry for  — withholding Google write" — four times a
+ * night for a month, and emptyReport() dropped BranchResult.applied
+ * wholesale, which was the only thing holding it.
+ */
+export interface AppliedRowSummary {
+  readonly digestPosition: number | null;
+  readonly bhcId: string | null;
+  readonly outcome: string;
+  readonly warnings: readonly string[];
+}
+
 export interface PartDReport {
   readonly runId: string | null; // null only when parsing never got far enough to extract one
   readonly dryRun: boolean;
@@ -100,4 +147,8 @@ export interface PartDReport {
   readonly runSetSize: number;
   readonly posted: boolean;
   readonly confirmationMessage: string | null;
+  /** Per-row outcomes and warnings. Empty for stop conditions that never reached branch.ts. */
+  readonly applied: readonly AppliedRowSummary[];
+  /** How many run-set rows took the Write_Targets_JSON identity fallback (load-run-set.ts). */
+  readonly rowsUsingWriteTargetIdentity: number;
 }

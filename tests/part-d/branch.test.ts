@@ -13,7 +13,10 @@ async function setup(brainComplete: unknown[][], config: Partial<FakeBackendConf
   sheets: SheetsClient; attio: AttioClient; masterId: MasterIdIndex; backend: FakeBackend;
 }> {
   backend = new FakeBackend({
-    entries: [], people: {}, masterId: [], contactsHeader: [], contacts: [], brainComplete, ...config,
+    // See the sentinel note in tests/pass2/resolve.test.ts — loadMasterId
+    // refuses a 0-entry index. A row that matches nothing still lets the
+    // identity gate withhold exactly as these tests expect.
+    entries: [], people: {}, masterId: [['BHC-09999', 'Fixture Sentinel', 'BOTH', 3, 'rec-fixture-sentinel', 'fixture row — a production Master_ID is never empty']], contactsHeader: [], contacts: [], brainComplete, ...config,
   });
   const { attioBase, sheetsUrl } = await backend.start();
   const attio = new AttioClient({ apiKey: 'test', baseUrl: attioBase });
@@ -117,6 +120,56 @@ describe('applyResolve', () => {
 
     const vWrites = backend.sheetsWrites.filter((w) => (w.body as { range?: string }).range?.startsWith('Brain_Complete!V'));
     expect(vWrites).toHaveLength(2); // both rows end up closed one way or another
+  });
+
+  // ── The durable WITHHELD marker ─────────────────────────────────────────
+  // Part D produced the correct diagnosis four times a night for a month and
+  // discarded it every time, so reconstructing the affected set meant reading
+  // Slack history. A marker on the row makes the set queryable from the sheet.
+  it('records a WITHHELD marker in col U when the identity gate holds every write', async () => {
+    const wt = JSON.stringify({
+      primary: { bhc_id: 'BHC-MISSING', google: { google_row: 371, fields: {} } },
+      secondary: [],
+    });
+    // Master_ID deliberately does NOT contain BHC-MISSING — the gate withholds.
+    const { sheets, attio, masterId } = await setup([row({ bhcId: '', writeTargetsJson: wt })]);
+    const runSet = await loadRunSet(sheets, 'LATE-EDITION-1');
+    const result = await applyResolve(sheets, attio, masterId, runSet);
+
+    expect(result.applied[0]!.writeResult!.googleWritten).toBe(false);
+
+    const uWrites = backend.sheetsWrites.filter((w) => (w.body as { range?: string }).range?.startsWith('Brain_Complete!U'));
+    expect(uWrites).toHaveLength(1);
+    const written = String(((uWrites[0]!.body as { values: unknown[][] }).values)[0]![0]);
+    expect(written).toMatch(/^WITHHELD \d{4}-\d{2}-\d{2}: /);
+    expect(written).toContain('withholding Google write');
+
+    // Still closed — leaving V blank to enable retry would duplicate the
+    // Activity_Log and Contact_History rows that DID land.
+    const vWrites = backend.sheetsWrites.filter((w) => (w.body as { range?: string }).range?.startsWith('Brain_Complete!V'));
+    expect(vWrites).toHaveLength(1);
+  });
+
+  it('writes no WITHHELD marker when the gate lets the write through', async () => {
+    const wt = JSON.stringify({
+      primary: { bhc_id: 'BHC-1', google: { google_row: 3, fields: {} } },
+      secondary: [],
+    });
+    const { sheets, attio, masterId } = await setup(
+      [row({ bhcId: '', writeTargetsJson: wt })],
+      { masterId: [['BHC-1', 'Alice', 'BOTH', 3, 'rec-1', '']] },
+    );
+    const runSet = await loadRunSet(sheets, 'LATE-EDITION-1');
+    const result = await applyResolve(sheets, attio, masterId, runSet);
+
+    // THE FIX, end to end: col B is blank, identity came from
+    // Write_Targets_JSON, the gate passed, and a real Google write happened.
+    // Before the fallback this was googleWritten=false on every live row.
+    expect(runSet.rows[0]!.bhcIdFromWriteTargets).toBe(true);
+    expect(result.applied[0]!.writeResult!.googleWritten).toBe(true);
+
+    const uWrites = backend.sheetsWrites.filter((w) => (w.body as { range?: string }).range?.startsWith('Brain_Complete!U'));
+    expect(uWrites).toHaveLength(0);
   });
 });
 

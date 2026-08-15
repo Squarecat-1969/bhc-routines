@@ -115,14 +115,17 @@ export async function writeRow(
   // at a stale row while Attio still gets updated (or vice versa).
   let googleOk = false;
   let attioOk = false;
+  const identityGateWarnings: string[] = [];
+  const googleTargeted = !!primary.google;
+  const attioTargeted = !!primary.attio;
   if (primary.google) {
     const problem = verifyGoogleRowOwnership(masterId, bhcId, primary.google.google_row);
-    if (problem) warnings.push(problem);
+    if (problem) { warnings.push(problem); identityGateWarnings.push(problem); }
     else googleOk = true;
   }
   if (primary.attio) {
     const problem = verifyAttioRecordOwnership(masterId, bhcId, primary.attio.record_id);
-    if (problem) warnings.push(problem);
+    if (problem) { warnings.push(problem); identityGateWarnings.push(problem); }
     else attioOk = true;
   }
 
@@ -245,6 +248,10 @@ export async function writeRow(
     '', // U
   ];
   await sheets.append(ACTIVITY_LOG_APPEND_RANGE, [activityLogRow]);
+  // Set AFTER the append returns, never before — this flag is what confirm.ts
+  // counts, and a flag set on intent would report the same fiction the
+  // unconditional counter did.
+  const activityLogWritten = true;
   writes.push(`Activity_Log ${activityId} appended`);
 
   // ── 4b. Google Contacts BZ:CG (update) ───────────────────────────────────
@@ -502,7 +509,28 @@ export async function writeRow(
   // So `ok` here just means "completed without a fatal, uncaught error" —
   // callers wanting to know about partial failures should check
   // warnings.length, which is the real, itemized signal, not this boolean.
-  return { ok: true, bhcId, activityId, writes, warnings, taskIds, googleWritten: googleOk, attioWritten: attioOk, secondaries };
+  return {
+    ok: true, bhcId, activityId, writes, warnings, taskIds,
+    googleWritten: googleOk, attioWritten: attioOk,
+    googleTargeted, attioTargeted, identityGateWarnings,
+    activityLogWritten, secondaries,
+  };
+}
+
+/**
+ * A HOLLOW row: writeTargets named at least one CRM target, and nothing
+ * reached a CRM.
+ *
+ * A row that named no target at all is not hollow — it is an FYI-only row
+ * with genuinely nothing to write, and the two look identical if you only
+ * inspect `googleWritten`. A row where one target landed and another was
+ * withheld is also not hollow: something did reach a CRM, and the withheld
+ * half is already itemised in `warnings`. Hollow is reserved for total
+ * silence, which is the state that spent a month rendering as a clean ✅.
+ */
+export function isHollow(result: WriteRowResult): boolean {
+  if (!result.googleTargeted && !result.attioTargeted) return false;
+  return !result.googleWritten && !result.attioWritten;
 }
 
 /**

@@ -51,7 +51,7 @@ import {
 } from './confirm.js';
 import { loadRunSet } from './load-run-set.js';
 import { parseCommand } from './parse-command.js';
-import type { PartDOptions, PartDReport, StopReason } from './types.js';
+import type { AppliedRowSummary, PartDOptions, PartDReport, StopReason } from './types.js';
 
 export interface RunPartDDeps {
   readonly sheets: SheetsClient;
@@ -64,6 +64,7 @@ function emptyReport(partial: {
   runId: string | null; dryRun: boolean; startedAt: string; aborted?: boolean; abortReason?: string | null;
   command?: PartDReport['command']; stopReason?: StopReason | null; runSetSize?: number;
   posted?: boolean; confirmationMessage?: string | null;
+  applied?: readonly AppliedRowSummary[]; rowsUsingWriteTargetIdentity?: number;
 }): PartDReport {
   return {
     runId: partial.runId,
@@ -77,7 +78,19 @@ function emptyReport(partial: {
     runSetSize: partial.runSetSize ?? 0,
     posted: partial.posted ?? false,
     confirmationMessage: partial.confirmationMessage ?? null,
+    applied: partial.applied ?? [],
+    rowsUsingWriteTargetIdentity: partial.rowsUsingWriteTargetIdentity ?? 0,
   };
+}
+
+/** BranchResult.applied -> the report's slim projection. See AppliedRowSummary. */
+function summarizeApplied(applied: BranchResult['applied']): AppliedRowSummary[] {
+  return applied.map((row) => ({
+    digestPosition: row.digestPosition,
+    bhcId: row.bhcId,
+    outcome: row.outcome,
+    warnings: row.warnings,
+  }));
 }
 
 /**
@@ -141,6 +154,12 @@ async function runPartDInner(opts: PartDOptions, deps: RunPartDDeps, startedAt: 
   // saying anything at all, not by trying to un-send a Slack message.
   const runSet = await loadRunSet(sheets, runLabel);
   logger.info(`STEP 2 — run set size=${runSet.rows.length} digest positions=${runSet.byDigestPosition.size}`);
+  if (runSet.rowsUsingWriteTargetIdentity > 0) {
+    logger.warn(
+      `STEP 2 — ${runSet.rowsUsingWriteTargetIdentity} of ${runSet.rows.length} row(s) took the Write_Targets_JSON identity fallback ` +
+        '(Brain_Complete col B blank). Expected until PASS 2 backfills col B; if this is every row, col B is still not being written.',
+    );
+  }
   if (runSet.rows.length === 0) {
     // Per spec: stop SILENTLY. No Slack post at all — a prior run already
     // confirmed this digest, this is not a failure or something to flag.
@@ -169,7 +188,10 @@ async function runPartDInner(opts: PartDOptions, deps: RunPartDDeps, startedAt: 
     // without calling into branch.ts (and therefore write-row.ts/
     // qa-readback.ts) at all, so nothing gets written.
     logger.info(`DRY RUN — would run ${parsed.kind} against ${runSet.rows.length} row(s); no writes attempted, no Slack post sent.`);
-    return emptyReport({ runId: runLabel, dryRun, startedAt, command: parsed.kind, runSetSize: runSet.rows.length });
+    return emptyReport({
+      runId: runLabel, dryRun, startedAt, command: parsed.kind, runSetSize: runSet.rows.length,
+      rowsUsingWriteTargetIdentity: runSet.rowsUsingWriteTargetIdentity,
+    });
   }
 
   // STEP 3 (+ 4/4-MIXED/5, inside branch.ts) — actually do the work
@@ -190,8 +212,18 @@ async function runPartDInner(opts: PartDOptions, deps: RunPartDDeps, startedAt: 
   await slack.post(confirmationMessage);
   logger.info(`STEP 6 — posted confirmation: ${confirmationMessage}`);
 
+  const applied = summarizeApplied(result.applied);
+  const withWarnings = applied.filter((r) => r.warnings.length > 0);
+  if (withWarnings.length > 0) {
+    logger.warn(`STEP 6 — ${withWarnings.length} row(s) finished with warnings:`);
+    for (const r of withWarnings) {
+      for (const w of r.warnings) logger.warn(`  [${r.digestPosition ?? '-'}] ${r.bhcId ?? '(no id)'}: ${w}`);
+    }
+  }
+
   return emptyReport({
     runId: runLabel, dryRun, startedAt, command: parsed.kind,
     runSetSize: runSet.rows.length, posted: true, confirmationMessage,
+    applied, rowsUsingWriteTargetIdentity: runSet.rowsUsingWriteTargetIdentity,
   });
 }

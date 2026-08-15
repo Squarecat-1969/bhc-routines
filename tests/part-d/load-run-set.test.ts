@@ -150,3 +150,66 @@ describe('loadRunSet — Tasks_JSON parsing (col Y)', () => {
     expect(runSet.rows[0]!.tasks[0]!.description).toBe('Good task');
   });
 });
+
+// ─── Identity fallback (the 2026-08-15 silent-withhold defect) ────────────────
+//
+// Col B is blank on every live Brain_Complete row — Zap C does no identity
+// resolution and PASS 2 passed the blank through. Every row therefore reached
+// the identity gate with an empty key, masterId.byBhcId.get('') returned
+// undefined, and Part D withheld 100% of primary CRM writes while reporting
+// success. The real identity was in Write_Targets_JSON the whole time.
+
+describe('loadRunSet — identity fallback to Write_Targets_JSON', () => {
+  const targets = (bhcId: string) =>
+    JSON.stringify({ primary: { bhc_id: bhcId, google: { google_row: 371, fields: {} } } });
+
+  it('falls back to Write_Targets_JSON primary.bhc_id when col B is blank', async () => {
+    const { sheets, backend } = await setup([row({ bhcId: '', writeTargetsJson: targets('BHC-02395') })]);
+    const runSet = await loadRunSet(sheets, 'LATE-EDITION-1');
+    await backend.stop();
+
+    expect(runSet.rows[0]!.bhcId).toBe('BHC-02395');
+    expect(runSet.rows[0]!.bhcIdFromWriteTargets).toBe(true);
+    expect(runSet.rowsUsingWriteTargetIdentity).toBe(1);
+  });
+
+  it('PREFERS col B when it is populated — the fallback never overrides it', async () => {
+    // So the moment PASS 2 starts writing col B, it silently becomes the
+    // primary path again with no further change here.
+    const { sheets, backend } = await setup([row({ bhcId: 'BHC-FROM-COL-B', writeTargetsJson: targets('BHC-FROM-JSON') })]);
+    const runSet = await loadRunSet(sheets, 'LATE-EDITION-1');
+    await backend.stop();
+
+    expect(runSet.rows[0]!.bhcId).toBe('BHC-FROM-COL-B');
+    expect(runSet.rows[0]!.bhcIdFromWriteTargets).toBe(false);
+    expect(runSet.rowsUsingWriteTargetIdentity).toBe(0);
+  });
+
+  it('cannot introduce a blank identity — a row with no usable targets keeps writeTargets null', async () => {
+    // parseWriteTargets' shape guard already returns null without a
+    // primary.bhc_id, so the fallback has nothing to hand over and the row
+    // takes the existing skipped_no_target path instead.
+    const { sheets, backend } = await setup([
+      row({ bhcId: '', writeTargetsJson: JSON.stringify({ primary: { google: { google_row: 5, fields: {} } } }) }),
+    ]);
+    const runSet = await loadRunSet(sheets, 'LATE-EDITION-1');
+    await backend.stop();
+
+    expect(runSet.rows[0]!.writeTargets).toBeNull();
+    expect(runSet.rows[0]!.bhcId).toBe('');
+    expect(runSet.rows[0]!.bhcIdFromWriteTargets).toBe(false);
+  });
+
+  it('counts every row that took the fallback, so a run-wide fallback is visible', async () => {
+    const { sheets, backend } = await setup([
+      row({ bhcId: '', writeTargetsJson: targets('BHC-1') }),
+      row({ bhcId: '', writeTargetsJson: targets('BHC-2') }),
+      row({ bhcId: 'BHC-3', writeTargetsJson: targets('BHC-3') }),
+    ]);
+    const runSet = await loadRunSet(sheets, 'LATE-EDITION-1');
+    await backend.stop();
+
+    expect(runSet.rows).toHaveLength(3);
+    expect(runSet.rowsUsingWriteTargetIdentity).toBe(2);
+  });
+});

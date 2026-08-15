@@ -2,6 +2,27 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-08-15 — Part D executed ZERO primary CRM writes for a month while reporting success
+
+**The bug.** `load-run-set.ts` read the contact's BHC_ID from Brain_Complete col B. That column is blank on every live row — Zap C populates Thread_Staging without doing identity resolution, and PASS 2 passed the blank straight through. The real identity only ever reached the sheet inside `Write_Targets_JSON` (col Z) as `primary.bhc_id`.
+
+The chain: `RunSetRow.bhcId = ""` → `writeRow` hands it to the identity gate → `masterId.byBhcId.get("")` returns undefined → both `verifyGoogleRowOwnership` and `verifyAttioRecordOwnership` take their `if (!entry)` branch and withhold → `googleWritten`/`attioWritten` are the gate booleans, so they honestly report false → `confirm.ts` prints "0 Google · 0 Attio" (true) beside "N activity entries" (fabricated — that counter was unconditional) → `qaVerifyAndClose` sets V=TRUE and the digest closes clean. Every night since the 2026-07-19 deterministic rebuild.
+
+**Secondaries worked the whole time, and that asymmetry is what identified it.** 4f's loop reads `secondary.bhc_id` straight out of the same parsed JSON, never from col B. Live Contact_History from the failing run, 04:13:46→04:14:03: four PRIMARY rows with a blank col B, three SECONDARY rows carrying BHC-02450 / BHC-02450 / BHC-02304.
+
+**The identity gate is correct and is untouched.** It was handed an empty key and refused to guess, which is exactly its job. Master_ID is healthy — row 481 (BHC-02395 · Angie Nguyen · BOTH · 371 · a3e6dd3f…) matches the staged write-target exactly. The fix is to stop handing the gate an empty key.
+
+- **`load-run-set.ts`** — col Z is now parsed BEFORE the row is built and used as the identity fallback. **Col B stays PREFERRED**, so the moment PASS 2 starts populating it this silently becomes the primary path again with no further edit. `parseWriteTargets`' own shape guard returns null without a `primary.bhc_id`, so the fallback can never reintroduce a blank — a row with no usable identity anywhere still takes the existing `skipped_no_target` path. `RunSetRow.bhcIdFromWriteTargets` and `RunSet.rowsUsingWriteTargetIdentity` make the fallback visible; index.ts logs the count at STEP 2 as a warning, because today it is every row.
+- **`pass2/brain-complete-row.ts`** — col B now falls back to `writeTargets?.primary.bhc_id`. PASS 2 has already resolved identity by then and it is sitting in an argument the function already receives. Stops the column lying to every future reader; does not repair historical rows.
+- **`pass4/load.ts`** — `loadMasterId` throws on a 0-entry index. Not this cause (the index loaded fine), but an empty index produces an identical silent total-withhold and nothing distinguished the two.
+- **Counting outcomes, not intent.** `WriteRowResult` gains `activityLogWritten`, set only after 4a's append returns. `confirm.ts` counts activity entries only when it is true, and counts secondaries by their own `ok` flag rather than array length — each secondary's append is independently try/caught. Two honest zeros had been sitting either side of a fabricated seven.
+- **Hollow rows are surfaced and recorded.** A hollow row named a CRM target and reached none. Slack now appends `⚠ N write(s) withheld by identity gate` — a run that writes nothing must never render as a clean ✅. `branch.ts` also appends `WITHHELD {date}: {gate warning}` to Brain_Complete col U using the same read-then-append pattern as CORRECTION lines, so the affected set is queryable from the sheet rather than reconstructed from Slack history. V is still set TRUE: leaving it blank to enable retry would re-run 4a and 4c and duplicate the Activity_Log and Contact_History rows that DID land — safe retry needs idempotency in the most load-bearing write path in the system, which is separate work.
+- **Warnings survive the run.** `emptyReport()` dropped `BranchResult.applied` wholesale, and `applied` was the only thing holding each row's warnings. `PartDReport` now carries a deliberately SLIM per-row projection — digestPosition, bhcId, outcome, warnings — and explicitly NOT `writeResult` or `qa`, which embed subjects, summaries and personal-context extracts; the report is uploaded as a CI artifact and thread content must not land in one (§6). A test asserts a confidential subject is unreachable in the serialized report. This is the one that matters most: Part D wrote the correct diagnosis, "Master_ID has no entry for  — withholding Google write", four times a night for a month and threw it away every time.
+
+**Not fixed, deliberately:** `sheets.append` — it works; Contact_History received all seven appends from the failing run.
+
+725/725 tests passing (was 710 — 15 new covering the fallback, preference order, the blank-proof guard, outcome counting, hollow-row detection and its three near-misses, the col U marker, the empty-index guard, and the artifact-content constraint).
+
 ## 2026-08-10 — BHC_Zoom Path B dedups by name as well as email
 
 **One-line class of fix, four confirmed duplicates behind it.** `BHC_Zoom.md` has two record-creation paths and they did not dedup alike. Path A (`new_contact_candidates`) searched Attio by email *and* Master_ID by name. Path B (Google-only contacts — known BHC_ID, no Attio record yet) searched by **email only**, and Path B is the path that handles contacts which already have a BHC_ID.

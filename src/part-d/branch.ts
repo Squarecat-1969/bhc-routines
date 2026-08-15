@@ -28,7 +28,7 @@ import type { ItemAction } from './parse-command.js';
 import { qaVerifyAndClose, type QAResult } from './qa-readback.js';
 import type { RunSet, RunSetRow } from './load-run-set.js';
 import type { WriteRowInput, WriteRowResult } from './types.js';
-import { writeRow } from './write-row.js';
+import { isHollow, writeRow } from './write-row.js';
 
 export type RowOutcome =
   | 'closed' // PROCEED — V=TRUE, no write
@@ -83,6 +83,39 @@ async function closeRow(sheets: SheetsClient, sheetRow: number): Promise<void> {
   await sheets.update(`Brain_Complete!V${sheetRow}:V${sheetRow}`, [['TRUE']]);
 }
 
+/**
+ * Record a withheld row durably, in the sheet, next to the row it happened to.
+ *
+ * Same read-then-append pattern as appendCorrection, into the same column —
+ * col U is Brain_Notes, already an append target for CORRECTION lines, so
+ * this is consistent with existing use rather than a new convention.
+ *
+ * The point is queryability. Part D produced the correct diagnosis
+ * ("Master_ID has no entry for  — withholding Google write") four times a
+ * night for a month and discarded it every time, so reconstructing the
+ * affected set meant reading Slack history. A marker on the row means the
+ * set can be found by reading the sheet.
+ *
+ * Best-effort: a failure to annotate must not stop the row or mask the
+ * warning it was trying to record.
+ */
+async function appendWithheldMarker(
+  sheets: SheetsClient,
+  sheetRow: number,
+  gateWarnings: readonly string[],
+): Promise<string | null> {
+  const detail = gateWarnings.join(' | ') || 'identity gate withheld all primary CRM writes';
+  const entry = `WITHHELD ${new Date().toISOString().slice(0, 10)}: ${detail}`;
+  try {
+    const existing = await sheets.read(`Brain_Complete!U${sheetRow}:U${sheetRow}`);
+    const existingText = String(existing[0]?.[0] ?? '');
+    await sheets.update(`Brain_Complete!U${sheetRow}:U${sheetRow}`, [[existingText ? `${existingText}\n${entry}` : entry]]);
+    return null;
+  } catch (e) {
+    return `Could not record the WITHHELD marker on Brain_Complete row ${sheetRow}: ${String(e)}`;
+  }
+}
+
 async function resolveOneRow(
   sheets: SheetsClient,
   attio: AttioClient,
@@ -96,7 +129,19 @@ async function resolveOneRow(
   const input = toWriteRowInput(row);
   const writeResult = await writeRow(sheets, attio, masterId, input);
   const qa = await qaVerifyAndClose(sheets, attio, masterId, input, writeResult);
-  return { digestPosition: row.digestPosition, bhcId: row.bhcId, outcome: 'resolved', writeResult, qa, warnings: [...writeResult.warnings, ...qa.warnings] };
+  const warnings = [...writeResult.warnings, ...qa.warnings];
+
+  // A hollow row still closes (V=TRUE, set by qaVerifyAndClose above).
+  // Leaving V blank to enable a retry would re-run 4a and 4c and duplicate
+  // the Activity_Log and Contact_History rows that DID land — safe retry
+  // needs idempotency in the most load-bearing write path in the system,
+  // which is separate work. What it gets instead is a durable marker.
+  if (isHollow(writeResult)) {
+    const markerProblem = await appendWithheldMarker(sheets, row.sheetRow, writeResult.identityGateWarnings);
+    if (markerProblem) warnings.push(markerProblem);
+  }
+
+  return { digestPosition: row.digestPosition, bhcId: row.bhcId, outcome: 'resolved', writeResult, qa, warnings };
 }
 
 export async function applyProceed(sheets: SheetsClient, runSet: RunSet): Promise<BranchResult> {

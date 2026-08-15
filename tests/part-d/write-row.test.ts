@@ -154,7 +154,7 @@ describe('writeRow — identity-verification gate', () => {
 
   it('withholds both writes when Master_ID has no entry for the bhcId at all', async () => {
     const { sheets, attio, masterId } = await setup({
-      entries: [], people: {}, masterId: [], contactsHeader: [], contacts: [],
+      entries: [], people: {}, masterId: [['BHC-09999', 'Fixture Sentinel', 'BOTH', 3, 'rec-fixture-sentinel', 'fixture row — a production Master_ID is never empty']], contactsHeader: [], contacts: [],
     });
     const result = await writeRow(sheets, attio, masterId, baseInput({}, {
       primary: {

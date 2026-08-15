@@ -36,10 +36,15 @@ function brainRow(threadId: string, runId: string, bhcId: string, contactName: s
   return row;
 }
 
+// One sentinel row, not an empty tab: loadMasterId now refuses a 0-entry
+// index, because an empty Master_ID makes every identity gate withhold
+// every write and report a clean zero — indistinguishable from success.
+// Production Master_ID has ~2,469 rows; an empty read means the proxy
+// failed, which is a stop condition rather than a scenario to support.
 const MINIMAL: FakeBackendConfig = {
   entries: [],
   people: {},
-  masterId: [],
+  masterId: [['BHC-09999', 'Fixture Sentinel', 'BOTH', 3, 'rec-fixture-sentinel', 'fixture row — a production Master_ID is never empty']],
   contactsHeader: CONTACTS_HEADER,
   contacts: [],
 };

@@ -89,7 +89,16 @@ export function buildBrainCompleteRow(input: BrainCompleteRowInput): BrainComple
   // the enriched columns. O (Thread_Status) is carried through, not enriched.
   const values: unknown[] = [
     source.threadId, // A
-    source.bhcId, // B
+    // B — Contact_ID. `source.bhcId` is passed straight through from
+    // Thread_Staging, which Zap C leaves blank: capture does no identity
+    // resolution. PASS 2 has already resolved identity by the time this
+    // function runs, and it is sitting in the writeTargets argument this
+    // function already receives — so fall back to it rather than writing a
+    // blank that every later reader has to work around. Part D read this
+    // column for identity and got '' on every row from the 2026-07-19
+    // rebuild until 2026-08-15, withholding every primary CRM write while
+    // reporting success. Does not repair historical rows.
+    source.bhcId || writeTargets?.primary.bhc_id || '', // B
     source.contactName, // C
     source.sourceMailbox, // D
     source.direction, // E

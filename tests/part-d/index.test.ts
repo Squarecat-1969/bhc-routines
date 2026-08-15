@@ -23,7 +23,7 @@ async function setup(brainComplete: unknown[][], config: Partial<FakeBackendConf
   sheets: SheetsClient; attio: AttioClient; slack: ReturnType<typeof fakeSlack>; backend: FakeBackend;
 }> {
   backend = new FakeBackend({
-    entries: [], people: {}, masterId: [], contactsHeader: [], contacts: [], brainComplete, ...config,
+    entries: [], people: {}, masterId: [['BHC-09999', 'Fixture Sentinel', 'BOTH', 3, 'rec-fixture-sentinel', 'fixture row — a production Master_ID is never empty']], contactsHeader: [], contacts: [], brainComplete, ...config,
   });
   const { attioBase, sheetsUrl } = await backend.start();
   const attio = new AttioClient({ apiKey: 'test', baseUrl: attioBase });
@@ -35,12 +35,12 @@ afterEach(async () => {
   await backend?.stop();
 });
 
-function row(opts: { bhcId?: string; runId?: string; actionRequired?: string; writeTargetsJson?: string }): unknown[] {
+function row(opts: { bhcId?: string; runId?: string; actionRequired?: string; writeTargetsJson?: string; subject?: string }): unknown[] {
   const r = new Array<unknown>(30).fill('');
   r[1] = opts.bhcId ?? 'BHC-1';
   r[2] = 'Alice';
   r[4] = 'Inbound';
-  r[5] = 'Re: contract';
+  r[5] = opts.subject ?? 'Re: contract'; // F
   r[10] = 'summary';
   r[21] = '';
   r[22] = opts.actionRequired ?? 'REPLY_NEEDED';
@@ -123,6 +123,33 @@ describe('runPartD — end to end, live', () => {
     expect(slack.posts[1]).toContain('done ·');
     const activityAppend = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Activity_Log!A1');
     expect(activityAppend).toBeDefined(); // a real write happened, not just a report
+  });
+
+  // ── The report artifact ─────────────────────────────────────────────────
+  // emptyReport() used to drop BranchResult.applied wholesale, which was the
+  // only thing holding each row's warnings — so Part D wrote the correct
+  // diagnosis every night and threw it away. It is carried now, but SLIM:
+  // the report is written to out/ and uploaded as a CI artifact, and thread
+  // content must not land in one.
+  it('carries per-row warnings into the report, without thread content', async () => {
+    const wt = JSON.stringify({
+      primary: { bhc_id: 'BHC-MISSING', google: { google_row: 371, fields: {} } },
+      secondary: [],
+    });
+    const { sheets, attio, slack } = await setup([
+      row({ bhcId: '', writeTargetsJson: wt, subject: 'CONFIDENTIAL: acquisition terms' }),
+    ]);
+    const report = await runPartD({ commandText: 'RESOLVE LATE-EDITION-1', dryRun: false }, { sheets, attio, slack, logger: silentLogger });
+
+    expect(report.applied).toHaveLength(1);
+    expect(report.applied[0]!.outcome).toBe('resolved');
+    expect(report.applied[0]!.warnings.join(' ')).toContain('withholding Google write');
+    // Identity came from Write_Targets_JSON, and the report says so.
+    expect(report.applied[0]!.bhcId).toBe('BHC-MISSING');
+    expect(report.rowsUsingWriteTargetIdentity).toBe(1);
+
+    // The subject must not be reachable anywhere in the serialized artifact.
+    expect(JSON.stringify(report)).not.toContain('CONFIDENTIAL');
   });
 });
 
