@@ -2,6 +2,15 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-08-15 — Actions bumped to the v5 majors (Node 20 runner deprecation)
+
+All three workflows (`late-edition.yml`, `part-d.yml`, `contacts-triage.yml`) warned on every run: "Node.js 20 is deprecated… actions/checkout@v4, actions/setup-node@v4, actions/upload-artifact@v4 are being forced to run on Node.js 24." Each bumped `v4 → v5`. Those three are the only pinned actions in the repo — there is nothing else to bump.
+
+- **`node-version: '20'` in setup-node is deliberately unchanged.** That is the Node the routines themselves execute on, a separate decision from the runner's own Node. Changing it would alter the runtime, not silence a warning.
+- **`actions/upload-artifact@v5` does NOT clear the warning** — it is still `runs.using: node20`. Per the vendor's v6 notes: "v5 had preliminary support for Node.js 24, however this action was by default still running on Node.js 20." `v6` is the first major that actually moves. The bump was applied as specified; the artifact-upload line of the warning will persist until v6.
+- **Checked for breaking changes, none apply.** `setup-node@v5` adds automatic package-manager caching when `package.json` has a `packageManager` field — this repo has none, and all three workflows set `cache: npm` explicitly, so caching behaviour is unchanged. `checkout@v5` and the others require runner ≥ 2.327.1; all three jobs are `ubuntu-latest`. Every `upload-artifact` input in use (`name`, `path`, `retention-days`, `if-no-files-found`) is unchanged across v5/v6.
+- Latest majors upstream are already v7 across all three; this is a deliberate one-major step, not a jump to newest.
+
 ## 2026-08-15 — Part D executed ZERO primary CRM writes for a month while reporting success
 
 **The bug.** `load-run-set.ts` read the contact's BHC_ID from Brain_Complete col B. That column is blank on every live row — Zap C populates Thread_Staging without doing identity resolution, and PASS 2 passed the blank straight through. The real identity only ever reached the sheet inside `Write_Targets_JSON` (col Z) as `primary.bhc_id`.

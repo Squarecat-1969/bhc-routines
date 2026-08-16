@@ -133,10 +133,10 @@ jobs:
             echo "Cron ${{ github.event.schedule }} does not match the current DST regime ($TZ_ABBR) -- this is the other expression's redundant twin, skipping."
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         if: steps.guard.outputs.should_run == 'true'
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         if: steps.guard.outputs.should_run == 'true'
         with:
           node-version: '20'
@@ -179,7 +179,7 @@ jobs:
 
       - name: Upload report
         if: always() && steps.guard.outputs.should_run == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: late-edition-report-${{ github.run_id }}
           path: out/late-edition-report.json
