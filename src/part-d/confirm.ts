@@ -20,6 +20,7 @@
  */
 
 import type { BranchResult } from './branch.js';
+import { isHollow, isPartiallyWithheld } from './write-row.js';
 
 const BRIEFING_URL = 'https://aida.hougham.us/briefing/emails';
 
@@ -46,18 +47,44 @@ interface ResolveCounts {
   tasks: number;
   enrichedContacts: number;
   failedQAWrites: number;
+  /**
+   * Rows that resolved and named a CRM target, but where nothing reached a
+   * CRM — the identity gate withheld. A run of these must never render as a
+   * clean ✅, which is precisely what it did every night for a month.
+   */
+  withheld: number;
+  /**
+   * Rows where one named target landed and another did not. Counted and
+   * reported separately from `withheld` because the consequence is different:
+   * not silence, but two CRMs that now disagree — and PASS 4 computes cadence
+   * from only one of them.
+   */
+  partial: number;
 }
 
+/**
+ * Count what HAPPENED, not what was intended. Every counter here is gated on
+ * a boolean set by the write itself; none is derived from array length or
+ * from the fact that a row was processed at all.
+ */
 function countResolved(applied: BranchResult['applied']): ResolveCounts {
-  const counts: ResolveCounts = { google: 0, attio: 0, activityEntries: 0, tasks: 0, enrichedContacts: 0, failedQAWrites: 0 };
+  const counts: ResolveCounts = { google: 0, attio: 0, activityEntries: 0, tasks: 0, enrichedContacts: 0, failedQAWrites: 0, withheld: 0, partial: 0 };
   for (const row of applied) {
     if (row.outcome !== 'resolved' || !row.writeResult) continue;
-    if (row.writeResult.googleWritten) counts.google += 1;
-    if (row.writeResult.attioWritten) counts.attio += 1;
-    counts.activityEntries += 1 + row.writeResult.secondaries.length; // primary + each secondary gets its own Activity_Log row
-    counts.tasks += row.writeResult.taskIds.length;
+    const w = row.writeResult;
+    if (w.googleWritten) counts.google += 1;
+    if (w.attioWritten) counts.attio += 1;
+    if (w.activityLogWritten) {
+      // Each secondary's Activity_Log append is independently try/caught, so
+      // count the ones that actually succeeded rather than the length of the
+      // array of ones attempted.
+      counts.activityEntries += 1 + w.secondaries.filter((s) => s.ok).length;
+    }
+    counts.tasks += w.taskIds.length;
     if (row.qa && row.qa.personalContextChecks.length > 0) counts.enrichedContacts += 1;
     if (row.qa) counts.failedQAWrites += row.qa.primaryChecks.filter((c) => !c.ok).length;
+    if (isHollow(w)) counts.withheld += 1;
+    if (isPartiallyWithheld(w)) counts.partial += 1;
   }
   return counts;
 }
@@ -81,6 +108,8 @@ export function buildResolveMessage(runLabel: string, result: BranchResult): str
   let msg = `✅ ${runLabel} — done · ${c.google} Google · ${c.attio} Attio · ${c.activityEntries} activity entries · ${c.tasks} tasks → ${BRIEFING_URL}`;
   if (c.enrichedContacts > 0) msg += ` · ${c.enrichedContacts} contact(s) enriched`;
   if (c.failedQAWrites > 0) msg += ` · ⚠ ${c.failedQAWrites} write(s) failed QA — check manually`;
+  if (c.withheld > 0) msg += ` · ⚠ ${c.withheld} write(s) withheld by identity gate`;
+  if (c.partial > 0) msg += ` · ⚠ ${c.partial} row(s) partially written — CRMs may be out of sync`;
   return msg;
 }
 
@@ -94,6 +123,8 @@ export function buildMixedMessage(runLabel: string, result: BranchResult): strin
 
   let msg = `✅ ${runLabel} — done · ${accepted} accepted (${c.google} Google · ${c.attio} Attio · ${c.activityEntries} activity entries · ${c.tasks} tasks) · ${corrected} corrected · ${dismissed} dismissed`;
   if (c.failedQAWrites > 0) msg += ` · ⚠ ${c.failedQAWrites} write(s) failed QA — check manually`;
+  if (c.withheld > 0) msg += ` · ⚠ ${c.withheld} write(s) withheld by identity gate`;
+  if (c.partial > 0) msg += ` · ⚠ ${c.partial} row(s) partially written — CRMs may be out of sync`;
   if (totalSkipped > 0) msg += ` · ⚠ ${totalSkipped} line(s) skipped — see above`;
   return msg;
 }

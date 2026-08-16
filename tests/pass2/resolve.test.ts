@@ -6,10 +6,15 @@ import { checkDrift, resolveContact } from '../../src/passes/pass2/resolve.js';
 import type { ContactsEmailMap } from '../../src/passes/pass2/contacts-email-map.js';
 import { FakeBackend, type FakeBackendConfig } from '../helpers/fake-backend.js';
 
+// One sentinel row, not an empty tab: loadMasterId now refuses a 0-entry
+// index, because an empty Master_ID makes every identity gate withhold
+// every write and report a clean zero — indistinguishable from success.
+// Production Master_ID has ~2,469 rows; an empty read means the proxy
+// failed, which is a stop condition rather than a scenario to support.
 const MINIMAL: FakeBackendConfig = {
   entries: [],
   people: {},
-  masterId: [],
+  masterId: [['BHC-09999', 'Fixture Sentinel', 'BOTH', 3, 'rec-fixture-sentinel', 'fixture row — a production Master_ID is never empty']],
   contactsHeader: [],
   contacts: [],
 };
@@ -65,7 +70,7 @@ describe('resolveContact — cascade step 2/3: Attio miss then Master_ID cross-r
   });
 
   it('returns NEW_CANDIDATE (never fabricates a BHC_ID) when nothing matches anywhere', async () => {
-    const backend = new FakeBackend({ ...MINIMAL, masterId: [] });
+    const backend = new FakeBackend({ ...MINIMAL });
     const { attioBase, sheetsUrl } = await backend.start();
     const attio = new AttioClient({ apiKey: 'test', baseUrl: attioBase });
     const { SheetsClient } = await import('../../src/lib/sheets.js');
@@ -82,7 +87,6 @@ describe('resolveContact — cascade step 2/3: Attio miss then Master_ID cross-r
   it('returns UNRESOLVED (not NEW_CANDIDATE) for an ambiguous Attio match', async () => {
     const backend = new FakeBackend({
       ...MINIMAL,
-      masterId: [],
       emailSearchResults: {
         'shared@x.com': [
           { bhcContactId: 'BHC-1', name: 'One' },

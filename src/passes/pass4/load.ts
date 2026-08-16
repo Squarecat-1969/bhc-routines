@@ -81,6 +81,15 @@ export async function loadMasterId(sheets: SheetsClient): Promise<MasterIdIndex>
 
   for (const dup of duplicates) byAttioRecordId.delete(dup);
 
+  // An empty index is indistinguishable, downstream, from a Master_ID that
+  // simply doesn't contain the contact being looked up: every identity gate
+  // takes its `if (!entry)` branch and withholds, and the run reports a
+  // clean total of zero writes. That is exactly the shape of the bug this
+  // guard was added alongside, so refuse to be the second cause of it.
+  if (byBhcId.size === 0) {
+    throw new Error('Master_ID loaded 0 entries — refusing to proceed; every identity gate would withhold every write.');
+  }
+
   return {
     byBhcId,
     byAttioRecordId,

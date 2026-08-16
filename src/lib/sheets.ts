@@ -61,9 +61,53 @@ export class SheetsClient {
     await this.post({ action: 'update', range, values }, `sheets:update ${range}`);
   }
 
-  /** Append rows after the last row of data in the given range/sheet. */
-  async append(range: string, values: readonly SheetRow[]): Promise<void> {
-    await this.post({ action: 'append', range, values }, `sheets:append ${range}`);
+  /**
+   * Append rows after the last row of data in the given range/sheet.
+   *
+   * Returns what Google reports actually landed, rather than nothing. A
+   * caller that only knows "the call didn't throw" is asserting intent, not
+   * outcome — the same class of defect as Part D's unconditional activity
+   * counter. On 2026-08-14 Activity_Log appends returned successfully and
+   * wrote nothing while Contact_History received all seven rows from the same
+   * client in the same run; that is still unexplained, and this return value
+   * is the instrumentation that will identify it.
+   *
+   * `updatedRows` comes from the real API's `updates.updatedRows`, and
+   * defaults to 0 — an unverifiable append is treated as one that did not
+   * land, never as one that did.
+   *
+   * The two booleans keep THREE facts apart that a bare 0 collapses into one,
+   * because each points at a different layer:
+   *
+   *   updates + updatedRows: 0  Google itself declined to write. A Sheets
+   *                             fault.
+   *   no updates block          The response never carried the field. A
+   *                             transport or proxy fault.
+   *   updates, no updatedRows   Google always emits updatedRows alongside
+   *                             updates, so this shape means something
+   *                             between here and Google RESHAPED the
+   *                             response. A proxy-layer fault specifically —
+   *                             and reporting it as a Sheets refusal would
+   *                             aim diagnosis at the wrong layer, which is
+   *                             the failure this whole distinction exists to
+   *                             prevent.
+   *
+   * On 2026-08-14 we could not tell any of them apart.
+   */
+  async append(
+    range: string,
+    values: readonly SheetRow[],
+  ): Promise<{ updatedRows: number; updatesBlockPresent: boolean; updatedRowsFieldPresent: boolean }> {
+    const res = await this.post<{ updates?: { updatedRows?: number } }>(
+      { action: 'append', range, values },
+      `sheets:append ${range}`,
+    );
+    const updates = res.updates;
+    return {
+      updatedRows: updates?.updatedRows ?? 0,
+      updatesBlockPresent: updates !== undefined && updates !== null,
+      updatedRowsFieldPresent: typeof updates?.updatedRows === 'number',
+    };
   }
 }
 

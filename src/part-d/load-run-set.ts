@@ -15,6 +15,25 @@
  * couple of columns wider than the spec's own range, not narrower, so
  * nothing needed here is out of range.
  *
+ * IDENTITY: col B is PREFERRED, Write_Targets_JSON (col Z) primary.bhc_id is
+ * the FALLBACK. Col B is blank on every live Brain_Complete row — Zap C
+ * populates Thread_Staging without doing any identity resolution, and PASS 2
+ * passed that blank straight through — so from the 2026-07-19 deterministic
+ * rebuild until this fix, every row reached the identity gate with an empty
+ * key. masterId.byBhcId.get('') returns undefined, both ownership checks took
+ * their `if (!entry)` branch, and Part D withheld 100% of primary Google and
+ * Attio writes while still reporting success. Secondaries were unaffected
+ * because 4f's loop reads secondary.bhc_id straight out of this same parsed
+ * JSON — that asymmetry is what made the cause identifiable.
+ *
+ * The gate was right and is untouched: it was handed an empty key and
+ * correctly refused to guess. The fix is to stop handing it one.
+ *
+ * parseWriteTargets' own shape guard returns null unless primary.bhc_id is
+ * truthy, so the fallback can never reintroduce a blank — a row with no
+ * usable identity anywhere still arrives with writeTargets === null and takes
+ * the existing skipped_no_target path.
+ *
  * "Count only rows where col W != NO_ACTION to derive digest positions" —
  * a NO_ACTION row is still part of the run set (RESOLVE/PROCEED still needs
  * to mark it V=TRUE to close it out; STEP 4's own "empty Write_Targets ->
@@ -32,7 +51,15 @@ export interface RunSetRow {
   readonly sheetRow: number; // 1-based physical row in Brain_Complete
   /** 1..N for actionable (non-NO_ACTION) rows in sheet order; null for NO_ACTION rows. */
   readonly digestPosition: number | null;
+  /**
+   * The contact's identity. Col B PREFERRED, Write_Targets_JSON's
+   * primary.bhc_id as fallback — see the module doc comment. Feeds the
+   * identity gate, so an empty value here withholds every primary CRM write
+   * on the row.
+   */
   readonly bhcId: string;
+  /** True when col B was blank and identity came from Write_Targets_JSON instead. Reported, never silent. */
+  readonly bhcIdFromWriteTargets: boolean;
   readonly contactName: string;
   readonly direction: string;
   readonly subject: string;
@@ -50,6 +77,29 @@ export interface RunSet {
   readonly rows: readonly RunSetRow[];
   /** Only actionable rows, keyed by their digest position — the lookup CORRECTIONS/MIXED commands' {n} references resolve against. */
   readonly byDigestPosition: ReadonlyMap<number, RunSetRow>;
+  /**
+   * How many rows took the Write_Targets_JSON identity fallback. Surfaced at
+   * STEP 2 rather than left implicit: today this equals rows.length, because
+   * col B is blank on every live row, and a fallback carrying the entire run
+   * must be visible rather than quietly papered over.
+   */
+  readonly rowsUsingWriteTargetIdentity: number;
+  /**
+   * Rows the Brain_Complete read returned, BEFORE any run-id filtering.
+   *
+   * This is what separates "a prior run already resolved this digest" from
+   * "the read failed". SheetsClient.read coerces a malformed response to [],
+   * so both produce rows.length === 0 — and STEP 2's legitimate response to
+   * that is to stop SILENTLY, with no Slack post at all. A read failure
+   * therefore looked exactly like a finished digest: Bobby clicks Resolve,
+   * nothing happens, nothing is posted, indefinitely.
+   *
+   * Brain_Complete holds ~199 rows in production, so a read that returns zero
+   * of them is not a legitimate empty. The caller discriminates; the read
+   * coercion is left alone, because Google genuinely omits `values` for an
+   * empty range and other callers depend on that.
+   */
+  readonly totalRowsRead: number;
 }
 
 const NO_ACTION = 'NO_ACTION';
@@ -91,6 +141,7 @@ export async function loadRunSet(sheets: SheetsClient, runId: string): Promise<R
   const rows: RunSetRow[] = [];
   const byDigestPosition = new Map<number, RunSetRow>();
   let digestSeq = 0;
+  let usingWriteTargetIdentity = 0;
 
   rawRows.forEach((row, i) => {
     const rowRunId = cell(row, 27); // AB
@@ -105,16 +156,28 @@ export async function loadRunSet(sheets: SheetsClient, runId: string): Promise<R
       digestPosition = digestSeq;
     }
 
+    // Parse col Z BEFORE building the row — it is the identity fallback, not
+    // just a payload. Col B stays preferred, so the moment PASS 2 starts
+    // populating it (brain-complete-row.ts) it silently becomes the primary
+    // path again with no further change here.
+    const writeTargets = parseWriteTargets(cell(row, 25)); // Z
+    const columnBhcId = cell(row, 1); // B
+    const fallbackBhcId = writeTargets?.primary.bhc_id ?? '';
+    const bhcId = columnBhcId || fallbackBhcId;
+    const bhcIdFromWriteTargets = columnBhcId === '' && fallbackBhcId !== '';
+    if (bhcIdFromWriteTargets) usingWriteTargetIdentity += 1;
+
     const runSetRow: RunSetRow = {
       sheetRow: 2 + i, // Brain_Complete data starts at row 2
       digestPosition,
-      bhcId: cell(row, 1), // B
+      bhcId,
+      bhcIdFromWriteTargets,
       contactName: cell(row, 2), // C
       direction: cell(row, 4), // E
       subject: cell(row, 5), // F
       runningSummary: cell(row, 10), // K
       actionRequired,
-      writeTargets: parseWriteTargets(cell(row, 25)), // Z
+      writeTargets,
       tasks: parseTasks(cell(row, 24)), // Y
     };
 
@@ -122,5 +185,9 @@ export async function loadRunSet(sheets: SheetsClient, runId: string): Promise<R
     if (digestPosition !== null) byDigestPosition.set(digestPosition, runSetRow);
   });
 
-  return { runId, rows, byDigestPosition };
+  return {
+    runId, rows, byDigestPosition,
+    rowsUsingWriteTargetIdentity: usingWriteTargetIdentity,
+    totalRowsRead: rawRows.length,
+  };
 }

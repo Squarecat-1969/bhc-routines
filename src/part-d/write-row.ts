@@ -84,6 +84,32 @@ function makeTaskId(now: Date = new Date()): string {
  * belongs to this bhcId RIGHT NOW — it does not re-derive or second-guess
  * anything else WriteTargets claims. "Verify, don't re-derive."
  */
+/**
+ * Why an append reported nothing landed — stated as the specific fact, not a
+ * shared "0 rows" that covers both.
+ *
+ * Three causes, three layers, three messages. On 2026-08-14 Activity_Log
+ * appends returned 200 and wrote nothing while Contact_History appends from
+ * the same client in the same run landed all seven rows. When that recurs the
+ * warning has to name which layer, because each points somewhere different:
+ * Sheets declining the write, the response never arriving intact, or the
+ * response arriving reshaped. Google always emits `updatedRows` alongside
+ * `updates`, so the third shape is a proxy-layer fault specifically — calling
+ * it a Sheets refusal would aim diagnosis at the wrong layer.
+ */
+function describeFailedAppend(
+  label: string,
+  result: { updatedRows: number; updatesBlockPresent: boolean; updatedRowsFieldPresent: boolean },
+): string {
+  if (!result.updatesBlockPresent) {
+    return `${label}: response carried no \`updates\` block — the write is unverifiable, treating as not landed.`;
+  }
+  if (!result.updatedRowsFieldPresent) {
+    return `${label}: response carried an \`updates\` block with no \`updatedRows\` field — the write is unverifiable, treating as not landed.`;
+  }
+  return `${label}: Google reported 0 rows written.`;
+}
+
 export async function writeRow(
   sheets: SheetsClient,
   attio: AttioClient,
@@ -115,14 +141,17 @@ export async function writeRow(
   // at a stale row while Attio still gets updated (or vice versa).
   let googleOk = false;
   let attioOk = false;
+  const identityGateWarnings: string[] = [];
+  const googleTargeted = !!primary.google;
+  const attioTargeted = !!primary.attio;
   if (primary.google) {
     const problem = verifyGoogleRowOwnership(masterId, bhcId, primary.google.google_row);
-    if (problem) warnings.push(problem);
+    if (problem) { warnings.push(problem); identityGateWarnings.push(problem); }
     else googleOk = true;
   }
   if (primary.attio) {
     const problem = verifyAttioRecordOwnership(masterId, bhcId, primary.attio.record_id);
-    if (problem) warnings.push(problem);
+    if (problem) { warnings.push(problem); identityGateWarnings.push(problem); }
     else attioOk = true;
   }
 
@@ -244,8 +273,22 @@ export async function writeRow(
     '', // T — filled after 4d if exactly one task
     '', // U
   ];
-  await sheets.append(ACTIVITY_LOG_APPEND_RANGE, [activityLogRow]);
-  writes.push(`Activity_Log ${activityId} appended`);
+  // Gated on what Google reports LANDED, not on the call returning. "Didn't
+  // throw" is intent; updatedRows is outcome, and this flag is what confirm.ts
+  // counts. On 2026-08-14 these appends returned successfully and wrote
+  // nothing while Contact_History took all seven rows from the same client in
+  // the same run — still unexplained, and this is the instrumentation that
+  // will name it on the next real run.
+  const appendResult = await sheets.append(ACTIVITY_LOG_APPEND_RANGE, [activityLogRow]);
+  const activityLogWritten = appendResult.updatedRows > 0;
+  if (!activityLogWritten) {
+    warnings.push(describeFailedAppend(`Activity_Log append for ${activityId}`, appendResult));
+  }
+  writes.push(
+    activityLogWritten
+      ? `Activity_Log ${activityId} appended`
+      : `Activity_Log ${activityId} append returned 0 rows — NOT written`,
+  );
 
   // ── 4b. Google Contacts BZ:CG (update) ───────────────────────────────────
   if (googleOk && primary.google) {
@@ -446,8 +489,16 @@ export async function writeRow(
         '', // T
         '', // U
       ];
-      await sheets.append(ACTIVITY_LOG_APPEND_RANGE, [secActivityRow]);
-      writes.push(`Activity_Log ${secActivityId} appended (secondary ${secondary.bhc_id})`);
+      // Same outcome-not-intent check as the primary. confirm.ts counts
+      // secondaries by this `ok` flag, so it has to mean "landed".
+      const secAppend = await sheets.append(ACTIVITY_LOG_APPEND_RANGE, [secActivityRow]);
+      if (secAppend.updatedRows > 0) {
+        writes.push(`Activity_Log ${secActivityId} appended (secondary ${secondary.bhc_id})`);
+      } else {
+        secOk = false;
+        secWarnings.push(describeFailedAppend(`Secondary Activity_Log append for ${secActivityId}`, secAppend));
+        writes.push(`Activity_Log ${secActivityId} append returned 0 rows — NOT written (secondary ${secondary.bhc_id})`);
+      }
     } catch (e) {
       secOk = false;
       secWarnings.push(`Secondary Activity_Log append failed: ${String(e)}`);
@@ -502,7 +553,49 @@ export async function writeRow(
   // So `ok` here just means "completed without a fatal, uncaught error" —
   // callers wanting to know about partial failures should check
   // warnings.length, which is the real, itemized signal, not this boolean.
-  return { ok: true, bhcId, activityId, writes, warnings, taskIds, googleWritten: googleOk, attioWritten: attioOk, secondaries };
+  return {
+    ok: true, bhcId, activityId, writes, warnings, taskIds,
+    googleWritten: googleOk, attioWritten: attioOk,
+    googleTargeted, attioTargeted, identityGateWarnings,
+    activityLogWritten, secondaries,
+  };
+}
+
+/**
+ * A HOLLOW row: writeTargets named at least one CRM target, and nothing
+ * reached a CRM.
+ *
+ * A row that named no target at all is not hollow — it is an FYI-only row
+ * with genuinely nothing to write, and the two look identical if you only
+ * inspect `googleWritten`. A row where one target landed and another was
+ * withheld is also not hollow: something did reach a CRM, and the withheld
+ * half is already itemised in `warnings`. Hollow is reserved for total
+ * silence, which is the state that spent a month rendering as a clean ✅.
+ */
+export function isHollow(result: WriteRowResult): boolean {
+  if (!result.googleTargeted && !result.attioTargeted) return false;
+  return !result.googleWritten && !result.attioWritten;
+}
+
+/**
+ * A PARTIALLY WITHHELD row: one named target landed, another named target did
+ * not.
+ *
+ * This is the quietest outcome in the system and the one the identity gate
+ * most exists to catch. googleOk and attioOk are independent checks against
+ * the same bhcId, so a Master_ID row carrying a correct Attio_Record_ID and a
+ * stale Google_Row produces exactly this — pointer drift on one side only.
+ *
+ * It also desynchronises the two CRMs, which is why it cannot stay a warning
+ * that expires with the run artifact: Google's BZ says contacted, Attio's
+ * last_interaction_at stays stale, and PASS 4 computes cadence from Attio. The
+ * visible result is a wrong next-touch date and a false stall flag on a
+ * contact who was in fact just contacted.
+ */
+export function isPartiallyWithheld(result: WriteRowResult): boolean {
+  const landed = (result.googleTargeted && result.googleWritten) || (result.attioTargeted && result.attioWritten);
+  const withheld = (result.googleTargeted && !result.googleWritten) || (result.attioTargeted && !result.attioWritten);
+  return landed && withheld;
 }
 
 /**
