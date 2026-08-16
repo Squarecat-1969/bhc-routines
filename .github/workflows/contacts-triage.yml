@@ -90,7 +90,7 @@ jobs:
 
       - name: Upload report
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: contacts-triage-report-${{ github.run_id }}
           path: out/contacts-triage-report.json
