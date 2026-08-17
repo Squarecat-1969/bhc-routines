@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { addDays, diffDays, isBefore, normalizeInteractionDate, parseFlexibleDate, todayIn, type CivilDate } from '../src/lib/dates.js';
+import { addDays, diffDays, isBefore, newerOf, normalizeInteractionDate, parseFlexibleDate, todayIn, type CivilDate } from '../src/lib/dates.js';
 
 describe('parseFlexibleDate', () => {
   it('returns null for empty-ish input rather than guessing', () => {
@@ -115,5 +115,45 @@ describe('normalizeInteractionDate — Brain_Complete col H is not one shape', (
 
   it('reduces an ISO datetime by its UTC date, matching parseFlexibleDate', () => {
     expect(normalizeInteractionDate('2026-06-02T00:30:00Z')).toBe('2026-06-02');
+  });
+});
+
+describe('newerOf — PASS 4 reads two last-touch fields, either of which may be absent', () => {
+  const d = (s: string): CivilDate => s as CivilDate;
+
+  it('returns null when BOTH are null — unknown stays unknown, never coerced to a date', () => {
+    expect(newerOf(null, null)).toBeNull();
+  });
+
+  it('returns the native value when only native is present', () => {
+    expect(newerOf(d('2026-07-15'), null)).toBe('2026-07-15');
+  });
+
+  it('returns the manual value when only manual is present', () => {
+    // The case the whole change exists for: a contact Attio's sync has never
+    // seen, kept alive entirely by WhatsApp/phone/in-person.
+    expect(newerOf(null, d('2026-07-30'))).toBe('2026-07-30');
+  });
+
+  it('returns native when native is newer', () => {
+    expect(newerOf(d('2026-08-01'), d('2026-07-30'))).toBe('2026-08-01');
+  });
+
+  it('returns manual when manual is newer', () => {
+    expect(newerOf(d('2026-06-22'), d('2026-07-30'))).toBe('2026-07-30');
+  });
+
+  it('returns the FIRST argument on an exact tie, so callers encode preference by order', () => {
+    // PASS 4 passes native first: when both agree, the more-trusted signal wins
+    // and the reason is not marked [manual].
+    const tie = d('2026-07-30');
+    expect(newerOf(tie, d('2026-07-30'))).toBe(tie);
+  });
+
+  it('never invents a date from a null side', () => {
+    // Guards the obvious bug: treating null as epoch/"very old" would make a
+    // null side lose every comparison instead of being skipped.
+    expect(newerOf(null, d('1999-01-01'))).toBe('1999-01-01');
+    expect(newerOf(d('1999-01-01'), null)).toBe('1999-01-01');
   });
 });

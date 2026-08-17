@@ -29,7 +29,7 @@ import {
   type AttioPersonRecord,
   type AttioPipelineEntry,
 } from '../../lib/attio.js';
-import { todayIn, type CivilDate } from '../../lib/dates.js';
+import { newerOf, todayIn, type CivilDate } from '../../lib/dates.js';
 import { sleep } from '../../lib/http.js';
 import type { Logger } from '../../lib/logger.js';
 import { verifyName } from '../../lib/name-verify.js';
@@ -83,9 +83,23 @@ export function evaluateContact(args: {
 
   const attioName = record ? nameOf(record.values, PERSON_SLUGS.name) : null;
   const attioBhcContactId = record ? textOf(record.values, PERSON_SLUGS.bhcContactId) : null;
-  const lastTouch = record ? dateOf(record.values, PERSON_SLUGS.lastInteractionAt) : null;
+  // Two last-touch sources, because Attio's native field only sees what its
+  // email/calendar sync sees. A WhatsApp or in-person touch lands only in
+  // manual_last_interaction (written by bhc-aida's log-manual), and reading
+  // just the native field marks those relationships STALLED while they are
+  // actually healthy. Take the newer of the two.
+  const nativeLastTouch = record ? dateOf(record.values, PERSON_SLUGS.lastInteractionAt) : null;
+  const manualLastTouch = record ? dateOf(record.values, PERSON_SLUGS.manualLastInteractionAt) : null;
+  const lastTouch = newerOf(nativeLastTouch, manualLastTouch);
+  // Which field the value actually came from. CivilDate is a branded string, so
+  // === is plain value equality: if the winner equals the native value it IS
+  // the native one — including an exact tie, where native wins as the
+  // more-trusted signal. That single comparison covers the tie case without a
+  // separate inequality clause.
+  const lastTouchSource: 'native' | 'manual' | 'none' =
+    lastTouch === null ? 'none' : lastTouch === nativeLastTouch ? 'native' : 'manual';
 
-  const cadence = computeCadence({ stages, tier, lastTouch, today });
+  const cadence = computeCadence({ stages, tier, lastTouch, lastTouchSource, today });
   notes.push(...cadence.warnings);
 
   if (tierDefaulted && cadence.activeStageNum < 1) {
