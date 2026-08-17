@@ -19,8 +19,9 @@ import { computeCounts } from './counts.js';
 import { writeDailyBrief } from './daily-brief-write.js';
 import { computeMissionStatus, deriveEntryStages } from './mission-status.js';
 import { buildOverflowItems, buildPlanItems } from './plan.js';
+import { loadPipelineProposals } from './proposals-load.js';
 import { countMeetingsToReview } from './zoom-review-count.js';
-import type { CadenceRow, GamePlan, Pass5Options, Pass5Report } from './types.js';
+import type { CadenceRow, GamePlan, Pass5Options, Pass5PipelineProposal, Pass5Report } from './types.js';
 
 function emptyReport(partial: { runId: string; dryRun: boolean; startedAt: string; aborted?: boolean; abortReason?: string | null }): Pass5Report {
   return {
@@ -103,9 +104,23 @@ async function runPass5Inner(opts: Pass5Options, deps: RunPass5Deps, startedAt: 
   logger.info('5c — computing counts');
   const counts = computeCounts(brainCompleteRows, openTasks, cadenceResults, meetingsToReviewCount, today);
 
+  // Opportunity proposals (PASS 4f) — PENDING only, read-only. A failure here
+  // must not cost Bobby his whole daily brief, so it degrades to an empty list
+  // and warns, matching this project's per-pass fail-soft rule.
+  let proposals: readonly Pass5PipelineProposal[] = [];
+  try {
+    proposals = await loadPipelineProposals(sheets);
+    const pending = proposals.filter((p) => p.status.trim().toUpperCase() === 'PENDING').length;
+    logger.info(`  pipeline_proposals=${proposals.length} (pending=${pending})`);
+  } catch (e) {
+    const w = `Pipeline_Proposals read failed (non-blocking, plan built without opportunities): ${String(e)}`;
+    warnings.push(w);
+    logger.warn(`  ${w}`);
+  }
+
   logger.info('5d — building the plan');
-  const plan = buildPlanItems(openTasks, brainCompleteRows, cadenceResults, today);
-  const overflow = buildOverflowItems(openTasks, brainCompleteRows, cadenceResults, today, plan);
+  const plan = buildPlanItems(openTasks, brainCompleteRows, cadenceResults, proposals, today);
+  const overflow = buildOverflowItems(openTasks, brainCompleteRows, cadenceResults, proposals, today, plan);
 
   logger.info('5e — generating brief text');
   const brief = buildBriefText(counts, brainCompleteRows, missionStatus, plan[0] ?? null);

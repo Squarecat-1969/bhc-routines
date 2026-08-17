@@ -35,7 +35,23 @@ export interface GamePlanCounts {
   readonly meetingsToReview: number;
 }
 
-export type PlanItemType = 'reply' | 'task' | 'outreach' | 'action';
+export type PlanItemType = 'reply' | 'task' | 'outreach' | 'action' | 'opportunity';
+
+/**
+ * A PENDING Pipeline_Proposals row, staged by PASS 4f. PASS 5 renders these
+ * into the plan; the Accept/Reject decision and the Attio entry creation both
+ * live in bhc-aida. Detection here, commitment there.
+ */
+export interface Pass5PipelineProposal {
+  readonly proposalId: string;
+  readonly attioRecordId: string;
+  readonly bhcId: string;
+  readonly contactName: string;
+  readonly companyName: string;
+  readonly evidence: string;
+  readonly proposedTrack: string;
+  readonly status: string;
+}
 
 export interface PlanItem {
   readonly type: PlanItemType;
@@ -52,6 +68,15 @@ export interface PlanItem {
   readonly dueDate: string;
   readonly attioRecordId: string;
   readonly priority: number; // assigned after ranking/trimming — 1-based
+
+  // ── 'opportunity' items only ──────────────────────────────────────────────
+  // Genuinely new fields, deliberately NOT overloaded onto existing ones. In
+  // particular proposalId does NOT ride in taskId: taskId means "a row in
+  // Tasks_Open" to every existing consumer, and a proposal is not a task.
+  // Optional because the other four types have no such thing.
+  readonly proposalId?: string;
+  readonly companyName?: string;
+  readonly proposedTrack?: string;
 }
 
 export interface GamePlan {

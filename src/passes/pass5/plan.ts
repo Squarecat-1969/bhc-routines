@@ -47,13 +47,13 @@
  */
 
 import { diffDays, iso, isSameOrBefore, parseFlexibleDate, type CivilDate } from '../../lib/dates.js';
-import type { CadenceRow, OpenTask, Pass5BrainCompleteRow, PlanItem, PlanItemType } from './types.js';
+import type { CadenceRow, OpenTask, Pass5BrainCompleteRow, Pass5PipelineProposal, PlanItem, PlanItemType } from './types.js';
 
 const REASON_TRUNCATE_LEN = 100;
 const OVERDUE_PRIORITIES = new Set(['High', 'Urgent']);
 
 /** Per-bucket caps for the PRIORITY plan (unchanged from the original spec numbers). */
-const BUCKET_CAPS = { task: 3, reply: 4, outreach: 4, action: 3 } as const;
+const BUCKET_CAPS = { task: 3, reply: 4, opportunity: 3, outreach: 4, action: 3 } as const;
 
 const PLAN_CAP = 10;
 /**
@@ -165,6 +165,37 @@ function buildBucket3Full(cadenceResults: readonly CadenceRow[], today: CivilDat
   }));
 }
 
+/**
+ * Opportunity proposals (PASS 4f), PENDING only.
+ *
+ * Placement: between replies (bucket 2) and outreach-due (bucket 3). An
+ * emerging opportunity is a real, time-sensitive commercial signal, so it
+ * outranks a routine cadence touch — but it is not more urgent than an overdue
+ * task or a thread someone is actively waiting on a reply to. Priority in this
+ * pass is positional, not scored (see buildPlanItems), so bucket ORDER is
+ * literally the ranking.
+ *
+ * Sorted by contact name for a stable, deterministic order: proposals carry no
+ * natural urgency signal — no due date, no days-overdue, no stall count — and
+ * inventing a ranking from evidence length or detection time would be
+ * arbitrary dressed as meaningful.
+ */
+function buildOpportunityBucketFull(
+  proposals: readonly Pass5PipelineProposal[],
+): readonly Omit<PlanItem, 'priority'>[] {
+  const pending = proposals.filter((p) => p.status.trim().toUpperCase() === 'PENDING');
+  const sorted = [...pending].sort((a, b) => a.contactName.localeCompare(b.contactName));
+  return sorted.map((p) => ({
+    // reason = Evidence: the same meaning it carries for every other type —
+    // why this item is in front of you.
+    ...blankItem('opportunity', p.contactName, p.bhcId, truncate(p.evidence, REASON_TRUNCATE_LEN)),
+    attioRecordId: p.attioRecordId,
+    proposalId: p.proposalId,
+    companyName: p.companyName,
+    proposedTrack: p.proposedTrack,
+  }));
+}
+
 function buildBucket4Full(brainCompleteRows: readonly Pass5BrainCompleteRow[]): readonly Omit<PlanItem, 'priority'>[] {
   const actionItems = brainCompleteRows.filter((r) => r.actionRequired === 'ACTION_ITEM');
   return actionItems.map((r) => ({
@@ -178,17 +209,19 @@ function fullBuckets(
   openTasks: readonly OpenTask[],
   brainCompleteRows: readonly Pass5BrainCompleteRow[],
   cadenceResults: readonly CadenceRow[],
+  proposals: readonly Pass5PipelineProposal[],
   today: CivilDate,
 ): readonly (readonly Omit<PlanItem, 'priority'>[])[] {
   return [
     buildBucket1Full(openTasks, today),
     buildBucket2Full(brainCompleteRows),
+    buildOpportunityBucketFull(proposals),
     buildBucket3Full(cadenceResults, today),
     buildBucket4Full(brainCompleteRows),
   ];
 }
 
-const BUCKET_CAP_BY_INDEX = [BUCKET_CAPS.task, BUCKET_CAPS.reply, BUCKET_CAPS.outreach, BUCKET_CAPS.action];
+const BUCKET_CAP_BY_INDEX = [BUCKET_CAPS.task, BUCKET_CAPS.reply, BUCKET_CAPS.opportunity, BUCKET_CAPS.outreach, BUCKET_CAPS.action];
 
 /**
  * The daily plan — deliberately short, deliberately capped, unchanged in
@@ -201,9 +234,10 @@ export function buildPlanItems(
   openTasks: readonly OpenTask[],
   brainCompleteRows: readonly Pass5BrainCompleteRow[],
   cadenceResults: readonly CadenceRow[],
+  proposals: readonly Pass5PipelineProposal[],
   today: CivilDate,
 ): readonly PlanItem[] {
-  const buckets = fullBuckets(openTasks, brainCompleteRows, cadenceResults, today).map((full, i) =>
+  const buckets = fullBuckets(openTasks, brainCompleteRows, cadenceResults, proposals, today).map((full, i) =>
     full.slice(0, BUCKET_CAP_BY_INDEX[i]),
   );
 
@@ -247,12 +281,13 @@ export function buildOverflowItems(
   openTasks: readonly OpenTask[],
   brainCompleteRows: readonly Pass5BrainCompleteRow[],
   cadenceResults: readonly CadenceRow[],
+  proposals: readonly Pass5PipelineProposal[],
   today: CivilDate,
   planItems: readonly PlanItem[],
 ): readonly PlanItem[] {
   const compoundKey = (item: { type: PlanItemType; bhcId: string; contact: string }) => `${item.type}:${itemKey(item)}`;
   const planKeys = new Set(planItems.map(compoundKey));
-  const buckets = fullBuckets(openTasks, brainCompleteRows, cadenceResults, today);
+  const buckets = fullBuckets(openTasks, brainCompleteRows, cadenceResults, proposals, today);
 
   const seen = new Set<string>();
   const overflow: Omit<PlanItem, 'priority'>[] = [];
