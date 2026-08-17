@@ -130,6 +130,12 @@ export const RANGES = {
   // "verify col B is the status column... if elsewhere, use the correct
   // column." It IS elsewhere — B is `title`, the real status column is H.
   zoomStagingStatus: 'Zoom_Staging!H2:H',
+  // PASS 4f target — Pipeline_Proposals, 12 cols A-L. Header verified live
+  // 2026-08-17: Proposal_ID, Attio_Record_ID, BHC_ID, Contact_Name,
+  // Company_Name, Evidence, Proposed_Track, Detected_At, Run_ID, Status,
+  // Resolved_At, Reject_Reason.
+  pipelineProposalsHeader: 'Pipeline_Proposals!A1:L1',
+  pipelineProposalsData: 'Pipeline_Proposals!A2:L',
   // PASS 5 target — verified live 2026-07-19: exactly 2 columns (Date,
   // Brief_JSON), matching the spec's "EXACTLY ONE ROW, EXACTLY TWO COLUMNS."
   dailyBriefDates: 'Daily_Brief!A2:A',
