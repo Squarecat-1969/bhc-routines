@@ -31,6 +31,13 @@ export interface WriteRowInput {
   readonly contactName: string;
   readonly direction: string;
   readonly subject: string;
+  /**
+   * Brain_Complete col H — the thread's most recent email date, mirrored there
+   * by PASS 2 from Thread_Staging. Available to write-row.ts but not yet read
+   * by it: everything is still stamped with `now`. Threading it through is a
+   * deliberately separate step from using it. '' when the sheet cell is blank.
+   */
+  readonly lastEmailDate: string;
   readonly runningSummary: string;
   readonly writeTargets: WriteTargets;
   readonly tasks: readonly StagedTask[];

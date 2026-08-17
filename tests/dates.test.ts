@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { addDays, diffDays, isBefore, parseFlexibleDate, todayIn, type CivilDate } from '../src/lib/dates.js';
+import { addDays, diffDays, isBefore, normalizeInteractionDate, parseFlexibleDate, todayIn, type CivilDate } from '../src/lib/dates.js';
 
 describe('parseFlexibleDate', () => {
   it('returns null for empty-ish input rather than guessing', () => {
@@ -74,5 +74,46 @@ describe('todayIn', () => {
     const at6amUtc = new Date('2026-07-15T06:00:00Z');
     expect(todayIn('UTC', at6amUtc)).toBe('2026-07-15');
     expect(todayIn('America/Los_Angeles', at6amUtc)).toBe('2026-07-14');
+  });
+});
+
+describe('normalizeInteractionDate — Brain_Complete col H is not one shape', () => {
+  // Both values below are REAL, taken from live Brain_Complete rows during the
+  // read-only survey that preceded this change. 172 of 173 rows look like row
+  // 162; row 49 is the lone bare-date row, and it is precisely the row that
+  // would be handled inconsistently if the raw value were passed around.
+  it("normalizes row 162's full ISO-8601 timestamp", () => {
+    expect(normalizeInteractionDate('2026-08-12T21:11:55.000Z')).toBe('2026-08-12');
+  });
+
+  it("normalizes row 49's bare YYYY-MM-DD unchanged", () => {
+    expect(normalizeInteractionDate('2026-07-01')).toBe('2026-07-01');
+  });
+
+  it('collapses both real shapes to the same form when they name the same day', () => {
+    // The actual point of the helper: one day, one representation, whichever
+    // shape the sheet happened to store it in.
+    expect(normalizeInteractionDate('2026-07-01T23:59:59.000Z')).toBe(normalizeInteractionDate('2026-07-01'));
+  });
+
+  it("returns '' for blank, so callers can write it straight into a cell", () => {
+    expect(normalizeInteractionDate('')).toBe('');
+    expect(normalizeInteractionDate(null)).toBe('');
+    expect(normalizeInteractionDate(undefined)).toBe('');
+  });
+
+  it("returns '' rather than a guess for something unparseable", () => {
+    expect(normalizeInteractionDate('last Tuesday')).toBe('');
+    expect(normalizeInteractionDate('not a date')).toBe('');
+  });
+
+  it('handles a numeric Sheets serial, the trap this repo has already hit twice', () => {
+    // Not a shape col H holds today, but free via parseFlexibleDate — and if
+    // the column ever changes render mode this is the failure it prevents.
+    expect(normalizeInteractionDate(46246)).toBe('2026-08-12');
+  });
+
+  it('reduces an ISO datetime by its UTC date, matching parseFlexibleDate', () => {
+    expect(normalizeInteractionDate('2026-06-02T00:30:00Z')).toBe('2026-06-02');
   });
 });

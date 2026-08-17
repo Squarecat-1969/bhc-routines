@@ -30,6 +30,8 @@ function baseInput(overrides: Partial<WriteRowInput> = {}, writeTargets?: Partia
   const defaultTargets: WriteTargets = { primary: { bhc_id: 'BHC-1' }, secondary: [] };
   return {
     bhcId: 'BHC-1', contactName: 'Alice Nguyen', direction: 'Inbound', subject: 'Re: contract',
+    // ISO-8601 string, matching the real col H shape in production.
+    lastEmailDate: '2026-08-12T21:11:55.000Z',
     runningSummary: 'Alice confirmed the contract terms.',
     writeTargets: { ...defaultTargets, ...writeTargets },
     tasks: [], brainCompleteRow: 5,

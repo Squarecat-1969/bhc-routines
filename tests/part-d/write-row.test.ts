@@ -47,6 +47,9 @@ function baseInput(overrides: Partial<WriteRowInput> = {}, writeTargets?: Partia
     contactName: 'Alice Nguyen',
     direction: 'Inbound',
     subject: 'Re: contract',
+    // Shaped like the real column: Brain_Complete col H is an ISO-8601 string
+    // in production (verified across all 173 live rows), not a Sheets serial.
+    lastEmailDate: '2026-08-12T21:11:55.000Z',
     runningSummary: 'Alice confirmed the contract terms.',
     writeTargets: { ...defaultTargets, ...writeTargets },
     tasks: [],
@@ -68,7 +71,7 @@ describe('writeRow — 4a Activity_Log', () => {
     const append = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Activity_Log!A1');
     expect(append).toBeDefined();
     const row = (append!.body as { values: unknown[][] }).values[0]!;
-    expect(row).toHaveLength(21); // A-U
+    expect(row).toHaveLength(22); // A-V (was A-U before Interaction_Date landed at V)
     expect(row[0]).toBe(result.activityId);
     expect(row[2]).toBe('BHC-1'); // C Contact_ID
     expect(row[4]).toBe('Alice Nguyen'); // E Contact_Name
@@ -686,5 +689,116 @@ describe('Activity_Log append verification', () => {
     // Contact_History still appended, and still unverified by design.
     const ch = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range?.startsWith('Contact_History'));
     expect(ch).toBeDefined();
+  });
+});
+
+// ── Interaction date: col H -> Contacts BZ + Activity_Log col V ────────────
+// Two destinations, ONE normalized value, so they can never drift apart. The
+// run date (Timestamp, Created_At, Entry_Date, the `[date LE]` note prefixes)
+// deliberately stays `now` — this is the Timestamp vs Interaction_Date split,
+// not a blanket "use the email date everywhere".
+describe('writeRow — Interaction_Date threading', () => {
+  const GOOGLE_TARGETS = {
+    primary: {
+      bhc_id: 'BHC-1',
+      google: { google_row: 10, fields: { BZ: '2026-08-12', CA: 'Email' as const, CB: 'Inbound' as const, CD: 'Re: contract', CE: 'summary', CG: 'Positive' as const } },
+    },
+  };
+
+  it('writes the normalized email date to Contacts BZ, not today', async () => {
+    const { sheets, attio, masterId } = await setup({
+      entries: [], people: {}, masterId: MASTER_ID_ROWS, contactsHeader: [], contacts: [],
+    });
+    await writeRow(sheets, attio, masterId, baseInput({ lastEmailDate: '2026-08-12T21:11:55.000Z' }, GOOGLE_TARGETS));
+
+    const write = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range?.startsWith('Contacts!BZ'));
+    const row = (write!.body as { values: unknown[][] }).values[0]!;
+    expect(row[0]).toBe('2026-08-12');
+    expect(row[0]).not.toBe(new Date().toISOString().slice(0, 10)); // the whole point
+  });
+
+  it("writes the same value to Activity_Log col V, and the row is 22 wide", async () => {
+    const { sheets, attio, masterId } = await setup({
+      entries: [], people: {}, masterId: MASTER_ID_ROWS, contactsHeader: [], contacts: [],
+    });
+    await writeRow(sheets, attio, masterId, baseInput({ lastEmailDate: '2026-08-12T21:11:55.000Z' }, GOOGLE_TARGETS));
+
+    const append = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range?.startsWith('Activity_Log'));
+    const row = (append!.body as { values: unknown[][] }).values[0]!;
+    expect(row).toHaveLength(22); // A-V, was 21 (A-U)
+    expect(row[21]).toBe('2026-08-12'); // V Interaction_Date
+    expect(row[1]).not.toBe(row[21]); // B Timestamp is still the RUN time, not the email date
+  });
+
+  it("normalizes row 49's bare-date shape identically on the way to both destinations", async () => {
+    const { sheets, attio, masterId } = await setup({
+      entries: [], people: {}, masterId: MASTER_ID_ROWS, contactsHeader: [], contacts: [],
+    });
+    await writeRow(sheets, attio, masterId, baseInput({ lastEmailDate: '2026-07-01' }, {
+      primary: { ...GOOGLE_TARGETS.primary, google: { ...GOOGLE_TARGETS.primary.google, fields: { ...GOOGLE_TARGETS.primary.google.fields, BZ: '2026-07-01' } } },
+    }));
+
+    const bz = (backend.sheetsWrites.find((w) => (w.body as { range?: string }).range?.startsWith('Contacts!BZ'))!.body as { values: unknown[][] }).values[0]![0];
+    const v = (backend.sheetsWrites.find((w) => (w.body as { range?: string }).range?.startsWith('Activity_Log'))!.body as { values: unknown[][] }).values[0]![21];
+    expect(bz).toBe('2026-07-01');
+    expect(v).toBe('2026-07-01');
+    expect(bz).toBe(v); // one value, two destinations
+  });
+
+  it("leaves col V blank but falls BZ back to the run date when there is no email date", async () => {
+    const { sheets, attio, masterId } = await setup({
+      entries: [], people: {}, masterId: MASTER_ID_ROWS, contactsHeader: [], contacts: [],
+    });
+    await writeRow(sheets, attio, masterId, baseInput({ lastEmailDate: '' }, {
+      primary: { ...GOOGLE_TARGETS.primary, google: { ...GOOGLE_TARGETS.primary.google, fields: { ...GOOGLE_TARGETS.primary.google.fields, BZ: '' } } },
+    }));
+
+    const v = (backend.sheetsWrites.find((w) => (w.body as { range?: string }).range?.startsWith('Activity_Log'))!.body as { values: unknown[][] }).values[0]![21];
+    const bz = (backend.sheetsWrites.find((w) => (w.body as { range?: string }).range?.startsWith('Contacts!BZ'))!.body as { values: unknown[][] }).values[0]![0];
+    expect(v).toBe(''); // blank means unknown — never today's date
+    expect(bz).toBe(new Date().toISOString().slice(0, 10)); // BZ is an established field; blanking it would be a regression
+  });
+
+  it('warns LOUDLY when the staged fields.BZ disagrees with the normalized email date', async () => {
+    const { sheets, attio, masterId } = await setup({
+      entries: [], people: {}, masterId: MASTER_ID_ROWS, contactsHeader: [], contacts: [],
+    });
+    const result = await writeRow(sheets, attio, masterId, baseInput({ lastEmailDate: '2026-08-12T21:11:55.000Z' }, {
+      primary: { ...GOOGLE_TARGETS.primary, google: { ...GOOGLE_TARGETS.primary.google, fields: { ...GOOGLE_TARGETS.primary.google.fields, BZ: '2026-01-01' } } },
+    }));
+
+    expect(result.warnings.some((w) => w.includes('cross-check MISMATCH'))).toBe(true);
+    // Reported, not silently resolved — and the written value is stated in the warning.
+    const bz = (backend.sheetsWrites.find((w) => (w.body as { range?: string }).range?.startsWith('Contacts!BZ'))!.body as { values: unknown[][] }).values[0]![0];
+    expect(bz).toBe('2026-08-12'); // input.lastEmailDate wins; fields.BZ is a check, not a source
+  });
+
+  it('warns and degrades safely when the email date is unparseable', async () => {
+    const { sheets, attio, masterId } = await setup({
+      entries: [], people: {}, masterId: MASTER_ID_ROWS, contactsHeader: [], contacts: [],
+    });
+    const result = await writeRow(sheets, attio, masterId, baseInput({ lastEmailDate: 'last Tuesday' }, GOOGLE_TARGETS));
+
+    expect(result.warnings.some((w) => w.includes('could not be parsed'))).toBe(true);
+    const v = (backend.sheetsWrites.find((w) => (w.body as { range?: string }).range?.startsWith('Activity_Log'))!.body as { values: unknown[][] }).values[0]![21];
+    expect(v).toBe('');
+  });
+
+  it('gives the SECONDARY Activity_Log row the same 22-wide shape and the same date', async () => {
+    const { sheets, attio, masterId } = await setup({
+      entries: [], people: {},
+      masterId: [...MASTER_ID_ROWS, ['BHC-2', 'Bob Secondary', 'ATTIO', '', 'rec-bob', '']],
+      contactsHeader: [], contacts: [],
+    });
+    await writeRow(sheets, attio, masterId, baseInput({ lastEmailDate: '2026-08-12T21:11:55.000Z' }, {
+      primary: GOOGLE_TARGETS.primary,
+      secondary: [{ bhc_id: 'BHC-2', attio: { record_id: 'rec-bob', fields: { last_meeting_summary: 'cc on thread' } } }],
+    }));
+
+    const appends = backend.sheetsWrites.filter((w) => (w.body as { range?: string }).range?.startsWith('Activity_Log'));
+    expect(appends.length).toBeGreaterThanOrEqual(2); // primary + secondary
+    const secRow = (appends[1]!.body as { values: unknown[][] }).values[0]!;
+    expect(secRow).toHaveLength(22);
+    expect(secRow[21]).toBe('2026-08-12'); // one thread, one interaction date
   });
 });

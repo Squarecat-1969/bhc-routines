@@ -103,3 +103,25 @@ export function parseFlexibleDate(v: unknown): CivilDate | null {
 export function iso(d: CivilDate | null): string {
   return d ?? '';
 }
+
+/**
+ * Normalize an interaction date (Brain_Complete col H, Last_Email_Date) to a
+ * bare YYYY-MM-DD before anything writes it or hands it to `new Date()`.
+ *
+ * Col H is NOT a guaranteed shape. Verified across all 173 live Brain_Complete
+ * rows: 172 are full ISO-8601 (`2026-08-12T21:11:55.000Z`) and row 49 holds a
+ * bare `2026-07-01`. Passing the raw value around means every downstream caller
+ * has to handle both, and the bare-date row is exactly the one that would be
+ * handled inconsistently — so it gets reduced once, here, at the edge.
+ *
+ * Deliberately delegates to parseFlexibleDate rather than parsing again: one
+ * date parser in this repo, the same reasoning that keeps a single
+ * name-verify.ts. That also means a numeric Sheets serial is handled for free
+ * if col H ever changes shape — the trap this repo has already hit twice.
+ *
+ * Returns '' rather than null for an unparseable or empty value: callers write
+ * this straight into a cell, and '' is the blank they need. Never a guess.
+ */
+export function normalizeInteractionDate(raw: unknown): string {
+  return parseFlexibleDate(raw) ?? '';
+}
