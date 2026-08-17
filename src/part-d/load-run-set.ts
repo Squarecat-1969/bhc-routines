@@ -8,8 +8,8 @@
  * own 30-element write array (A-AD) — the same source that builds these
  * rows in the first place, not re-derived or guessed separately:
  *   B=1 bhcId, C=2 contactName, E=4 direction, F=5 subject,
- *   K=10 runningSummary, V=21 blank-flag, W=22 actionRequired,
- *   Y=24 tasksJson, Z=25 writeTargetsJson, AB=27 runId.
+ *   H=7 lastEmailDate, K=10 runningSummary, V=21 blank-flag,
+ *   W=22 actionRequired, Y=24 tasksJson, Z=25 writeTargetsJson, AB=27 runId.
  * The spec's own "A:AB" read range covers every one of these (AB is the
  * 28th column, 1-indexed) — reusing RANGES.brainCompleteData (A2:AD) is a
  * couple of columns wider than the spec's own range, not narrower, so
@@ -63,6 +63,12 @@ export interface RunSetRow {
   readonly contactName: string;
   readonly direction: string;
   readonly subject: string;
+  /**
+   * Col H, the thread's most recent email. Carried but NOT yet used —
+   * threading it through is deliberately separate from write-row.ts acting on
+   * it, so this step changes no behaviour anywhere. Blank comes through as ''.
+   */
+  readonly lastEmailDate: string;
   readonly runningSummary: string;
   readonly actionRequired: string;
   /** Parsed from col Z. Null when blank, "{}", or malformed — callers treat null the same as STEP 4's "empty Write_Targets": mark done, nothing to write. */
@@ -175,6 +181,12 @@ export async function loadRunSet(sheets: SheetsClient, runId: string): Promise<R
       contactName: cell(row, 2), // C
       direction: cell(row, 4), // E
       subject: cell(row, 5), // F
+      // H (Last_Email_Date), not G (First_Email_Date): a thread's first email
+      // could be months old, so the most recent real touch is what any
+      // cadence-relevant write should measure — the same "newer of the two
+      // signals wins" logic Attio's manual_last_interaction already applies on
+      // the bhc-aida side.
+      lastEmailDate: cell(row, 7), // H Last_Email_Date
       runningSummary: cell(row, 10), // K
       actionRequired,
       writeTargets,

@@ -58,7 +58,7 @@ import type { AttioClient } from '../lib/attio.js';
 import { textOf } from '../lib/attio.js';
 import type { MasterIdIndex } from '../passes/pass4/load.js';
 import type { SheetsClient } from '../lib/sheets.js';
-import { iso, isBefore, parseFlexibleDate, type CivilDate } from '../lib/dates.js';
+import { iso, isBefore, normalizeInteractionDate, parseFlexibleDate, type CivilDate } from '../lib/dates.js';
 import { verifyAttioRecordOwnership, verifyGoogleRowOwnership } from './identity-gate.js';
 import { sanitizeField } from './sensitive-data.js';
 import type { SecondaryWriteResult, StagedTask, WriteRowInput, WriteRowResult } from './types.js';
@@ -122,6 +122,23 @@ export async function writeRow(
   const now = new Date();
   const nowIso = now.toISOString();
   const dateOnly = nowIso.slice(0, 10);
+
+  // WHEN THE INTERACTION HAPPENED, as opposed to when this routine ran.
+  // Normalized once here and reused for both destinations below (Contacts BZ
+  // and Activity_Log col V) so the two can never disagree with each other.
+  //
+  // nowIso/dateOnly deliberately still stand for everything that genuinely
+  // means "when Part D executed": Activity_Log col B Timestamp, Tasks_Open
+  // Created_At, Contact_History Entry_Date, and the `[date LE]` note prefixes
+  // (the LE marks when Late Edition touched the note, not when the thread
+  // happened). Only the two event-dated writes below moved.
+  const interactionDate = normalizeInteractionDate(input.lastEmailDate);
+  if (input.lastEmailDate !== '' && interactionDate === '') {
+    warnings.push(
+      `Last_Email_Date ${JSON.stringify(input.lastEmailDate)} could not be parsed to a date — ` +
+        `Activity_Log Interaction_Date left blank and Contacts BZ fell back to the run date.`,
+    );
+  }
 
   const { bhcId, contactName, direction, writeTargets } = input;
   // subject/runningSummary are let-bound, not const — reassigned to their
@@ -272,6 +289,7 @@ export async function writeRow(
     googleOk && attioOk ? 'BOTH' : googleOk ? 'GOOGLE' : attioOk ? 'ATTIO' : '', // S Source_CRM — reflects what was actually written, not merely claimed (a withheld write via the identity gate shouldn't be recorded as if it landed)
     '', // T — filled after 4d if exactly one task
     '', // U
+    interactionDate, // V Interaction_Date — '' when unknown, never today's date
   ];
   // Gated on what Google reports LANDED, not on the call returning. "Didn't
   // throw" is intent; updatedRows is outcome, and this flag is what confirm.ts
@@ -293,10 +311,30 @@ export async function writeRow(
   // ── 4b. Google Contacts BZ:CG (update) ───────────────────────────────────
   if (googleOk && primary.google) {
     const { google_row, fields } = primary.google;
+    // BZ is the interaction date, not the run date. Falls back to dateOnly only
+    // when there is no usable Last_Email_Date — BZ is an established CRM field,
+    // so degrading it to blank would be a regression on the previous behaviour.
+    // (Activity_Log col V does the opposite and writes '' — it is a new column
+    // where blank honestly means "unknown", matching bhc-aida's own handling of
+    // manual logs with no date.)
+    const bzValue = interactionDate || dateOnly;
+    // Cross-check ONLY, for this rollout: PASS 2 already stages the same fact
+    // in fields.BZ as (lastEmailDate).slice(0,10). Two independent derivations
+    // of one value should agree; if they ever don't, that is a real signal and
+    // it gets said out loud rather than resolved by silently preferring one.
+    // Not a second permanent source — input.lastEmailDate is what gets written.
+    if (interactionDate !== '' && fields.BZ !== '' && fields.BZ !== interactionDate) {
+      warnings.push(
+        `Interaction-date cross-check MISMATCH @ row ${google_row}: ` +
+          `Write_Targets_JSON fields.BZ=${JSON.stringify(fields.BZ)} but ` +
+          `normalized Last_Email_Date=${JSON.stringify(interactionDate)}. ` +
+          `Wrote the normalized Last_Email_Date.`,
+      );
+    }
     await sheets.update(`Contacts!BZ${google_row}:CG${google_row}`, [
-      [dateOnly, fields.CA, fields.CB, '', fields.CD, fields.CE, '', fields.CG],
+      [bzValue, fields.CA, fields.CB, '', fields.CD, fields.CE, '', fields.CG],
     ]);
-    writes.push(`Contacts BZ:CG @ row ${google_row}`);
+    writes.push(`Contacts BZ:CG @ row ${google_row} (BZ=${bzValue})`);
   }
 
   // ── 4b.5. Personal context (conditional, best-effort, non-blocking) ──────
@@ -488,6 +526,7 @@ export async function writeRow(
         secAttioOk ? 'ATTIO' : '', // S Source_CRM
         '', // T
         '', // U
+        interactionDate, // V Interaction_Date — the SAME normalized value as the primary's; one thread, one interaction date
       ];
       // Same outcome-not-intent check as the primary. confirm.ts counts
       // secondaries by this `ok` flag, so it has to mean "landed".

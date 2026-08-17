@@ -64,6 +64,7 @@ function toWriteRowInput(row: RunSetRow): WriteRowInput {
     contactName: row.contactName,
     direction: row.direction,
     subject: row.subject,
+    lastEmailDate: row.lastEmailDate,
     runningSummary: row.runningSummary,
     writeTargets: row.writeTargets,
     tasks: row.tasks,
