@@ -78,5 +78,19 @@ export interface Pass4Report {
     readonly tierDefaulted: number;
   };
 
+  /** PASS 4f — opportunity proposals staged for human Accept/Reject in bhc-aida. */
+  readonly opportunityProposals: {
+    readonly candidates: number;
+    readonly excludedOnPipeline: number;
+    readonly excludedNoMasterId: number;
+    readonly excludedSynthetic: number;
+    readonly excludedAlreadyProposed: number;
+    /** Computed as new. In a dry run these are NOT written. */
+    readonly proposed: number;
+    /** Rows actually appended to Pipeline_Proposals. Always 0 in a dry run. */
+    readonly written: number;
+    readonly proposalIds: readonly string[];
+  };
+
   readonly warnings: readonly string[];
 }

@@ -37,6 +37,7 @@ import type { SheetsClient } from '../../lib/sheets.js';
 import { computeCadence } from './cadence.js';
 import { loadMasterId, loadTierIndex, type MasterIdIndex, type TierIndex } from './load.js';
 import type { CadenceRow, Pass4Report, WriteResult } from './types.js';
+import { runOpportunityScan } from './opportunity-step.js';
 
 export interface Pass4Options {
   readonly runId: string;
@@ -320,6 +321,18 @@ export async function runPass4(opts: Pass4Options): Promise<Pass4Report> {
     }
   }
 
+  // ── 4f — opportunity proposals ───────────────────────────────────────────
+  // Detection only: stages rows for a human to Accept/Reject in bhc-aida. This
+  // never creates the Attio pipeline entry itself. Reuses `entries` and
+  // `master` already loaded above rather than re-fetching either.
+  logger.info('4f — scanning for opportunity proposals');
+  const opportunity = await runOpportunityScan({
+    attio, sheets, logger, dryRun, runId,
+    pipelineRecordIds: new Set(entries.map((e) => e.recordId)),
+    master,
+    warnings,
+  });
+
   const counts = {
     eligible: eligible.length,
     withheld: withheldRows.length,
@@ -330,6 +343,7 @@ export async function runPass4(opts: Pass4Options): Promise<Pass4Report> {
     unmappedToMasterId: rows.filter((r) => r.bhcId === null).length,
     tierDefaulted: rows.filter((r) => r.tierDefaulted).length,
   };
+
 
   if (!dryRun && counts.written === 0 && rows.length > 0) {
     warnings.push('0 contacts written — check the Attio pipeline list or the API key scope');
@@ -349,6 +363,7 @@ export async function runPass4(opts: Pass4Options): Promise<Pass4Report> {
     rows,
     writes,
     counts,
+    opportunityProposals: opportunity,
     warnings,
   };
 }

@@ -34,6 +34,7 @@ function baseReport(overrides: Partial<LateEditionReport> = {}): LateEditionRepo
       runId: 'RUN-1', today: '2026-07-19' as never, timezone: 'UTC', dryRun: true, startedAt: '', finishedAt: '',
       pipelineEntryCount: 0, masterIdRowCount: 0, tierIndexSize: 0, tierHeaderTitle: '', rows: [], writes: [],
       counts: { eligible: 0, withheld: 0, written: 0, failed: 0, verifiedMismatch: 0, stalled: 0, unmappedToMasterId: 0, tierDefaulted: 0 },
+      opportunityProposals: { candidates: 0, excludedOnPipeline: 0, excludedNoMasterId: 0, excludedSynthetic: 0, excludedAlreadyProposed: 0, proposed: 0, written: 0, proposalIds: [] },
       warnings: [],
     },
     pass45: {

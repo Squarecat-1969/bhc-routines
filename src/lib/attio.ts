@@ -327,6 +327,53 @@ export class AttioClient {
   }
 
   /**
+   * People matching an Attio filter. Same endpoint and pagination contract as
+   * listAllPeople — the only difference is a `filter` in the request body, so
+   * the server does the narrowing instead of pulling ~2900 records and
+   * discarding almost all of them.
+   *
+   * The filter object is passed through verbatim rather than being built here:
+   * Attio's filter grammar is the caller's concern, and this client has no
+   * business second-guessing a shape it cannot validate. Callers must verify
+   * their filter returns what they expect against real data before trusting it
+   * (see docs — a filter that silently matches nothing looks identical to a
+   * world in which nothing matches).
+   */
+  async queryPeople(filter: Record<string, unknown>, pageSize = 500): Promise<AttioPersonRecord[]> {
+    const maxPages = 200;
+    const out: AttioPersonRecord[] = [];
+    const seen = new Set<string>();
+    let offset = 0;
+    let pages = 0;
+
+    for (;;) {
+      if (pages >= maxPages) {
+        throw new Error(
+          `queryPeople: hit the ${maxPages}-page backstop at offset ${offset} — pagination is not terminating`,
+        );
+      }
+      const res = await this.request<{ data?: unknown[] }>('/objects/people/records/query', {
+        method: 'POST',
+        body: JSON.stringify({ filter, limit: pageSize, offset }),
+      });
+      const page = Array.isArray(res.data) ? res.data : [];
+      pages += 1;
+
+      for (const raw of page) {
+        const parsed = parsePersonRow(raw);
+        if (!parsed || seen.has(parsed.recordId)) continue;
+        seen.add(parsed.recordId);
+        out.push(parsed);
+      }
+
+      if (page.length < pageSize) break;
+      offset += page.length;
+    }
+
+    return out;
+  }
+
+  /**
    * Company record_id -> company name, for resolving people's `company`
    * references. One paginated walk of the companies object rather than a
    * lookup per person: there are far fewer companies than people, and the map
