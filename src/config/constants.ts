@@ -67,6 +67,20 @@ export const PERSON_SLUGS = {
   name: 'name',
   bhcContactId: 'bhc_contact_id',
   lastInteractionAt: 'last_interaction',
+  /**
+   * The manual-touch companion to `last_interaction`, written by bhc-aida's
+   * log-manual handler (bhc-aida PR #22).
+   *
+   * Both exist because they carry different facts and neither subsumes the
+   * other. `last_interaction` is Attio's own field: read-only, populated only
+   * by its email/calendar sync, so it is structurally blind to WhatsApp, phone,
+   * text and in-person contact — a relationship kept alive entirely off-channel
+   * reads as silent, and PASS 4 marks it STALLED while it is in fact healthy.
+   * `manual_last_interaction` is ours and holds exactly what the sync cannot
+   * see. PASS 4 takes the newer of the two (see newerOf in lib/dates.ts),
+   * preferring the native field on a tie as the more-trusted signal.
+   */
+  manualLastInteractionAt: 'manual_last_interaction',
   nextCheckInDate: 'next_check_in_date',
   nextTouchModePlanned: 'next_touch_mode_planned',
   followUpReason: 'follow_up_reason',

@@ -80,6 +80,7 @@ describe('computeCadence — stage-based', () => {
       stages: { tnbStage: `Stage ${stage}`, fractionalStage: null, fteStage: null },
       tier: 'Core',
       lastTouch: TODAY,
+      lastTouchSource: 'native',
       today: TODAY,
     });
     expect(r.cadenceDays).toBe(days);
@@ -92,12 +93,14 @@ describe('computeCadence — stage-based', () => {
       stages: { tnbStage: 'Stage 2', fractionalStage: null, fteStage: null },
       tier: 'Core',
       lastTouch: TODAY,
+      lastTouchSource: 'native',
       today: TODAY,
     });
     const peripheral = computeCadence({
       stages: { tnbStage: 'Stage 2', fractionalStage: null, fteStage: null },
       tier: 'Peripheral',
       lastTouch: TODAY,
+      lastTouchSource: 'native',
       today: TODAY,
     });
     expect(core.cadenceDays).toBe(peripheral.cadenceDays);
@@ -109,6 +112,7 @@ describe('computeCadence — stage-based', () => {
       stages: { tnbStage: 'Stage 9', fractionalStage: null, fteStage: null },
       tier: 'Core',
       lastTouch: TODAY,
+      lastTouchSource: 'native',
       today: TODAY,
     });
     expect(r.cadenceDays).toBe(45);
@@ -123,7 +127,7 @@ describe('computeCadence — tier-based', () => {
     ['Strategic', 90, 'Social'],
     ['Peripheral', 180, 'Social'],
   ] as const)('%s → %i days, %s', (tier, days, mode) => {
-    const r = computeCadence({ stages: noStages, tier, lastTouch: TODAY, today: TODAY });
+    const r = computeCadence({ stages: noStages, tier, lastTouch: TODAY, lastTouchSource: 'native', today: TODAY });
     expect(r.cadenceDays).toBe(days);
     expect(r.touchMode).toBe(mode);
     expect(r.reasonBase).toBe(`Tier ${tier} — no active stage`);
@@ -136,6 +140,7 @@ describe('computeCadence — next check-in', () => {
       stages: { tnbStage: 'Stage 2', fractionalStage: null, fteStage: null },
       tier: 'Core',
       lastTouch: '2026-07-13' as CivilDate,
+      lastTouchSource: 'native',
       today: TODAY,
     });
     expect(r.nextCheckIn).toBe('2026-07-19'); // 07-13 + 6d
@@ -147,6 +152,7 @@ describe('computeCadence — next check-in', () => {
       stages: { tnbStage: 'Stage 2', fractionalStage: null, fteStage: null },
       tier: 'Core',
       lastTouch: '2026-06-01' as CivilDate,
+      lastTouchSource: 'native',
       today: TODAY,
     });
     expect(r.nextCheckIn).toBe('2026-07-18'); // today + floor(6/2) = +3d
@@ -159,6 +165,7 @@ describe('computeCadence — next check-in', () => {
       stages: { tnbStage: 'Stage 1', fractionalStage: null, fteStage: null },
       tier: 'Core',
       lastTouch: '2026-07-11' as CivilDate,
+      lastTouchSource: 'native',
       today: TODAY,
     });
     expect(r.nextCheckIn).toBe('2026-07-15');
@@ -170,13 +177,14 @@ describe('computeCadence — next check-in', () => {
       stages: { tnbStage: 'Stage 3', fractionalStage: null, fteStage: null }, // 8d
       tier: 'Core',
       lastTouch: '2026-01-01' as CivilDate,
+      lastTouchSource: 'native',
       today: TODAY,
     });
     expect(r.nextCheckIn).toBe('2026-07-19'); // +4d
   });
 
   it('is today + cadence when the last touch is unknown', () => {
-    const r = computeCadence({ stages: noStages, tier: 'Core', lastTouch: null, today: TODAY });
+    const r = computeCadence({ stages: noStages, tier: 'Core', lastTouch: null, lastTouchSource: 'none', today: TODAY });
     expect(r.nextCheckIn).toBe('2026-08-29'); // +45d
     expect(r.daysSince).toBeNull();
     expect(r.stalled).toBe(false);
@@ -189,6 +197,7 @@ describe('computeCadence — stalled', () => {
       stages: { tnbStage: 'Stage 2', fractionalStage: null, fteStage: null }, // 6d
       tier: 'Core',
       lastTouch: '2026-07-03' as CivilDate, // 12d ago == 2x
+      lastTouchSource: 'native',
       today: TODAY,
     });
     expect(at2x.daysSince).toBe(12);
@@ -198,13 +207,14 @@ describe('computeCadence — stalled', () => {
       stages: { tnbStage: 'Stage 2', fractionalStage: null, fteStage: null },
       tier: 'Core',
       lastTouch: '2026-07-02' as CivilDate, // 13d ago
+      lastTouchSource: 'native',
       today: TODAY,
     });
     expect(past2x.stalled).toBe(true);
   });
 
   it('never stalls when the last touch is unknown', () => {
-    const r = computeCadence({ stages: noStages, tier: 'Peripheral', lastTouch: null, today: TODAY });
+    const r = computeCadence({ stages: noStages, tier: 'Peripheral', lastTouch: null, lastTouchSource: 'none', today: TODAY });
     expect(r.stalled).toBe(false);
   });
 });
@@ -215,6 +225,7 @@ describe('computeCadence — follow_up_reason', () => {
       stages: { tnbStage: 'Stage 1', fractionalStage: null, fteStage: null },
       tier: 'Core',
       lastTouch: '2026-07-14' as CivilDate,
+      lastTouchSource: 'native',
       today: TODAY,
     });
     expect(r.followUpReason).toBe('TNB Stage 1');
@@ -225,13 +236,14 @@ describe('computeCadence — follow_up_reason', () => {
       stages: { tnbStage: 'Stage 1', fractionalStage: null, fteStage: null }, // 4d
       tier: 'Core',
       lastTouch: '2026-06-01' as CivilDate, // 44d
+      lastTouchSource: 'native',
       today: TODAY,
     });
     expect(r.followUpReason).toBe('TNB Stage 1 ⚠ STALLED — 44d since last touch (expected every 4d)');
   });
 
   it('appends the unknown-touch fragment', () => {
-    const r = computeCadence({ stages: noStages, tier: 'Strategic', lastTouch: null, today: TODAY });
+    const r = computeCadence({ stages: noStages, tier: 'Strategic', lastTouch: null, lastTouchSource: 'none', today: TODAY });
     expect(r.followUpReason).toBe('Tier Strategic — no active stage — last touch date unknown');
   });
 
@@ -245,10 +257,66 @@ describe('computeCadence — follow_up_reason', () => {
       stages: { tnbStage: `Stage 1 – ${'x'.repeat(600)}`, fractionalStage: null, fteStage: null },
       tier: 'Core',
       lastTouch: '2026-01-01' as CivilDate,
+      lastTouchSource: 'native',
       today: TODAY,
     });
     expect(r.followUpReason.length).toBeLessThanOrEqual(500);
     expect(r.followUpReason).not.toMatch(/xxx/);
     expect(r.followUpReason).toMatch(/^TNB Stage 1 ⚠ STALLED/);
+  });
+});
+
+// ── The [manual] marker ────────────────────────────────────────────────────
+// A manually logged touch (WhatsApp, phone, in person) is invisible to Attio's
+// sync. When it is the date driving the cadence, the reason says so — otherwise
+// a healthy off-channel relationship is indistinguishable from one Attio has no
+// visibility into.
+describe('computeCadence — manual-touch marker', () => {
+  it('appends [manual] when the driving date came from manual_last_interaction', () => {
+    const r = computeCadence({
+      stages: noStages, tier: 'Core', lastTouch: '2026-07-14' as CivilDate,
+      lastTouchSource: 'manual', today: TODAY,
+    });
+    expect(r.followUpReason.endsWith(' [manual]')).toBe(true);
+  });
+
+  it('does NOT append it for a native touch — the default path is untouched', () => {
+    const r = computeCadence({
+      stages: noStages, tier: 'Core', lastTouch: '2026-07-14' as CivilDate,
+      lastTouchSource: 'native', today: TODAY,
+    });
+    expect(r.followUpReason).not.toContain('[manual]');
+  });
+
+  it('does NOT append it when there is no touch date at all', () => {
+    const r = computeCadence({
+      stages: noStages, tier: 'Core', lastTouch: null, lastTouchSource: 'none', today: TODAY,
+    });
+    expect(r.followUpReason).not.toContain('[manual]');
+    expect(r.followUpReason).toContain('last touch date unknown');
+  });
+
+  it('marks a STALLED manual touch too — both annotations coexist', () => {
+    const r = computeCadence({
+      stages: noStages, tier: 'Core', lastTouch: '2026-01-01' as CivilDate,
+      lastTouchSource: 'manual', today: TODAY,
+    });
+    expect(r.followUpReason).toContain('STALLED');
+    expect(r.followUpReason.endsWith(' [manual]')).toBe(true);
+  });
+
+  it('never lets the marker itself be truncated, and respects the length cap', () => {
+    // Force a reason long enough to hit the 500-char cap: a huge stage label
+    // flows into reasonBase via activeTrack/stage, so use a long-running
+    // STALLED reason plus a very long label.
+    const longLabel = `Stage 3 ${'x'.repeat(600)}`;
+    const r = computeCadence({
+      stages: { tnbStage: longLabel, fractionalStage: null, fteStage: null },
+      tier: 'Core', lastTouch: '2026-01-01' as CivilDate,
+      lastTouchSource: 'manual', today: TODAY,
+    });
+    expect(r.followUpReason.length).toBeLessThanOrEqual(500);
+    // The whole point: the marker survives intact rather than being sliced off.
+    expect(r.followUpReason.endsWith(' [manual]')).toBe(true);
   });
 });

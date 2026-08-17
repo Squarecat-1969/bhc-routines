@@ -19,6 +19,9 @@ import {
 } from '../../config/constants.js';
 import { addDays, diffDays, isBefore, type CivilDate } from '../../lib/dates.js';
 
+/** Appended to follow_up_reason when the driving date came from a manual touch. */
+const MANUAL_TOUCH_MARKER = ' [manual]';
+
 /**
  * Extract the stage integer from a stage string: "Stage 2 – Proposal Sent" → 2.
  * Blank, "Stage 0", or unparseable → 0.
@@ -87,6 +90,14 @@ export interface CadenceInput {
   readonly stages: StageInput;
   readonly tier: Tier;
   readonly lastTouch: CivilDate | null;
+  /**
+   * Which field `lastTouch` came from — Attio's sync-only `last_interaction`
+   * ('native'), our `manual_last_interaction` ('manual'), or neither ('none').
+   * Required rather than optional: a caller that forgets it would silently
+   * produce reasons that never say a touch was manual, which is the one thing
+   * this field exists to surface.
+   */
+  readonly lastTouchSource: 'native' | 'manual' | 'none';
   readonly today: CivilDate;
 }
 
@@ -109,7 +120,7 @@ export interface CadenceResult {
 }
 
 export function computeCadence(input: CadenceInput): CadenceResult {
-  const { stages, tier, lastTouch, today } = input;
+  const { stages, tier, lastTouch, lastTouchSource, today } = input;
   const { activeStageNum, activeTrack, activeStageLabel } = resolveActiveStage(stages);
   const warnings: string[] = [];
 
@@ -167,6 +178,15 @@ export function computeCadence(input: CadenceInput): CadenceResult {
     followUpReason += ' — last touch date unknown';
   }
   followUpReason = followUpReason.slice(0, FOLLOW_UP_REASON_MAX_LEN);
+  // The marker says the date driving this cadence came from a manually logged
+  // touch, not Attio's sync — otherwise a healthy WhatsApp-only relationship
+  // looks identical to one Attio simply has no visibility into. Reserve its
+  // room by truncating the base FIRST, so the marker itself can never be the
+  // thing that gets cut off; the total still respects FOLLOW_UP_REASON_MAX_LEN.
+  if (lastTouchSource === 'manual') {
+    followUpReason =
+      followUpReason.slice(0, FOLLOW_UP_REASON_MAX_LEN - MANUAL_TOUCH_MARKER.length) + MANUAL_TOUCH_MARKER;
+  }
 
   return {
     activeStageNum,

@@ -105,6 +105,26 @@ export function iso(d: CivilDate | null): string {
 }
 
 /**
+ * The later of two optional civil dates — "when did this last happen, counting
+ * every source we have?"
+ *
+ * Written for PASS 4's two last-touch fields (Attio's sync-only
+ * `last_interaction` and our `manual_last_interaction`), where either, both, or
+ * neither may be present. Each case is handled explicitly rather than leaning
+ * on string comparison: null is genuinely "unknown", not "very old".
+ *
+ * On an exact tie `a` is returned, so callers can encode a preference by
+ * argument order — PASS 4 passes the native field first because it is the
+ * more-trusted signal when both agree. Comparison delegates to isBefore rather
+ * than reimplementing it.
+ */
+export function newerOf(a: CivilDate | null, b: CivilDate | null): CivilDate | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return isBefore(a, b) ? b : a;
+}
+
+/**
  * Normalize an interaction date (Brain_Complete col H, Last_Email_Date) to a
  * bare YYYY-MM-DD before anything writes it or hands it to `new Date()`.
  *
