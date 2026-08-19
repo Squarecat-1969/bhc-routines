@@ -13,7 +13,7 @@
  * Pure — no I/O, no clock. The caller fetches, decides, and writes.
  */
 
-import type { MasterIdRowLite, ResyncPlan, RowCorrection, Unresolvable } from './types.js';
+import type { MasterIdRowLite, ResyncPlan, ResyncWriteResult, RowCorrection, Unresolvable } from './types.js';
 
 /** Location values whose Google_Row is meaningful. */
 const GOOGLE_LOCATIONS = new Set(['GOOGLE', 'BOTH']);
@@ -142,4 +142,23 @@ export function formatSlackMessage(plan: ResyncPlan, opts: { dryRun: boolean; ru
     lines.push('All Google_Row pointers already correct.');
   }
   return lines.join('\n');
+}
+
+/**
+ * How many corrections were issued but did NOT verify on read-back.
+ *
+ * This — not the warnings array — is what decides the process exit code, and
+ * the distinction is load-bearing now that Reconciler chains off this job's
+ * conclusion via workflow_run.
+ *
+ * Exiting non-zero on ANY warning meant a purely advisory finding (a duplicate
+ * Contact_ID, which this routine deliberately leaves untouched for Reconciler
+ * to flag) would fail the job, and a failed job silently cancels the chain:
+ * `conclusion != 'success'`, no Reconciler run, no error anywhere pointing at
+ * why. A write that did not land is a real failure and must still fail the job;
+ * an advisory note about data this routine intentionally declined to touch is
+ * not, and must not.
+ */
+export function failedWriteCount(writes: readonly ResyncWriteResult[]): number {
+  return writes.filter((w) => !w.verified).length;
 }

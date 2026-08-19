@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildContactsIndex, computeResync, formatSlackMessage } from '../../src/passes/resync-ids/resync.js';
+import { buildContactsIndex, computeResync, failedWriteCount, formatSlackMessage } from '../../src/passes/resync-ids/resync.js';
 import type { MasterIdRowLite } from '../../src/passes/resync-ids/types.js';
 
 function m(o: Partial<MasterIdRowLite> = {}): MasterIdRowLite {
@@ -136,5 +136,30 @@ describe('formatSlackMessage', () => {
   it('marks a dry run as having written nothing', () => {
     const plan = computeResync([m({ storedGoogleRow: 99 })], contacts(['BHC-1']));
     expect(formatSlackMessage(plan, { dryRun: true, runId: 'R' })).toContain('DRY RUN — nothing written');
+  });
+});
+
+describe('failedWriteCount — what may and may not fail the job', () => {
+  const w = (verified: boolean) => ({
+    correction: { bhcId: 'BHC-1', masterRow: 2, oldRow: 1, newRow: 3 },
+    written: true, verified, detail: '',
+  });
+
+  it('counts only writes that did not verify', () => {
+    expect(failedWriteCount([w(true), w(false), w(true)])).toBe(1);
+  });
+
+  it('is zero for a clean run, so the Reconciler chain fires', () => {
+    expect(failedWriteCount([w(true), w(true)])).toBe(0);
+  });
+
+  it('is zero for a dry run, which issues no writes at all', () => {
+    expect(failedWriteCount([])).toBe(0);
+  });
+
+  it('is unaffected by advisory warnings — they live outside the write results', () => {
+    // The whole point: a duplicate-Contact_ID warning is advisory, and failing
+    // the job on it would silently cancel the downstream Reconciler run.
+    expect(failedWriteCount([w(true)])).toBe(0);
   });
 });

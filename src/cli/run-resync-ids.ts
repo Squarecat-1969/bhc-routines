@@ -17,6 +17,7 @@ import { createLogger } from '../lib/logger.js';
 import { SheetsClient } from '../lib/sheets.js';
 import { createNoopSlackPoster, createSlackPoster } from '../lib/slack.js';
 import { runResyncIds } from '../passes/resync-ids/index.js';
+import { failedWriteCount } from '../passes/resync-ids/resync.js';
 
 interface Args {
   dryRun: boolean;
@@ -72,7 +73,16 @@ async function main(): Promise<void> {
     logger.info(`Report written to ${args.jsonOut}`);
   }
 
-  if (report.warnings.length > 0) process.exitCode = 1;
+  // Fail the job ONLY on a write that did not land. Advisory warnings exit 0
+  // deliberately — Reconciler chains off this job's conclusion, so failing on
+  // an advisory note would silently cancel the audit. See failedWriteCount.
+  const failed = failedWriteCount(report.writes);
+  if (failed > 0) {
+    logger.warn(`${failed} correction(s) did not verify — exiting non-zero`);
+    process.exitCode = 1;
+  } else if (report.warnings.length > 0) {
+    logger.warn(`${report.warnings.length} advisory warning(s); every issued write verified — exiting 0`);
+  }
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
