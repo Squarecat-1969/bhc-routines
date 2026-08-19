@@ -33,11 +33,20 @@ on:
         type: choice
         options: [dry-run, live]
   schedule:
-    # Sunday 09:00 UTC — 1am Pacific during PDT. Deliberately not paired with a
-    # second DST-covering entry: this routine is idempotent (a second run finds
-    # zero corrections and writes nothing), so an hour of seasonal drift costs
-    # nothing, unlike Late Edition where a double run was a real bug.
-    - cron: '0 9 * * 0'
+    # Sunday 08:00 UTC = 1am PDT / 12am PST — one hour before Reconciler's 2am
+    # slot, so the repair pass lands before the audit that reports on it.
+    #
+    # CORRECTED 2026-08-19: this was '0 9 * * 0' with a comment claiming 1am
+    # Pacific. It is not — 09:00 UTC is 2am PDT, the same slot Reconciler runs
+    # in, so the documented one-hour gap never actually existed and the two
+    # standalone schedules fired simultaneously. Verified against a real Sunday
+    # in both PDT and PST before changing it.
+    #
+    # Deliberately not paired with a second DST-covering entry: this routine is
+    # idempotent (a second run finds zero corrections and writes nothing), so an
+    # hour of seasonal drift costs nothing, unlike Late Edition where a
+    # DST-covering cron pair caused a real double-run bug.
+    - cron: '0 8 * * 0'
 
 concurrency:
   group: resync-ids

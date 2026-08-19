@@ -1,0 +1,140 @@
+name: Reconciler
+
+# Read-only data-integrity sweep of Master_ID against Contacts and Attio.
+# Writes EXACTLY TWO tabs — Reconciler_Report (cleared and rewritten each run)
+# and Name_Conflicts (append-only enqueue). Never Contacts, Master_ID, Attio,
+# or Activity_Log; proven by a before/after hash comparison on 2026-08-19.
+#
+# THREE TRIGGERS, each earning its place:
+#
+#   1. workflow_dispatch — on-demand, same as resync-ids.yml.
+#
+#   2. schedule — Reconciler's OWN weekly slot, deliberately INDEPENDENT of the
+#      chain below. It is the safety net: if the chain mechanism ever fails
+#      silently (Resync's job fails, the event doesn't fire, someone edits the
+#      trigger), the audit still happens every week. Removing this and relying
+#      on the chain alone would mean a broken chain is invisible.
+#
+#   3. workflow_run — the chain. Fires when Resync IDs completes successfully.
+#      Event-based, NOT cron-based, which is exactly why it is the right
+#      mechanism here: resync-ids.yml's own header documents that GitHub cron is
+#      best-effort (Late Edition was observed running 2.5-4h late nightly), so
+#      two independent crons could not be relied on to stay ordered. A
+#      completion event has no such drift — Reconciler starts when Resync has
+#      actually finished, whether that run came from the schedule or from a
+#      manual dispatch after Bobby deletes a Contacts row by hand. That
+#      one-sitting case is the gap this whole chain exists to close.
+#
+#      Chosen over the alternatives on purpose: a REST dispatch call from inside
+#      resync-ids.yml would need a PAT with workflow scope and would make Resync
+#      responsible for knowing who runs after it; an external Zapier dispatch
+#      would put a third-party service in the middle of an internal chain. The
+#      native event needs no credentials and no external dependency.
+#
+# ACCEPTED REDUNDANCY, documented rather than suppressed: on a Sunday, Resync
+# IDs' schedule fires, succeeds, and chains into Reconciler — while Reconciler's
+# own schedule fires in the same window. That is two Reconciler runs. It is
+# harmless: the routine is read-only and idempotent, so the second run reads the
+# same state and rewrites the same report. The cost is one duplicate Slack post
+# and a second pass of Attio reads (~2250 GETs, ~3.5 min). Nothing suppresses
+# it, for the same reason the safety-net schedule exists at all — the duplicate
+# is the visible symptom of the redundancy working, and silencing it would hide
+# the case where only one of the two paths ran.
+#
+# SCHEDULE ORDERING: this runs at 09:00 UTC (2am PDT / 1am PST); Resync IDs runs
+# an hour earlier at 08:00 UTC. That gap was nominal-only until 2026-08-19 —
+# resync-ids.yml was on '0 9 * * 0' with a comment claiming 1am Pacific, which
+# is wrong (09:00 UTC is 2am PDT), so both fired simultaneously. Corrected in
+# the same change that added this file. The gap is a courtesy, not the
+# mechanism: GitHub cron is best-effort, so the ORDER is guaranteed by the
+# workflow_run chain below, never by the clock.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        # Both modes read identically — every call in passes 1-4 is a GET, so
+        # there is no "unsafe read" to gate. What dry-run suppresses is the two
+        # STAGING WRITES (Reconciler_Report, Name_Conflicts) and the Slack post.
+        # Default is live because a Reconciler run that writes no report has
+        # produced nothing durable — the report IS the deliverable. dry-run is
+        # for testing the sweep without overwriting the current report or
+        # posting to #aida.
+        description: 'live writes Reconciler_Report + Name_Conflicts and posts to #aida; dry-run computes everything and writes nothing'
+        required: true
+        default: 'live'
+        type: choice
+        options: [live, dry-run]
+
+  schedule:
+    # Sunday 09:00 UTC = 2am PDT / 1am PST. Reconciler's long-standing standalone
+    # slot, carried over from the Python routine. Single entry, no DST-covering
+    # pair: this routine is read-only and idempotent, so an hour of seasonal
+    # drift costs nothing — unlike Late Edition, where a DST-covering cron pair
+    # caused a real double-run bug.
+    - cron: '0 9 * * 0'
+
+  workflow_run:
+    workflows: ['Resync IDs']
+    types: [completed]
+
+concurrency:
+  group: reconciler
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    # Gate the chain on success. A failed Resync run means the pointers were NOT
+    # repaired, so auditing on top of it would report drift that the repair pass
+    # was about to fix — noise blamed on the wrong cause. The condition has to
+    # pass through for the other two triggers, which carry no workflow_run
+    # context at all: `github.event.workflow_run` is null for schedule and
+    # dispatch, so testing conclusion alone would evaluate false and silently
+    # disable both of them.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+    # ~3.5 min of Attio reads at real scale (2249 records, batches of 10) plus
+    # setup. 20 gives real headroom without letting a hung run sit all day.
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+
+      # Only workflow_dispatch has an `inputs` context — schedule and
+      # workflow_run have none, and branching on one would leave those two
+      # falling through to the wrong mode forever. That exact bug would have
+      # left Late Edition permanently in dry-run. Both automated triggers run
+      # live; only a manual dispatch reads the dropdown.
+      - name: Run Reconciler
+        env:
+          BRAIN_API_TOKEN: ${{ secrets.BRAIN_API_TOKEN }}
+          SHEETS_PROXY_URL: ${{ secrets.SHEETS_PROXY_URL }}
+          ATTIO_API_KEY: ${{ secrets.ATTIO_API_KEY }}
+          ATTIO_API_BASE: ${{ secrets.ATTIO_API_BASE }}
+          ZAPIER_SLACK_HOOK_URL: ${{ secrets.ZAPIER_SLACK_HOOK_URL }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.mode }}" = "dry-run" ]; then
+            npm run reconciler -- --dry-run --json-out out/reconciler-report.json
+          else
+            npm run reconciler -- --live --json-out out/reconciler-report.json
+          fi
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: reconciler-report-${{ github.run_id }}
+          path: out/reconciler-report.json
+          # Contains BHC_IDs, contact names, and Attio record IDs — no thread
+          # content, no drafts. Short retention, same as every routine here.
+          retention-days: 7
+          if-no-files-found: warn
