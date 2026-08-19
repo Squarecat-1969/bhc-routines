@@ -109,6 +109,11 @@ export const RANGES = {
   // index in the header row is the same index into each data row.
   contactsHeader: 'Contacts!A1:EZ1',
   contactsData: 'Contacts!A3:EZ',
+  // Resync IDs reads ONLY column A (Contact_ID) — one narrow read of ~2900
+  // rows instead of the full 150+ column grid, since row derivation needs
+  // nothing else. Row 3 is the first data row (row 2 is the ARRAYFORMULA
+  // spill and must never be read as data or written).
+  contactsIdColumn: 'Contacts!A3:A',
   // PASS 4.5 targets.
   pipelineCacheHeader: 'Pipeline_Cache!A1:R1',
   pipelineCachePriorIds: 'Pipeline_Cache!A2:A',
