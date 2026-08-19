@@ -1,0 +1,84 @@
+name: Resync IDs
+
+# Re-derives Master_ID.Google_Row from Contacts col A. Writes ONLY Master_ID
+# col D, one explicit range per correction, each read back before it counts.
+#
+# TWO TRIGGERS, and the on-demand one is the point:
+#
+#   1. workflow_dispatch — the actual gap this routine was built to close.
+#      Deleting a Contacts row silently invalidates every Master_ID pointer
+#      below it. Waiting up to a week for a schedule to notice is the whole
+#      problem, so this runs on demand, immediately after a manual delete.
+#      ("Call via API" for the Claude Code routines is the same idea.)
+#
+#   2. schedule — Sunday 09:00 UTC = 1am Pacific (PDT), deliberately ONE HOUR
+#      BEFORE Reconciler's 2am slot. Resync repairs pointers; Reconciler then
+#      audits and reports on what remains. Running them the other way round
+#      would have Reconciler flag drift that Resync was about to fix, every
+#      single week.
+#
+# GITHUB CRON IS BEST-EFFORT and was observed running Late Edition 2.5-4 hours
+# late every night (see late-edition.yml's header for that history). A one-hour
+# gap before Reconciler is therefore a nominal ordering, not a guarantee. If
+# the ordering ever has to be real, follow Late Edition's path: a Zap POSTing
+# to each workflow's dispatch endpoint in sequence.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'dry-run computes and reports without writing; live writes Master_ID col D'
+        required: true
+        default: 'dry-run'
+        type: choice
+        options: [dry-run, live]
+  schedule:
+    # Sunday 09:00 UTC — 1am Pacific during PDT. Deliberately not paired with a
+    # second DST-covering entry: this routine is idempotent (a second run finds
+    # zero corrections and writes nothing), so an hour of seasonal drift costs
+    # nothing, unlike Late Edition where a double run was a real bug.
+    - cron: '0 9 * * 0'
+
+concurrency:
+  group: resync-ids
+  cancel-in-progress: false
+
+jobs:
+  resync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+
+      # A scheduled run has no `inputs` context at all, so it must not branch on
+      # one — the exact bug that would have left Late Edition in dry-run forever.
+      # Schedule always runs live; manual dispatch respects the dropdown.
+      - name: Run Resync IDs
+        env:
+          BRAIN_API_TOKEN: ${{ secrets.BRAIN_API_TOKEN }}
+          SHEETS_PROXY_URL: ${{ secrets.SHEETS_PROXY_URL }}
+          ZAPIER_SLACK_HOOK_URL: ${{ secrets.ZAPIER_SLACK_HOOK_URL }}
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.mode }}" = "live" ]; then
+            npm run resync-ids -- --live --json-out out/resync-ids-report.json
+          else
+            npm run resync-ids -- --dry-run --json-out out/resync-ids-report.json
+          fi
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: resync-ids-report-${{ github.run_id }}
+          path: out/resync-ids-report.json
+          # Contains BHC_IDs and row numbers only — no names, no thread content.
+          # Short retention anyway, same as every other routine here.
+          retention-days: 7
+          if-no-files-found: warn
