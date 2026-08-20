@@ -1,0 +1,100 @@
+name: Reconciler Fix
+
+# Repairs what the read-only Reconciler flagged: S1 (flag only), A1, A3, S4, I1.
+# The only routine here that writes to Attio, and the only one that writes
+# Master_ID cols C/E/F. Col A is never written, in any pass, for any reason.
+#
+# DRY-RUN IS THE DEFAULT on manual dispatch, and live must be chosen
+# deliberately — the same shape resync-ids.yml uses. This is stronger than
+# reconciler.yml's default (live), because that routine only rewrites its own
+# staging tabs while this one touches real identity data.
+#
+# THREE TRIGGERS, mirroring reconciler.yml:
+#
+#   1. workflow_dispatch — on demand, dry-run by default.
+#
+#   2. schedule — Sunday 10:00 UTC = 3am PDT / 2am PST, one hour AFTER
+#      Reconciler's 2am slot, for the same reason Resync IDs sits an hour
+#      before it: the pass that produces the findings should land before the
+#      pass that consumes them. The gap is a courtesy, not the mechanism —
+#      GitHub cron is best-effort, so ORDER is guaranteed by the chain below.
+#
+#      Deliberately runs DRY on the schedule. An unattended weekly job that
+#      writes to Attio and Master_ID without anyone watching is a different
+#      risk class from one that reports what it would do; the artifact is the
+#      deliverable until a human decides otherwise.
+#
+#   3. workflow_run — chained off Reconciler's completion, success only. A
+#      failed audit means the findings are unreliable, and repairing against
+#      unreliable findings is worse than not repairing.
+#
+# The full chain, once all three are on main:
+#   Resync IDs -> Reconciler -> Reconciler Fix
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'dry-run reads everything and issues no writes; live writes Master_ID and Attio'
+        required: true
+        default: 'dry-run'
+        type: choice
+        options: [dry-run, live]
+
+  schedule:
+    - cron: '0 10 * * 0'
+
+  workflow_run:
+    workflows: ['Reconciler']
+    types: [completed]
+
+concurrency:
+  group: reconciler-fix
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    # `github.event.workflow_run` is null for schedule and dispatch, so testing
+    # conclusion alone would evaluate false and silently disable both.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+
+      # ONLY an explicit manual dispatch can select live. Schedule and
+      # workflow_run both run dry — neither has an `inputs` context, and
+      # defaulting an unattended trigger to live is exactly the silent
+      # escalation this routine must not have.
+      - name: Run Reconciler Fix
+        env:
+          BRAIN_API_TOKEN: ${{ secrets.BRAIN_API_TOKEN }}
+          SHEETS_PROXY_URL: ${{ secrets.SHEETS_PROXY_URL }}
+          ATTIO_API_KEY: ${{ secrets.ATTIO_API_KEY }}
+          ATTIO_API_BASE: ${{ secrets.ATTIO_API_BASE }}
+          ZAPIER_SLACK_HOOK_URL: ${{ secrets.ZAPIER_SLACK_HOOK_URL }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.mode }}" = "live" ]; then
+            npm run reconciler-fix -- --live --json-out out/reconciler-fix-report.json
+          else
+            npm run reconciler-fix -- --dry-run --json-out out/reconciler-fix-report.json
+          fi
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: reconciler-fix-report-${{ github.run_id }}
+          path: out/reconciler-fix-report.json
+          retention-days: 7
+          if-no-files-found: warn

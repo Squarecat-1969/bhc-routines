@@ -101,3 +101,24 @@ export function groupBySharedAttioPointer(
   }
   return new Map([...byId].filter(([, group]) => group.length >= 2));
 }
+
+/**
+ * S1 grouping: rows sharing a POPULATED BHC_ID, two or more per group.
+ *
+ * A different key from groupBySharedAttioPointer, and deliberately its own
+ * function rather than a parameterised one: the two keys carry different
+ * meanings and different blank rules. A blank BHC_ID is an S2 finding (missing
+ * identity anchor), not a shared value - the same reasoning that keeps 245
+ * blank Attio pointers from forming one giant S4 group.
+ */
+export function groupByDuplicateBhcId(
+  rows: readonly CandidateRow[],
+): ReadonlyMap<string, readonly CandidateRow[]> {
+  const byId = new Map<string, CandidateRow[]>();
+  for (const r of rows) {
+    const id = r.bhcId.trim();
+    if (id === '') continue; // blank is S2's problem, not a duplicate
+    byId.set(id, [...(byId.get(id) ?? []), r]);
+  }
+  return new Map([...byId].filter(([, group]) => group.length >= 2));
+}
