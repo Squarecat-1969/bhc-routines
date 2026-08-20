@@ -217,6 +217,59 @@ describe('PASS 4 - I1 gating', () => {
   });
 });
 
+describe('PASS 4 - the no-op conflict guard', () => {
+  // Reproduces the live BHC-00175 shape exactly: Master_ID's name is stale
+  // ("Susan Corcoran") while Google and Attio already agree ("Sue Corcoran").
+  // The A5 gate compares Attio-vs-MASTER_ID and opens; the enqueued pair is
+  // Attio-vs-GOOGLE and is identical. Three of these reached the live queue.
+  const stale = () => row({ fullName: 'Susan Corcoran' });
+  const attioSue = () => ok({ name: 'Sue Corcoran' });
+  const googleSue = (o = {}) => new Map([[3, gid({ firstName: 'Sue', lastName: 'Corcoran', ...o })]]);
+
+  it('produces NO candidate when Attio and Google names are identical', () => {
+    const r = attioChecks([stale()], new Map([['rec-1', attioSue()]]), googleSue());
+    expect(r.nameConflictCandidates).toHaveLength(0);
+  });
+
+  it('the A5 gate still opened — the guard is what stops it, not a missed branch', () => {
+    // Proves the test is exercising the guard rather than passing because the
+    // shares_word gate never fired: Attio "Sue Corcoran" vs Master "Susan
+    // Corcoran" shares "corcoran", so the old code WOULD have enqueued.
+    expect(classifyName('Sue Corcoran', 'Susan Corcoran')).toBe('shares_word');
+  });
+
+  it('STILL produces a candidate for a genuine Attio-vs-Google difference', () => {
+    const r = attioChecks(
+      [stale()],
+      new Map([['rec-1', ok({ name: 'Sue Corcoran' })]]),
+      new Map([[3, gid({ firstName: 'Susan', lastName: 'Corcoran' })]]),
+    );
+    expect(r.nameConflictCandidates).toHaveLength(1);
+    expect(r.nameConflictCandidates[0]!.oldName).toBe('Sue Corcoran');   // Attio
+    expect(r.nameConflictCandidates[0]!.newName).toBe('Susan Corcoran'); // Google
+  });
+
+  it('treats a formatting-only difference as agreement, per fieldEqual', () => {
+    // Documented consequence of reusing fieldEqual: punctuation/spacing/case
+    // differences no longer reach human review.
+    for (const [first, last] of [['sue', 'corcoran'], ['Sue', ' Corcoran ']]) {
+      const r = attioChecks([stale()], new Map([['rec-1', attioSue()]]), googleSue({ firstName: first, lastName: last }));
+      expect(r.nameConflictCandidates).toHaveLength(0);
+    }
+  });
+
+  it('does not disturb the I1 findings on the same row', () => {
+    // The guard must suppress the conflict only — identity drift still reports.
+    const r = attioChecks(
+      [stale()],
+      new Map([['rec-1', ok({ name: 'Sue Corcoran', jobTitle: 'Drifted Title' })]]),
+      googleSue(),
+    );
+    expect(r.nameConflictCandidates).toHaveLength(0);
+    expect(r.findings.filter((f) => f.code === 'I1' && f.notes === 'Title')).toHaveLength(1);
+  });
+});
+
 describe('Name_Conflicts suppression', () => {
   const cand = [{ bhcId: 'BHC-1', oldName: 'Old Name', newName: 'New Name', googleRow: 3, attioRecordId: 'rec-1', masterRow: 2 }];
   const existing = (status: string) => [['NC-1', 'RUN', 'RECONCILER', 'BHC-1', 'BOTH', 'Old Name', 'New Name', 'Attio', 'Google', '{}', status, '', '']];
