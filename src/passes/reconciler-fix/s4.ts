@@ -155,12 +155,24 @@ async function repairGroup(
     if (clear.outcome !== 'written') continue; // failed QA - no note, per note discipline 1
 
     // Location: an orphan no longer has a valid Attio record.
+    //
+    // Its outcome is CHECKED, exactly as a3.ts's Outcome B checks each write in
+    // sequence. A half-applied repair is the failure mode this three-column
+    // write exists to prevent: pointer cleared but Location still BOTH/ATTIO is
+    // precisely the S3 defect, so proceeding would repair S4 by manufacturing
+    // an S3 - and the note would claim "Pointer cleared" over a row left in a
+    // state nobody chose.
     const loc = orphan.location.trim().toUpperCase();
     if (loc === 'BOTH' || loc === 'ATTIO') {
       const locWrite = await writeMasterCell(sheets, logger, {
         masterRow: orphan.masterRow, column: 'C', value: 'GOOGLE', expectedBhcId: orphan.bhcId,
       });
       writes.push(locWrite);
+      if (isHardStop(locWrite)) {
+        logger.warn(`  HARD STOP on ${orphan.bhcId}: ${locWrite.detail}`);
+        continue; // this row only; the run continues (non-negotiable 5)
+      }
+      if (locWrite.outcome !== 'written') continue; // failed QA - no note, per note discipline 1
     }
 
     // The note goes LAST and only after the clear was read back - note

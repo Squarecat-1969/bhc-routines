@@ -17,6 +17,9 @@ class FakeSheet implements MasterSheetPort {
   updates: { range: string; value: string }[] = [];
   /** Cell key -> value to force into col A after the next write (corruption sim). */
   corruptColAAfterWrite: { key: string; value: string } | null = null;
+  /** Same, but armed only when a specific cell is written - lets a test aim the
+   *  corruption at the C-write rather than the E-write that comes before it. */
+  corruptColAOnWriteTo: { trigger: string; key: string; value: string } | null = null;
   failReadbackFor = new Set<string>();
 
   constructor(rows: { row: number; a: string; c?: string; e?: string; f?: string }[]) {
@@ -40,6 +43,10 @@ class FakeSheet implements MasterSheetPort {
     if (this.corruptColAAfterWrite) {
       this.cells.set(this.corruptColAAfterWrite.key, this.corruptColAAfterWrite.value);
       this.corruptColAAfterWrite = null;
+    }
+    if (this.corruptColAOnWriteTo && this.corruptColAOnWriteTo.trigger === k) {
+      this.cells.set(this.corruptColAOnWriteTo.key, this.corruptColAOnWriteTo.value);
+      this.corruptColAOnWriteTo = null;
     }
     return {};
   }
@@ -285,6 +292,75 @@ describe('S4 - orphan clearing', () => {
     );
     expect(r.counts.groups).toBe(0);
     expect(sheet.updates).toHaveLength(0);
+  });
+
+  // A HALF-APPLIED REPAIR IS THE ONE OUTCOME THIS THREE-COLUMN WRITE EXISTS TO
+  // PREVENT. If the pointer clears but Location stays BOTH/ATTIO, the row is
+  // left in exactly the S3 shape S4 was repairing - and the note would claim
+  // "Pointer cleared" over it. Mirrors the E-clear read-back test, for the
+  // C-write step.
+  const twoRowGroup = () => new FakeSheet([
+    { row: 10, a: 'BHC-1', c: 'BOTH', e: 'rec-shared' },
+    { row: 20, a: 'BHC-2', c: 'BOTH', e: 'rec-shared' },
+  ]);
+  const groupRows = () => [
+    s4row({ masterRow: 10, bhcId: 'BHC-1', attioRecordId: 'rec-shared' }),
+    s4row({ masterRow: 20, bhcId: 'BHC-2', fullName: 'Bob Other', attioRecordId: 'rec-shared' }),
+  ];
+  const ownedByBhc1 = () => new FakeAttio({}, { 'rec-shared': person({ bhcContactId: 'BHC-1', name: 'Ada Lovelace' }) });
+
+  it('Location write FAILING read-back after a successful E-clear: no note, not counted as cleared', async () => {
+    const sheet = twoRowGroup();
+    sheet.failReadbackFor.add('C20');
+    const r = await repairS4(groupRows(), { sheets: sheet, attio: ownedByBhc1(), logger: silent, fixRunId: 'RECON-FIX-1' });
+
+    expect(sheet.cells.get('E20')).toBe('');          // the clear did land
+    expect(sheet.cells.get('F20')).toBe('');          // but NO note claiming it
+    expect(r.groups[0]!.orphansCleared).toEqual([]);  // and not counted as cleared
+    expect(r.counts.orphansCleared).toBe(0);
+    expect(sheet.updates.map((u) => u.range)).toEqual(['E20', 'C20']); // stopped before F
+  });
+
+  it('Location write HARD-STOPPING after a successful E-clear: no note, not counted as cleared', async () => {
+    const sheet = twoRowGroup();
+    sheet.corruptColAOnWriteTo = { trigger: 'C20', key: 'A20', value: 'BHC-999' };
+    const r = await repairS4(groupRows(), { sheets: sheet, attio: ownedByBhc1(), logger: silent, fixRunId: 'RECON-FIX-1' });
+
+    expect(r.groups[0]!.writes.some((w) => w.outcome === 'col_a_changed')).toBe(true);
+    expect(sheet.cells.get('F20')).toBe('');
+    expect(r.groups[0]!.orphansCleared).toEqual([]);
+    expect(r.counts.hardStops).toBe(1);
+  });
+
+  it('a Location failure on one orphan does not stop the next (non-negotiable 5)', async () => {
+    const sheet = new FakeSheet([
+      { row: 10, a: 'BHC-1', c: 'BOTH', e: 'rec-shared' },
+      { row: 20, a: 'BHC-2', c: 'BOTH', e: 'rec-shared' },
+      { row: 30, a: 'BHC-3', c: 'BOTH', e: 'rec-shared' },
+    ]);
+    sheet.failReadbackFor.add('C20');
+    const r = await repairS4(
+      [...groupRows(), s4row({ masterRow: 30, bhcId: 'BHC-3', fullName: 'Cy Rand', attioRecordId: 'rec-shared' })],
+      { sheets: sheet, attio: ownedByBhc1(), logger: silent, fixRunId: 'RECON-FIX-1' },
+    );
+    expect(r.groups[0]!.orphansCleared).toEqual(['BHC-3']); // 20 failed, 30 still repaired
+    expect(sheet.cells.get('F30')).toContain('S4-ORPHAN');
+  });
+
+  it('an orphan whose Location needs no change still gets its note', async () => {
+    // Location GOOGLE: no C write is attempted at all, so the new guard must not
+    // accidentally skip the note for the rows that never needed a Location fix.
+    const sheet = new FakeSheet([
+      { row: 10, a: 'BHC-1', c: 'BOTH', e: 'rec-shared' },
+      { row: 20, a: 'BHC-2', c: 'GOOGLE', e: 'rec-shared' },
+    ]);
+    const rows = [
+      s4row({ masterRow: 10, bhcId: 'BHC-1', attioRecordId: 'rec-shared' }),
+      s4row({ masterRow: 20, bhcId: 'BHC-2', fullName: 'Bob Other', location: 'GOOGLE', attioRecordId: 'rec-shared' }),
+    ];
+    const r = await repairS4(rows, { sheets: sheet, attio: ownedByBhc1(), logger: silent, fixRunId: 'RECON-FIX-1' });
+    expect(r.groups[0]!.orphansCleared).toEqual(['BHC-2']);
+    expect(sheet.updates.map((u) => u.range)).toEqual(['E20', 'F20']); // no C write
   });
 
   it('the note references the canonical BHC_ID and contains no row number', () => {
