@@ -17,7 +17,7 @@ import { createLogger } from '../lib/logger.js';
 import { SheetsClient } from '../lib/sheets.js';
 import { createNoopSlackPoster, createSlackPoster } from '../lib/slack.js';
 import { runResyncIds } from '../passes/resync-ids/index.js';
-import { failedWriteCount } from '../passes/resync-ids/resync.js';
+import { failedWriteCount, inconclusiveWriteCount, resyncExitCode } from '../passes/resync-ids/resync.js';
 
 interface Args {
   dryRun: boolean;
@@ -73,16 +73,32 @@ async function main(): Promise<void> {
     logger.info(`Report written to ${args.jsonOut}`);
   }
 
-  // Fail the job ONLY on a write that did not land. Advisory warnings exit 0
-  // deliberately — Reconciler chains off this job's conclusion, so failing on
-  // an advisory note would silently cancel the audit. See failedWriteCount.
+  // Fail the job ONLY on a KNOWN problem. Reconciler chains off this job's
+  // conclusion, so anything that exits non-zero silently cancels the audit —
+  // which makes the exit code a decision about what deserves to stop it.
+  // See resyncExitCode for why uncertainty specifically does not.
   const failed = failedWriteCount(report.writes);
+  const unsure = inconclusiveWriteCount(report.writes);
+
   if (failed > 0) {
-    logger.warn(`${failed} correction(s) did not verify — exiting non-zero`);
-    process.exitCode = 1;
-  } else if (report.warnings.length > 0) {
+    logger.warn(`${failed} correction(s) did not land — exiting non-zero`);
+  }
+  if (unsure > 0) {
+    // Reported either way, and deliberately NOT fatal. Reconciler independently
+    // re-derives Master_ID from Attio and Contacts, so an unconfirmed write is
+    // exactly the case its audit resolves — blocking the cascade would only
+    // delay the answer.
+    logger.warn(
+      `${unsure} correction(s) were issued but could not be confirmed — not failing the run. ` +
+        `They may well have landed; re-run to confirm rather than assuming data loss. ` +
+        `Reconciler runs next and will verify Master_ID independently either way.`,
+    );
+  }
+  if (failed === 0 && unsure === 0 && report.warnings.length > 0) {
     logger.warn(`${report.warnings.length} advisory warning(s); every issued write verified — exiting 0`);
   }
+
+  process.exitCode = resyncExitCode(report.writes);
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

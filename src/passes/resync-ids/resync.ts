@@ -114,7 +114,18 @@ export function computeResync(
   };
 }
 
-/** Terse Slack body, Reconciler's own register: counts first, then specifics. */
+/**
+ * Slack body — COUNTS ONLY, never a per-row list.
+ *
+ * The 2026-08-20 run had 291 corrections and posted 291 bullet lines into
+ * #aida. A channel is a notification surface, not a report: at that length the
+ * summary line scrolls away and the thing you actually needed to see is the one
+ * thing you cannot find.
+ *
+ * The full per-correction list is NOT lost — it is in the run's
+ * resync-ids-report.json artifact, which already records every correction with
+ * its outcome and detail, and is the right place to read 291 of anything.
+ */
 export function formatSlackMessage(plan: ResyncPlan, opts: { dryRun: boolean; runId: string }): string {
   const head = opts.dryRun
     ? `🔁 Resync IDs (DRY RUN — nothing written) — ${opts.runId}`
@@ -122,25 +133,17 @@ export function formatSlackMessage(plan: ResyncPlan, opts: { dryRun: boolean; ru
 
   const lines = [
     head,
-    `${plan.checked} row(s) checked · ${plan.corrections.length} correction(s) · ${plan.alreadyCorrect} already correct · ${plan.unresolvable.length} unresolvable`,
+    `${plan.checked} row(s) checked · ${plan.corrections.length} correction(s) · ` +
+      `${plan.alreadyCorrect} already correct · ${plan.unresolvable.length} unresolvable`,
   ];
 
-  if (plan.corrections.length > 0) {
-    lines.push('Corrections:');
-    for (const c of plan.corrections) {
-      lines.push(`• ${c.bhcId} — Google_Row ${c.oldRow ?? '(blank)'} → ${c.newRow}`);
-    }
-  }
-  if (plan.unresolvable.length > 0) {
-    lines.push(`Unresolvable (left untouched, Reconciler's to flag):`);
-    for (const u of plan.unresolvable.slice(0, 10)) {
-      lines.push(`• ${u.bhcId} — ${u.reason === 'not_in_contacts' ? 'not in Contacts' : 'duplicate in Contacts'}`);
-    }
-    if (plan.unresolvable.length > 10) lines.push(`• …and ${plan.unresolvable.length - 10} more`);
-  }
   if (plan.corrections.length === 0 && plan.unresolvable.length === 0) {
     lines.push('All Google_Row pointers already correct.');
+  } else {
+    // Point at where the detail lives rather than reproducing it here.
+    lines.push('Per-row detail in the run\'s resync-ids-report.json artifact.');
   }
+
   return lines.join('\n');
 }
 
@@ -160,5 +163,48 @@ export function formatSlackMessage(plan: ResyncPlan, opts: { dryRun: boolean; ru
  * not, and must not.
  */
 export function failedWriteCount(writes: readonly ResyncWriteResult[]): number {
-  return writes.filter((w) => !w.verified).length;
+  return writes.filter((w) => w.outcome === 'WRITE_FAILED' || w.outcome === 'MISMATCH').length;
+}
+
+/**
+ * Corrections that were ISSUED but could not be confirmed — the read-back
+ * itself failed.
+ *
+ * Deliberately NOT folded into failedWriteCount. These are not known failures:
+ * on 2026-08-20 three of them had landed perfectly well and only their
+ * verification read hit the quota. Counting them as failures told Bobby three
+ * records were unwritten when they were fine, and buried the one that really
+ * wasn't.
+ *
+ * They still stop the job — an unconfirmed write is not a proven one, and
+ * Reconciler must not audit on top of it — but they are counted, logged and
+ * reported as their own thing.
+ */
+export function inconclusiveWriteCount(writes: readonly ResyncWriteResult[]): number {
+  return writes.filter((w) => w.outcome === 'VERIFY_INCONCLUSIVE').length;
+}
+
+/**
+ * The process exit code for a completed run: 1 only for KNOWN problems.
+ *
+ * Extracted from the CLI so this decision is testable on its own. The wiring is
+ * what drifts — a counter can stay correct while someone re-adds an exit 1 next
+ * to it — so the test asserts THIS, not just the counts.
+ *
+ * WRITE_FAILED and MISMATCH exit 1. Those are real, known, specific problems,
+ * and Reconciler must not audit on top of a Master_ID it was just told is wrong.
+ *
+ * VERIFY_INCONCLUSIVE exits 0, and letting the chain continue is the SAFER
+ * choice, not the laxer one. Reconciler exists to verify Master_ID independently
+ * against Attio and Contacts without trusting any single source — which is
+ * precisely what genuine uncertainty needs. If the correction landed, Reconciler
+ * reports clean. If it did not, Reconciler catches it as a live finding. Blocking
+ * the cascade on "we are not sure" only delays finding out; it adds no safety,
+ * and it costs the one audit that could have resolved the doubt.
+ *
+ * The uncertainty is still LOGGED and still lands in the report's warnings — it
+ * is reported, never swallowed. It just does not cancel the audit.
+ */
+export function resyncExitCode(writes: readonly ResyncWriteResult[]): 0 | 1 {
+  return failedWriteCount(writes) > 0 ? 1 : 0;
 }

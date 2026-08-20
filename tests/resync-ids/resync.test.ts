@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildContactsIndex, computeResync, failedWriteCount, formatSlackMessage } from '../../src/passes/resync-ids/resync.js';
+import {
+  buildContactsIndex, computeResync, failedWriteCount, formatSlackMessage, inconclusiveWriteCount,
+  resyncExitCode,
+} from '../../src/passes/resync-ids/resync.js';
+import type { ResyncWriteOutcome } from '../../src/passes/resync-ids/types.js';
 import type { MasterIdRowLite } from '../../src/passes/resync-ids/types.js';
 
 function m(o: Partial<MasterIdRowLite> = {}): MasterIdRowLite {
@@ -120,12 +124,31 @@ describe('computeResync — what it must never touch', () => {
   });
 });
 
-describe('formatSlackMessage', () => {
-  it('names each correction with old and new row', () => {
+describe('formatSlackMessage — counts only, never a per-row dump', () => {
+  it('reports the four counts', () => {
     const plan = computeResync([m({ bhcId: 'BHC-2', storedGoogleRow: 99 })], contacts(['BHC-1', 'BHC-2']));
     const msg = formatSlackMessage(plan, { dryRun: false, runId: 'RESYNC-1' });
-    expect(msg).toContain('BHC-2 — Google_Row 99 → 4');
     expect(msg).toContain('1 correction(s)');
+    expect(msg).toContain('row(s) checked');
+    expect(msg).toContain('already correct');
+    expect(msg).toContain('unresolvable');
+  });
+
+  it('does NOT name individual corrections — that is the artifact\'s job', () => {
+    const plan = computeResync([m({ bhcId: 'BHC-2', storedGoogleRow: 99 })], contacts(['BHC-1', 'BHC-2']));
+    const msg = formatSlackMessage(plan, { dryRun: false, runId: 'RESYNC-1' });
+    expect(msg).not.toContain('BHC-2 — Google_Row');
+    expect(msg).toContain('resync-ids-report.json');
+  });
+
+  it('stays short no matter how many corrections there are', () => {
+    // 300 corrections used to mean 300 bullet lines in #aida.
+    const ids = Array.from({ length: 300 }, (_, i) => `BHC-${i + 10}`);
+    const rows = ids.map((bhcId, i) => m({ bhcId, masterRow: i + 2, storedGoogleRow: 9999 }));
+    const plan = computeResync(rows, contacts(ids));
+    const msg = formatSlackMessage(plan, { dryRun: false, runId: 'R' });
+    expect(plan.corrections.length).toBeGreaterThan(250);
+    expect(msg.split('\n')).toHaveLength(3); // header, counts, pointer-to-artifact
   });
 
   it('says so plainly when nothing needs fixing', () => {
@@ -139,27 +162,99 @@ describe('formatSlackMessage', () => {
   });
 });
 
-describe('failedWriteCount — what may and may not fail the job', () => {
-  const w = (verified: boolean) => ({
+describe('failedWriteCount / inconclusiveWriteCount — what may and may not fail the job', () => {
+  const w = (outcome: ResyncWriteOutcome) => ({
     correction: { bhcId: 'BHC-1', masterRow: 2, oldRow: 1, newRow: 3 },
-    written: true, verified, detail: '',
+    outcome,
+    written: outcome !== 'WRITE_FAILED',
+    verified: outcome === 'VERIFIED',
+    detail: '',
   });
 
-  it('counts only writes that did not verify', () => {
-    expect(failedWriteCount([w(true), w(false), w(true)])).toBe(1);
+  it('counts a write that never landed', () => {
+    expect(failedWriteCount([w('VERIFIED'), w('WRITE_FAILED'), w('VERIFIED')])).toBe(1);
   });
 
-  it('is zero for a clean run, so the Reconciler chain fires', () => {
-    expect(failedWriteCount([w(true), w(true)])).toBe(0);
+  it('counts a write that read back wrong', () => {
+    expect(failedWriteCount([w('VERIFIED'), w('MISMATCH')])).toBe(1);
   });
 
-  it('is zero for a dry run, which issues no writes at all', () => {
+  it('is zero when every issued write verified', () => {
+    expect(failedWriteCount([w('VERIFIED'), w('VERIFIED')])).toBe(0);
+  });
+
+  it('is zero for an empty run', () => {
     expect(failedWriteCount([])).toBe(0);
+    expect(inconclusiveWriteCount([])).toBe(0);
   });
 
-  it('is unaffected by advisory warnings — they live outside the write results', () => {
-    // The whole point: a duplicate-Contact_ID warning is advisory, and failing
-    // the job on it would silently cancel the downstream Reconciler run.
-    expect(failedWriteCount([w(true)])).toBe(0);
+  it('does not treat an advisory-only run as failed', () => {
+    expect(failedWriteCount([w('VERIFIED')])).toBe(0);
+  });
+
+  // ── the 2026-08-20 misreport, as a regression test ──────────────────────
+  it('does NOT count an unconfirmed write as a failed one', () => {
+    const writes = [w('VERIFIED'), w('VERIFY_INCONCLUSIVE'), w('VERIFIED')];
+    expect(failedWriteCount(writes)).toBe(0);
+    expect(inconclusiveWriteCount(writes)).toBe(1);
+  });
+
+  it('keeps a real failure and an unconfirmed write separately countable', () => {
+    // Exactly the live shape: 3 read-back 429s (issued, unconfirmed) and
+    // 1 write 429 (never landed). The old code reported all four identically.
+    const writes = [
+      w('VERIFY_INCONCLUSIVE'), w('VERIFY_INCONCLUSIVE'), w('VERIFY_INCONCLUSIVE'),
+      w('WRITE_FAILED'),
+    ];
+    expect(failedWriteCount(writes)).toBe(1);
+    expect(inconclusiveWriteCount(writes)).toBe(3);
+    // and the two states are not interchangeable on the record itself
+    expect(writes[0]!.written).toBe(true);
+    expect(writes[3]!.written).toBe(false);
+  });
+});
+
+// ─── what may and may not cancel the Reconciler cascade ─────────────────────
+// Reconciler chains off this job's conclusion, so the exit code decides whether
+// the audit runs at all. That makes "which states are fatal" a real design
+// decision, and this is where it is pinned down.
+
+describe('resyncExitCode — uncertainty must not cancel the audit', () => {
+  const w = (outcome: ResyncWriteOutcome) => ({
+    correction: { bhcId: 'BHC-1', masterRow: 2, oldRow: 1, newRow: 3 },
+    outcome,
+    written: outcome !== 'WRITE_FAILED',
+    verified: outcome === 'VERIFIED',
+    detail: '',
+  });
+
+  it('exits 0 when the only issue is VERIFY_INCONCLUSIVE', () => {
+    // THE POINT: an unconfirmed write is ambiguity, not a known problem.
+    // Reconciler re-derives Master_ID from Attio and Contacts independently —
+    // it is exactly the thing that resolves this doubt, so it must be allowed
+    // to run. Blocking it only delays the answer.
+    expect(resyncExitCode([w('VERIFY_INCONCLUSIVE')])).toBe(0);
+    expect(resyncExitCode([w('VERIFIED'), w('VERIFY_INCONCLUSIVE'), w('VERIFIED')])).toBe(0);
+    expect(resyncExitCode(Array.from({ length: 50 }, () => w('VERIFY_INCONCLUSIVE')))).toBe(0);
+  });
+
+  it('exits 1 on a write that never landed', () => {
+    expect(resyncExitCode([w('WRITE_FAILED')])).toBe(1);
+  });
+
+  it('exits 1 on a write that read back wrong', () => {
+    expect(resyncExitCode([w('MISMATCH')])).toBe(1);
+  });
+
+  it('still exits 1 when a real failure sits alongside unconfirmed writes', () => {
+    // The live 2026-08-20 shape: 3 unconfirmed + 1 genuinely failed.
+    expect(resyncExitCode([
+      w('VERIFY_INCONCLUSIVE'), w('VERIFY_INCONCLUSIVE'), w('VERIFY_INCONCLUSIVE'), w('WRITE_FAILED'),
+    ])).toBe(1);
+  });
+
+  it('exits 0 for a clean run and for an empty one', () => {
+    expect(resyncExitCode([w('VERIFIED'), w('VERIFIED')])).toBe(0);
+    expect(resyncExitCode([])).toBe(0);
   });
 });
