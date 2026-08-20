@@ -1,7 +1,9 @@
 name: Resync IDs
 
 # Re-derives Master_ID.Google_Row from Contacts col A. Writes ONLY Master_ID
-# col D, one explicit range per correction, each read back before it counts.
+# col D, one explicit range per correction, batched into as few requests as
+# possible, then verified by a single read of the whole column at the end —
+# which also catches anything overwritten later in the same run.
 #
 # TWO TRIGGERS, and the on-demand one is the point:
 #

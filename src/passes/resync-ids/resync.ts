@@ -183,3 +183,28 @@ export function failedWriteCount(writes: readonly ResyncWriteResult[]): number {
 export function inconclusiveWriteCount(writes: readonly ResyncWriteResult[]): number {
   return writes.filter((w) => w.outcome === 'VERIFY_INCONCLUSIVE').length;
 }
+
+/**
+ * The process exit code for a completed run: 1 only for KNOWN problems.
+ *
+ * Extracted from the CLI so this decision is testable on its own. The wiring is
+ * what drifts — a counter can stay correct while someone re-adds an exit 1 next
+ * to it — so the test asserts THIS, not just the counts.
+ *
+ * WRITE_FAILED and MISMATCH exit 1. Those are real, known, specific problems,
+ * and Reconciler must not audit on top of a Master_ID it was just told is wrong.
+ *
+ * VERIFY_INCONCLUSIVE exits 0, and letting the chain continue is the SAFER
+ * choice, not the laxer one. Reconciler exists to verify Master_ID independently
+ * against Attio and Contacts without trusting any single source — which is
+ * precisely what genuine uncertainty needs. If the correction landed, Reconciler
+ * reports clean. If it did not, Reconciler catches it as a live finding. Blocking
+ * the cascade on "we are not sure" only delays finding out; it adds no safety,
+ * and it costs the one audit that could have resolved the doubt.
+ *
+ * The uncertainty is still LOGGED and still lands in the report's warnings — it
+ * is reported, never swallowed. It just does not cancel the audit.
+ */
+export function resyncExitCode(writes: readonly ResyncWriteResult[]): 0 | 1 {
+  return failedWriteCount(writes) > 0 ? 1 : 0;
+}

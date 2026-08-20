@@ -3,7 +3,15 @@
  *
  * Re-derives Master_ID.Google_Row for every GOOGLE/BOTH identity by matching
  * Contact_ID against Contacts col A. Writes ONLY Master_ID col D, one small
- * explicit range per correction, each read back before it counts as fixed.
+ * explicit range per correction, batched into as few requests as possible and
+ * verified by a single read of the whole column afterwards — no correction
+ * counts as fixed until that read shows the expected value.
+ *
+ * Verification is END-OF-RUN, not per-write, and that is deliberate: it checks
+ * the FINAL state of column D, so it also catches a correction that landed and
+ * was then overwritten later in the same run. Per-write read-back could not see
+ * that. It is also what keeps the run inside Google's 60 requests/minute — see
+ * applyCorrections.
  *
  * Never writes Contacts. Never writes Attio. Never mints. Never deletes.
  * Never touches a SUPERSEDED row.

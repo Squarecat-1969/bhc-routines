@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildContactsIndex, computeResync, failedWriteCount, formatSlackMessage, inconclusiveWriteCount,
+  resyncExitCode,
 } from '../../src/passes/resync-ids/resync.js';
 import type { ResyncWriteOutcome } from '../../src/passes/resync-ids/types.js';
 import type { MasterIdRowLite } from '../../src/passes/resync-ids/types.js';
@@ -210,5 +211,50 @@ describe('failedWriteCount / inconclusiveWriteCount — what may and may not fai
     // and the two states are not interchangeable on the record itself
     expect(writes[0]!.written).toBe(true);
     expect(writes[3]!.written).toBe(false);
+  });
+});
+
+// ─── what may and may not cancel the Reconciler cascade ─────────────────────
+// Reconciler chains off this job's conclusion, so the exit code decides whether
+// the audit runs at all. That makes "which states are fatal" a real design
+// decision, and this is where it is pinned down.
+
+describe('resyncExitCode — uncertainty must not cancel the audit', () => {
+  const w = (outcome: ResyncWriteOutcome) => ({
+    correction: { bhcId: 'BHC-1', masterRow: 2, oldRow: 1, newRow: 3 },
+    outcome,
+    written: outcome !== 'WRITE_FAILED',
+    verified: outcome === 'VERIFIED',
+    detail: '',
+  });
+
+  it('exits 0 when the only issue is VERIFY_INCONCLUSIVE', () => {
+    // THE POINT: an unconfirmed write is ambiguity, not a known problem.
+    // Reconciler re-derives Master_ID from Attio and Contacts independently —
+    // it is exactly the thing that resolves this doubt, so it must be allowed
+    // to run. Blocking it only delays the answer.
+    expect(resyncExitCode([w('VERIFY_INCONCLUSIVE')])).toBe(0);
+    expect(resyncExitCode([w('VERIFIED'), w('VERIFY_INCONCLUSIVE'), w('VERIFIED')])).toBe(0);
+    expect(resyncExitCode(Array.from({ length: 50 }, () => w('VERIFY_INCONCLUSIVE')))).toBe(0);
+  });
+
+  it('exits 1 on a write that never landed', () => {
+    expect(resyncExitCode([w('WRITE_FAILED')])).toBe(1);
+  });
+
+  it('exits 1 on a write that read back wrong', () => {
+    expect(resyncExitCode([w('MISMATCH')])).toBe(1);
+  });
+
+  it('still exits 1 when a real failure sits alongside unconfirmed writes', () => {
+    // The live 2026-08-20 shape: 3 unconfirmed + 1 genuinely failed.
+    expect(resyncExitCode([
+      w('VERIFY_INCONCLUSIVE'), w('VERIFY_INCONCLUSIVE'), w('VERIFY_INCONCLUSIVE'), w('WRITE_FAILED'),
+    ])).toBe(1);
+  });
+
+  it('exits 0 for a clean run and for an empty one', () => {
+    expect(resyncExitCode([w('VERIFIED'), w('VERIFIED')])).toBe(0);
+    expect(resyncExitCode([])).toBe(0);
   });
 });
