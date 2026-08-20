@@ -160,5 +160,23 @@ export function formatSlackMessage(plan: ResyncPlan, opts: { dryRun: boolean; ru
  * not, and must not.
  */
 export function failedWriteCount(writes: readonly ResyncWriteResult[]): number {
-  return writes.filter((w) => !w.verified).length;
+  return writes.filter((w) => w.outcome === 'WRITE_FAILED' || w.outcome === 'MISMATCH').length;
+}
+
+/**
+ * Corrections that were ISSUED but could not be confirmed — the read-back
+ * itself failed.
+ *
+ * Deliberately NOT folded into failedWriteCount. These are not known failures:
+ * on 2026-08-20 three of them had landed perfectly well and only their
+ * verification read hit the quota. Counting them as failures told Bobby three
+ * records were unwritten when they were fine, and buried the one that really
+ * wasn't.
+ *
+ * They still stop the job — an unconfirmed write is not a proven one, and
+ * Reconciler must not audit on top of it — but they are counted, logged and
+ * reported as their own thing.
+ */
+export function inconclusiveWriteCount(writes: readonly ResyncWriteResult[]): number {
+  return writes.filter((w) => w.outcome === 'VERIFY_INCONCLUSIVE').length;
 }

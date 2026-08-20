@@ -14,7 +14,9 @@ import { cell, type SheetsClient } from '../../lib/sheets.js';
 import type { Logger } from '../../lib/logger.js';
 import type { SlackPoster } from '../../lib/slack.js';
 import { buildContactsIndex, computeResync, formatSlackMessage } from './resync.js';
-import type { MasterIdRowLite, ResyncReport, ResyncWriteResult, RowCorrection } from './types.js';
+import type {
+  MasterIdRowLite, ResyncReport, ResyncWriteOutcome, ResyncWriteResult, RowCorrection,
+} from './types.js';
 
 export interface ResyncOptions {
   readonly sheets: SheetsClient;
@@ -82,12 +84,20 @@ export async function runResyncIds(opts: ResyncOptions): Promise<ResyncReport> {
   if (dryRun) {
     logger.info(`  DRY RUN: ${plan.corrections.length} correction(s) computed, 0 written`);
   } else {
-    for (const c of plan.corrections) {
-      writes.push(await writeCorrection(sheets, c, logger));
+    writes.push(...(await applyCorrections(sheets, plan.corrections, logger)));
+
+    const tally = (o: ResyncWriteOutcome) => writes.filter((w) => w.outcome === o).length;
+    const failed = tally('WRITE_FAILED') + tally('MISMATCH');
+    const unsure = tally('VERIFY_INCONCLUSIVE');
+    if (failed > 0) {
+      const w = `${failed} correction(s) did not land (${tally('WRITE_FAILED')} write failed, ${tally('MISMATCH')} read back wrong)`;
+      warnings.push(w);
+      logger.warn(`  ${w}`);
     }
-    const verified = writes.filter((w) => w.verified).length;
-    if (verified !== plan.corrections.length) {
-      const w = `${plan.corrections.length - verified} correction(s) did not verify on read-back`;
+    if (unsure > 0) {
+      // Said precisely: these were ISSUED. Calling them failures would repeat
+      // exactly the misreport this distinction exists to prevent.
+      const w = `${unsure} correction(s) were issued but could not be confirmed — they may well have landed; re-run to confirm`;
       warnings.push(w);
       logger.warn(`  ${w}`);
     }
@@ -102,29 +112,103 @@ export async function runResyncIds(opts: ResyncOptions): Promise<ResyncReport> {
   };
 }
 
+/** Google caps a batchUpdate payload generously; 100 single-cell ranges per
+ *  request keeps each request small while collapsing 291 writes into 3. */
+const WRITE_BATCH_SIZE = 100;
+
+/** Breathing room between batches. With batching the run needs only a handful of
+ *  requests, so this is cheap insurance rather than the mechanism — the call
+ *  count is what fixed the 429s, not the delay. */
+const BATCH_PACE_MS = 1_100;
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+function chunk<T>(items: readonly T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+const rangeFor = (c: RowCorrection): string => `Master_ID!D${c.masterRow}:D${c.masterRow}`;
+
 /**
- * One correction, one small explicit range, read back before it counts.
- * `Master_ID!D{row}` — never a positional full-row write, which would carry
- * every other column along with it and overwrite anything edited since the read.
+ * Issue every correction, then verify them all against ONE read.
+ *
+ * WHY THIS SHAPE. The old loop did update+read per correction — two requests
+ * each, unpaced. 291 corrections meant 582 requests at roughly 220/minute
+ * against Google's 60/minute ceiling on reads and writes independently, and it
+ * blew both. Batched writes plus a single column read take that to 4 requests
+ * for the same 291 corrections.
+ *
+ * Still one small explicit range per correction inside the batch —
+ * `Master_ID!D{row}`, never a positional full-row write that would carry every
+ * other column along with it.
+ *
+ * Verification is now against the FINAL state of column D rather than the value
+ * immediately after each write. That is strictly stronger: it also catches a
+ * correction that landed and was then overwritten later in the same run.
  */
-async function writeCorrection(
+async function applyCorrections(
   sheets: SheetsClient,
-  c: RowCorrection,
+  corrections: readonly RowCorrection[],
   logger: Logger,
-): Promise<ResyncWriteResult> {
-  const range = `Master_ID!D${c.masterRow}:D${c.masterRow}`;
-  try {
-    await sheets.update(range, [[c.newRow]]);
-    const back = await sheets.read(range);
-    const got = Number.parseInt(cell(back[0] ?? [], 0), 10);
-    const verified = got === c.newRow;
-    logger.info(`    wrote ${range} = ${c.newRow} — read-back ${verified ? 'OK' : `MISMATCH (got ${cell(back[0] ?? [], 0)})`}`);
-    return {
-      correction: c, written: true, verified,
-      detail: verified ? `${range} = ${c.newRow}` : `${range} read back as ${cell(back[0] ?? [], 0)}`,
-    };
-  } catch (e) {
-    logger.warn(`    FAILED ${range}: ${String(e)}`);
-    return { correction: c, written: false, verified: false, detail: String(e) };
+): Promise<ResyncWriteResult[]> {
+  if (corrections.length === 0) return [];
+
+  // ── issue the writes, batched ──────────────────────────────────────────
+  const issued = new Map<number, { ok: boolean; detail: string }>();
+  const batches = chunk(corrections, WRITE_BATCH_SIZE);
+  logger.info(`  writing ${corrections.length} correction(s) in ${batches.length} batch(es) of up to ${WRITE_BATCH_SIZE}`);
+
+  for (const [i, batch] of batches.entries()) {
+    const data = batch.map((c) => ({ range: rangeFor(c), values: [[c.newRow]] }));
+    try {
+      await sheets.batchUpdate(data);
+      for (const c of batch) issued.set(c.masterRow, { ok: true, detail: `${rangeFor(c)} = ${c.newRow}` });
+      logger.info(`    batch ${i + 1}/${batches.length}: ${batch.length} range(s) issued`);
+    } catch (e) {
+      // The whole batch failed as one request, so every correction in it is
+      // unwritten — not unknown. A failed request wrote nothing.
+      for (const c of batch) issued.set(c.masterRow, { ok: false, detail: String(e) });
+      logger.warn(`    batch ${i + 1}/${batches.length} FAILED (${batch.length} range(s)): ${String(e)}`);
+    }
+    if (i < batches.length - 1) await sleep(BATCH_PACE_MS);
   }
+
+  // ── verify: one read of the whole column ───────────────────────────────
+  let snapshot: readonly (readonly unknown[])[] | null = null;
+  let verifyError = '';
+  try {
+    snapshot = await sheets.read('Master_ID!D2:D');
+    logger.info(`    verification read: ${snapshot.length} row(s) of Master_ID col D`);
+  } catch (e) {
+    verifyError = String(e);
+    logger.warn(`    verification read FAILED: ${verifyError}`);
+  }
+
+  // ── classify ───────────────────────────────────────────────────────────
+  return corrections.map((c) => {
+    const iss = issued.get(c.masterRow) ?? { ok: false, detail: 'not issued' };
+
+    if (!iss.ok) {
+      return { correction: c, outcome: 'WRITE_FAILED' as const, written: false, verified: false, detail: iss.detail };
+    }
+    if (snapshot === null) {
+      return {
+        correction: c, outcome: 'VERIFY_INCONCLUSIVE' as const,
+        written: true, verified: false,
+        detail: `${rangeFor(c)} = ${c.newRow} issued; read-back unavailable: ${verifyError}`,
+      };
+    }
+    // Master_ID!D2:D — sheet row N is index N-2. Sheets truncates trailing
+    // blanks, so a short array means "blank", not "missing".
+    const got = cell(snapshot[c.masterRow - 2] ?? [], 0);
+    if (Number.parseInt(got, 10) === c.newRow) {
+      return { correction: c, outcome: 'VERIFIED' as const, written: true, verified: true, detail: `${rangeFor(c)} = ${c.newRow}` };
+    }
+    return {
+      correction: c, outcome: 'MISMATCH' as const, written: true, verified: false,
+      detail: `${rangeFor(c)} issued as ${c.newRow} but read back as ${got || '(blank)'}`,
+    };
+  });
 }

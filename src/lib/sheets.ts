@@ -94,6 +94,25 @@ export class SheetsClient {
    *
    * On 2026-08-14 we could not tell any of them apart.
    */
+  /**
+   * Many scattered single-cell writes in ONE request.
+   *
+   * Google's quota is counted per REQUEST, not per cell — 60 writes/minute per
+   * user, and independently 60 reads/minute. Issuing one `update` per cell is
+   * what exhausted both on 2026-08-20: 291 corrections at two calls each ran
+   * ~220 requests/minute against a 60 ceiling, and the retry policy could not
+   * help because the whole minute's quota was already gone.
+   *
+   * Mirrors the `batchUpdate` action the Sheets proxy already exposes — the same
+   * one BHC-Aida's commit route uses to fold 78 scattered status cells into a
+   * single request. Same scope as `update`: these ranges, these values, nothing
+   * wider.
+   */
+  async batchUpdate(data: readonly { range: string; values: readonly SheetRow[] }[]): Promise<void> {
+    if (data.length === 0) return;
+    await this.post({ action: 'batchUpdate', data }, `sheets:batchUpdate ${data.length} range(s)`);
+  }
+
   async append(
     range: string,
     values: readonly SheetRow[],
