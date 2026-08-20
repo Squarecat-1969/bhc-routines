@@ -114,7 +114,18 @@ export function computeResync(
   };
 }
 
-/** Terse Slack body, Reconciler's own register: counts first, then specifics. */
+/**
+ * Slack body — COUNTS ONLY, never a per-row list.
+ *
+ * The 2026-08-20 run had 291 corrections and posted 291 bullet lines into
+ * #aida. A channel is a notification surface, not a report: at that length the
+ * summary line scrolls away and the thing you actually needed to see is the one
+ * thing you cannot find.
+ *
+ * The full per-correction list is NOT lost — it is in the run's
+ * resync-ids-report.json artifact, which already records every correction with
+ * its outcome and detail, and is the right place to read 291 of anything.
+ */
 export function formatSlackMessage(plan: ResyncPlan, opts: { dryRun: boolean; runId: string }): string {
   const head = opts.dryRun
     ? `🔁 Resync IDs (DRY RUN — nothing written) — ${opts.runId}`
@@ -122,25 +133,17 @@ export function formatSlackMessage(plan: ResyncPlan, opts: { dryRun: boolean; ru
 
   const lines = [
     head,
-    `${plan.checked} row(s) checked · ${plan.corrections.length} correction(s) · ${plan.alreadyCorrect} already correct · ${plan.unresolvable.length} unresolvable`,
+    `${plan.checked} row(s) checked · ${plan.corrections.length} correction(s) · ` +
+      `${plan.alreadyCorrect} already correct · ${plan.unresolvable.length} unresolvable`,
   ];
 
-  if (plan.corrections.length > 0) {
-    lines.push('Corrections:');
-    for (const c of plan.corrections) {
-      lines.push(`• ${c.bhcId} — Google_Row ${c.oldRow ?? '(blank)'} → ${c.newRow}`);
-    }
-  }
-  if (plan.unresolvable.length > 0) {
-    lines.push(`Unresolvable (left untouched, Reconciler's to flag):`);
-    for (const u of plan.unresolvable.slice(0, 10)) {
-      lines.push(`• ${u.bhcId} — ${u.reason === 'not_in_contacts' ? 'not in Contacts' : 'duplicate in Contacts'}`);
-    }
-    if (plan.unresolvable.length > 10) lines.push(`• …and ${plan.unresolvable.length - 10} more`);
-  }
   if (plan.corrections.length === 0 && plan.unresolvable.length === 0) {
     lines.push('All Google_Row pointers already correct.');
+  } else {
+    // Point at where the detail lives rather than reproducing it here.
+    lines.push('Per-row detail in the run\'s resync-ids-report.json artifact.');
   }
+
   return lines.join('\n');
 }
 

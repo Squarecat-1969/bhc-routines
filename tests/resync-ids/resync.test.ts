@@ -123,12 +123,31 @@ describe('computeResync — what it must never touch', () => {
   });
 });
 
-describe('formatSlackMessage', () => {
-  it('names each correction with old and new row', () => {
+describe('formatSlackMessage — counts only, never a per-row dump', () => {
+  it('reports the four counts', () => {
     const plan = computeResync([m({ bhcId: 'BHC-2', storedGoogleRow: 99 })], contacts(['BHC-1', 'BHC-2']));
     const msg = formatSlackMessage(plan, { dryRun: false, runId: 'RESYNC-1' });
-    expect(msg).toContain('BHC-2 — Google_Row 99 → 4');
     expect(msg).toContain('1 correction(s)');
+    expect(msg).toContain('row(s) checked');
+    expect(msg).toContain('already correct');
+    expect(msg).toContain('unresolvable');
+  });
+
+  it('does NOT name individual corrections — that is the artifact\'s job', () => {
+    const plan = computeResync([m({ bhcId: 'BHC-2', storedGoogleRow: 99 })], contacts(['BHC-1', 'BHC-2']));
+    const msg = formatSlackMessage(plan, { dryRun: false, runId: 'RESYNC-1' });
+    expect(msg).not.toContain('BHC-2 — Google_Row');
+    expect(msg).toContain('resync-ids-report.json');
+  });
+
+  it('stays short no matter how many corrections there are', () => {
+    // 300 corrections used to mean 300 bullet lines in #aida.
+    const ids = Array.from({ length: 300 }, (_, i) => `BHC-${i + 10}`);
+    const rows = ids.map((bhcId, i) => m({ bhcId, masterRow: i + 2, storedGoogleRow: 9999 }));
+    const plan = computeResync(rows, contacts(ids));
+    const msg = formatSlackMessage(plan, { dryRun: false, runId: 'R' });
+    expect(plan.corrections.length).toBeGreaterThan(250);
+    expect(msg.split('\n')).toHaveLength(3); // header, counts, pointer-to-artifact
   });
 
   it('says so plainly when nothing needs fixing', () => {
