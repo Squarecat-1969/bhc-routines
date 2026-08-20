@@ -78,14 +78,33 @@ export function attioChecks(
         findings.push(...identityDrift(row, g, look));
         // Name drift never becomes an I1 row - it queues for human review.
         if (outcome === 'shares_word') {
-          candidates.push({
-            bhcId: row.bhcId,
-            oldName: look.name,
-            newName: `${g.firstName} ${g.lastName}`.trim(),
-            googleRow: row.googleRow,
-            attioRecordId: row.attioRecordId,
-            masterRow: row.masterRow,
-          });
+          const googleName = `${g.firstName} ${g.lastName}`.trim();
+          // A pair that is not a difference is not a conflict.
+          //
+          // The A5 gate above fires on Attio-vs-MASTER_ID, but the row enqueued
+          // here is Attio-vs-GOOGLE. Those are different comparisons, so when
+          // Master_ID's own name is stale ("Susan Corcoran") while Google and
+          // Attio already agree ("Sue Corcoran"), the gate opens and the pair
+          // is identical — producing a review card that asks a human to choose
+          // between a name and itself. Three of those reached the live queue on
+          // RECON-1787181038868 (BHC-00175 / 00208 / 00234).
+          //
+          // Guarded with fieldEqual, the same comparator I1 uses, so a pure
+          // formatting difference (case, punctuation, spacing) is treated as
+          // agreement too. NOTE the consequence: a genuine case-only drift
+          // ("bo geddes" vs "Bo Geddes") no longer queues. That is deliberate
+          // per the agreed fix, and worth knowing — it is a narrowing of what
+          // reaches human review, not just a no-op filter.
+          if (!fieldEqual(look.name, googleName)) {
+            candidates.push({
+              bhcId: row.bhcId,
+              oldName: look.name,
+              newName: googleName,
+              googleRow: row.googleRow,
+              attioRecordId: row.attioRecordId,
+              masterRow: row.masterRow,
+            });
+          }
         }
       }
     }
