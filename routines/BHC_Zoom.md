@@ -222,6 +222,8 @@ Personal context write failures are non-blocking — log the error and continue 
 **3c. Contact_History (append).** 17-col:
 `RUN_ID · BHC_ID · Contact_Name · Entry_Date(ISO-Z) · "Meeting" · "Zoom" · "Inbound" · title · summary · commitments · personal_details_flag · company_intel · recording_url · recording_id · blank · "BHC_Zoom" · Activity_ID`
 
+`Entry_Date` is the **WRITE time** — the moment this row is created, i.e. now, in ISO-Z. It is **NOT** the meeting's own time. Decided explicitly 2026-08-21; the field name invites the other reading, so do not re-derive it. The interaction's own time is `Activity_Log`'s `Interaction_Date`, column V.
+
 **3d. Attio.** Only if ATTIO or BOTH. Update `last_meeting_summary` + `key_commitments`. Create tasks (`content`, `format: plaintext`, `linked_records`, `assignees: [ATTIO_BOBBY_MEMBER]`). If exactly one task: write ID to Activity_Log col T.
 
 **3e. Tasks_Log (append, one row per task, primary only).**

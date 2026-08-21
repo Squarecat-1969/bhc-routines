@@ -154,6 +154,8 @@ QA note: log each personal context write. A failure here does NOT block the main
 4c. Contact_History (append). 17-col:
 Run_ID · BHC_ID · Contact_Name · Entry_Date(ISO-Z) · "Email" · "Email" · Direction · Subject · Summary · Key_Commitments(col L) · Personal_Details_Flag(col M) · Company_Intel(col N) · blank · blank · Email_Thread_ID(col A) · "Late_Edition" · Activity_ID
 
+Entry_Date is the WRITE time — the moment this row is created, i.e. now, in ISO-Z. It is NOT the time the interaction itself happened. Decided explicitly 2026-08-21; the field name invites the other reading, so do not re-derive it. The interaction's own time is Activity_Log's Interaction_Date, column V.
+
 4d. Attio (connector). Only if primary has attio object.
 Update last_meeting_summary and fields in attio.fields. For each task in Tasks_JSON: create Attio task (content, format: plaintext, linked_records: [record_id], assignees: [ATTIO_BOBBY_MEMBER]). If exactly one task: write ID to Activity_Log col T.
 
