@@ -4,14 +4,34 @@ name: Reconciler Fix
 # The only routine here that writes to Attio, and the only one that writes
 # Master_ID cols C/E/F. Col A is never written, in any pass, for any reason.
 #
-# DRY-RUN IS THE DEFAULT on manual dispatch, and live must be chosen
-# deliberately — the same shape resync-ids.yml uses. This is stronger than
-# reconciler.yml's default (live), because that routine only rewrites its own
-# staging tabs while this one touches real identity data.
+# MODE BY TRIGGER, and the two halves are deliberately different:
+#
+#   • The UNATTENDED paths (schedule, workflow_run) run LIVE. This routine
+#     exists to repair, and a weekly job that only ever reports what it would
+#     have done never actually fixes anything.
+#   • MANUAL dispatch stays DRY-RUN BY DEFAULT, live only on explicit opt-in.
+#     That is a separate safety property and it is unchanged — a human at a
+#     keyboard should have to say "yes, live" out loud.
+#
+# WHY THE UNATTENDED PATHS WERE LOOSENED (2026-08-21). They ran dry from the
+# day this file was written, deliberately, because two interaction bugs were
+# open — both of which corrupted data in exactly the "nobody is watching" shape
+# an unattended live run has:
+#
+#   PR #19  A1 acted on an Attio pointer S4 was still adjudicating, overwrote a
+#           shared record with the wrong claimant's BHC_ID, and S4 then cleared
+#           the TRUE owner's pointer after reading back what A1 had corrupted.
+#   PR #20  I1 synced identity fields onto BOTH records of an S1-disputed
+#           BHC_ID, each row's own gate passing correctly while no human had
+#           yet decided which row was the real person.
+#
+# Both are closed, each reproduced on pre-fix code before being fixed and each
+# pinned by a mutation-checked test. That is what changed; nothing about the
+# routine's write surface did.
 #
 # THREE TRIGGERS, mirroring reconciler.yml:
 #
-#   1. workflow_dispatch — on demand, dry-run by default.
+#   1. workflow_dispatch — on demand, DRY-RUN by default, live on opt-in.
 #
 #   2. schedule — Sunday 10:00 UTC = 3am PDT / 2am PST, one hour AFTER
 #      Reconciler's 2am slot, for the same reason Resync IDs sits an hour
@@ -19,10 +39,10 @@ name: Reconciler Fix
 #      pass that consumes them. The gap is a courtesy, not the mechanism —
 #      GitHub cron is best-effort, so ORDER is guaranteed by the chain below.
 #
-#      Deliberately runs DRY on the schedule. An unattended weekly job that
-#      writes to Attio and Master_ID without anyone watching is a different
-#      risk class from one that reports what it would do; the artifact is the
-#      deliverable until a human decides otherwise.
+#      RUNS LIVE. It ran dry until 2026-08-21 while the A1/S4 and I1/S1
+#      interaction bugs were open (see the header). With those closed, the
+#      weekly sweep repairs rather than merely reporting — the report artifact
+#      is still uploaded either way, so the run is auditable after the fact.
 #
 #   3. workflow_run — chained off Reconciler's completion, success only. A
 #      failed audit means the findings are unreliable, and repairing against
@@ -72,10 +92,17 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
 
-      # ONLY an explicit manual dispatch can select live. Schedule and
-      # workflow_run both run dry — neither has an `inputs` context, and
-      # defaulting an unattended trigger to live is exactly the silent
-      # escalation this routine must not have.
+      # Schedule and workflow_run run LIVE; manual dispatch reads the dropdown
+      # and defaults to dry-run.
+      #
+      # The condition is written as "dispatch AND NOT live -> dry" rather than
+      # "schedule OR workflow_run -> live" on purpose. Only workflow_dispatch
+      # has an `inputs` context — it is null for the other two — so anchoring
+      # the test on the one trigger that HAS the input keeps the other two from
+      # depending on an expression that cannot evaluate for them. It also fails
+      # safe: a trigger nobody has thought of yet lands in the live branch only
+      # by being explicitly not-a-dry-dispatch, and any future dispatch-shaped
+      # trigger inherits the dry default rather than silently escalating.
       - name: Run Reconciler Fix
         env:
           BRAIN_API_TOKEN: ${{ secrets.BRAIN_API_TOKEN }}
@@ -84,10 +111,10 @@ jobs:
           ATTIO_API_BASE: ${{ secrets.ATTIO_API_BASE }}
           ZAPIER_SLACK_HOOK_URL: ${{ secrets.ZAPIER_SLACK_HOOK_URL }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.mode }}" = "live" ]; then
-            npm run reconciler-fix -- --live --json-out out/reconciler-fix-report.json
-          else
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.mode }}" != "live" ]; then
             npm run reconciler-fix -- --dry-run --json-out out/reconciler-fix-report.json
+          else
+            npm run reconciler-fix -- --live --json-out out/reconciler-fix-report.json
           fi
 
       - name: Upload report
