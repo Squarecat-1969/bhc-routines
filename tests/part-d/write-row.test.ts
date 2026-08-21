@@ -319,11 +319,33 @@ describe('writeRow — 4e Tasks_Open (real 13-col A-M shape, not the spec\'s sta
     expect(append).toBeDefined();
     const row = (append!.body as { values: unknown[][] }).values[0]!;
     expect(row).toHaveLength(13); // A-M, not the spec's stale 15
-    expect(row[0]).toMatch(/^TASK-\d+$/);
+    expect(row[0]).toMatch(/^TASK-\d+-[a-z0-9]+$/);
     expect(row[6]).toBe('Send follow-up'); // G
     expect(row[7]).toBe('2026-07-25'); // H
     expect(row[8]).toBe('Open'); // I
     expect(row[9]).toBe('High'); // J
+  });
+
+  // `now` is per-row constant, so a Task_ID built only from now.getTime()
+  // gives every task on the same row the SAME ID. Tasks_Open Task_ID is the
+  // key PASS 2.5 matches reconciliation rows on (reconciliation-queue-write's
+  // Source_Task_ID overlap) — duplicate IDs there collapse distinct tasks into
+  // one. Same fix makeActivityId already carries.
+  it('gives every task on the same row a DISTINCT Task_ID', async () => {
+    const { sheets, attio, masterId } = await setup({
+      entries: [], people: {}, masterId: MASTER_ID_ROWS, contactsHeader: [], contacts: [],
+    });
+    await writeRow(sheets, attio, masterId, baseInput({
+      tasks: [
+        { description: 'Task one', due_date: '2026-07-25', priority: 'High' },
+        { description: 'Task two', due_date: '2026-07-26', priority: 'Medium' },
+        { description: 'Task three', due_date: '2026-07-27', priority: 'Low' },
+      ],
+    }));
+    const appends = backend.sheetsWrites.filter((w) => (w.body as { range?: string }).range === 'Tasks_Open!A1');
+    expect(appends).toHaveLength(3);
+    const ids = appends.map((w) => (w.body as { values: unknown[][] }).values[0]![0] as string);
+    expect(new Set(ids).size).toBe(3);
   });
 
   it('defaults priority to Medium when the staged task has none', async () => {

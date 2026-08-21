@@ -159,6 +159,9 @@ export const ACTIVITY_LOG_COLS = {
   body: 9, // J
   outcome: 13, // N
   nextActionNote: 15, // P
+  // V — written by Part D (write-row.ts, primary and secondary Activity_Log
+  // rows). Mapped for completeness; no reader goes through this key yet.
+  interactionDate: 21, // V
 } as const;
 
 /**
