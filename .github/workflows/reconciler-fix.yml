@@ -12,6 +12,9 @@ name: Reconciler Fix
 #   • MANUAL dispatch stays DRY-RUN BY DEFAULT, live only on explicit opt-in.
 #     That is a separate safety property and it is unchanged — a human at a
 #     keyboard should have to say "yes, live" out loud.
+#   • ANYTHING ELSE runs dry. The live cases are enumerated in the run step;
+#     a trigger not on that list falls through to dry rather than inheriting
+#     write access it was never granted.
 #
 # WHY THE UNATTENDED PATHS WERE LOOSENED (2026-08-21). They ran dry from the
 # day this file was written, deliberately, because two interaction bugs were
@@ -92,17 +95,25 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
 
-      # Schedule and workflow_run run LIVE; manual dispatch reads the dropdown
-      # and defaults to dry-run.
+      # THE LIVE CASES ARE ENUMERATED; EVERYTHING ELSE FALLS THROUGH TO DRY.
       #
-      # The condition is written as "dispatch AND NOT live -> dry" rather than
-      # "schedule OR workflow_run -> live" on purpose. Only workflow_dispatch
-      # has an `inputs` context — it is null for the other two — so anchoring
-      # the test on the one trigger that HAS the input keeps the other two from
-      # depending on an expression that cannot evaluate for them. It also fails
-      # safe: a trigger nobody has thought of yet lands in the live branch only
-      # by being explicitly not-a-dry-dispatch, and any future dispatch-shaped
-      # trigger inherits the dry default rather than silently escalating.
+      # Three ways to be live, listed explicitly: the weekly schedule, the
+      # chain off Reconciler, or a manual dispatch that opted in. Anything not
+      # on that list — a trigger type this file does not yet know about, a
+      # `push`, a future event — gets dry-run.
+      #
+      # Written this way deliberately, and NOT as "dispatch AND NOT live ->
+      # dry, everything else -> live". That inverted form looks equivalent for
+      # the three triggers that exist today and is not: it makes LIVE the
+      # fallback, so any trigger added later escalates to writing Attio and
+      # Master_ID silently, by default, with nobody having decided it should.
+      # For a routine whose whole gating history is about not writing
+      # unattended until it had earned it, the fallback has to be the safe
+      # side. Adding a trigger should require adding it here on purpose.
+      #
+      # Note `inputs.mode` is only evaluated inside the workflow_dispatch arm —
+      # it is null for the other triggers, so it is never the deciding test for
+      # them.
       - name: Run Reconciler Fix
         env:
           BRAIN_API_TOKEN: ${{ secrets.BRAIN_API_TOKEN }}
@@ -111,10 +122,14 @@ jobs:
           ATTIO_API_BASE: ${{ secrets.ATTIO_API_BASE }}
           ZAPIER_SLACK_HOOK_URL: ${{ secrets.ZAPIER_SLACK_HOOK_URL }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.mode }}" != "live" ]; then
-            npm run reconciler-fix -- --dry-run --json-out out/reconciler-fix-report.json
-          else
+          EVENT="${{ github.event_name }}"
+          MODE="${{ inputs.mode }}"
+          if [ "$EVENT" = "schedule" ] \
+            || [ "$EVENT" = "workflow_run" ] \
+            || { [ "$EVENT" = "workflow_dispatch" ] && [ "$MODE" = "live" ]; }; then
             npm run reconciler-fix -- --live --json-out out/reconciler-fix-report.json
+          else
+            npm run reconciler-fix -- --dry-run --json-out out/reconciler-fix-report.json
           fi
 
       - name: Upload report
