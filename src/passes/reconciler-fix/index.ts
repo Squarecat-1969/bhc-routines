@@ -37,6 +37,12 @@ export interface ReconcilerFixReport {
   readonly a3: A3Result;
   readonly s4: S4Result;
   readonly i1: I1Result;
+  /**
+   * BHC_IDs whose A1 finding was skipped because the same pointer is contested
+   * by an S4 group this run. A real, distinct category of "not acted on for a
+   * good reason" - never folded into A1's needs_manual outcomes.
+   */
+  readonly excludedFromA1: readonly string[];
   /** Every write that WOULD have been issued, when dryRun. */
   readonly wouldWrite: readonly string[];
   readonly warnings: readonly string[];
@@ -114,12 +120,46 @@ export async function runReconcilerFix(opts: {
   logger.info(`PASS 3 - S1: ${s1Ids.size} flagged BHC_ID(s), ${s1Rows.length} matching Master_ID row(s)`);
   const s1 = await repairS1(s1Rows, { sheets: ports.sheets, logger, fixRunId });
 
-  const a1: A1Candidate[] = of('A1').map((r) => ({
+  // A1 AND S4 MUST NOT BOTH ACT ON THE SAME POINTER.
+  //
+  // Hoisted above A1 deliberately. Both candidate lists are built from the same
+  // frozen Reconciler_Report snapshot before either pass runs, so this is NOT
+  // fixable by reordering the passes: whichever ran second would still hold its
+  // own candidate for the row and could re-corrupt what the first had just
+  // resolved, merely in the opposite direction.
+  //
+  // A row whose Attio pointer is contested is not an independent A1 defect. Its
+  // "Master_ID claims X, Attio says Y" disagreement IS the ownership question,
+  // and adjudicating that is S4's job exclusively - S4 asks Attio who actually
+  // owns the record, which A1 cannot do. Confirmed live: A1 ran first, wrote the
+  // wrong claimant's BHC_ID onto the shared record, and S4's own correct
+  // ownership check then read back the value A1 had just corrupted and cleared
+  // the TRUE owner's pointer.
+  //
+  // The name gate is no defence here. Rows share a pointer precisely because
+  // they are usually the same human, so their names match and the gate passes.
+  //
+  // Skipping is correct rather than deferring: once S4 resolves the group, Attio
+  // and Master_ID agree, and a future Reconciler pass will not raise an A1
+  // finding for that row at all.
+  const s4Pointers = new Set(of('S4').map((r) => cell(r, COL.attioRecordId)).filter((v) => v !== ''));
+
+  const excludedFromA1: string[] = [];
+  const a1: A1Candidate[] = of('A1').filter((r) => {
+    const pointer = cell(r, COL.attioRecordId);
+    if (pointer !== '' && s4Pointers.has(pointer)) {
+      const bhcId = cell(r, COL.bhcId);
+      excludedFromA1.push(bhcId);
+      logger.info(`  ${bhcId} excluded from A1: pointer ${pointer} is contested by an S4 group this run - ownership is S4's to resolve`);
+      return false;
+    }
+    return true;
+  }).map((r) => ({
     masterRow: Number.parseInt(cell(r, COL.masterRow), 10) || 0,
     bhcId: cell(r, COL.bhcId), fullName: cell(r, COL.fullName),
     attioRecordId: cell(r, COL.attioRecordId), expectedBhcId: cell(r, COL.expected) || cell(r, COL.bhcId),
   }));
-  logger.info(`PASS 4 - A1: ${a1.length} candidate(s)`);
+  logger.info(`PASS 4 - A1: ${a1.length} candidate(s)${excludedFromA1.length > 0 ? ` (${excludedFromA1.length} excluded as S4-contested)` : ''}`);
   const a1Result = await repairA1(a1, { sheets: ports.sheets, attio: ports.attio, logger, fixRunId });
 
   const a3: A3Candidate[] = of('A3').map((r) => ({
@@ -130,7 +170,6 @@ export async function runReconcilerFix(opts: {
   logger.info(`PASS 5 - A3: ${a3.length} candidate(s)`);
   const a3Result = await repairA3(a3, { sheets: ports.sheets, attio: ports.attio, logger, fixRunId });
 
-  const s4Pointers = new Set(of('S4').map((r) => cell(r, COL.attioRecordId)).filter((v) => v !== ''));
   const s4Rows: S4Row[] = masterRows.filter((r) => s4Pointers.has(r.attioRecordId));
   logger.info(`PASS 6 - S4: ${s4Pointers.size} flagged pointer(s), ${s4Rows.length} matching Master_ID row(s)`);
   const s4 = await repairS4(s4Rows, { sheets: ports.sheets, attio: ports.attio, logger, fixRunId });
@@ -154,6 +193,7 @@ export async function runReconcilerFix(opts: {
 
   return {
     fixRunId, dryRun, sourceRunId, startedAt, finishedAt: new Date().toISOString(),
-    candidates, s1, a1: a1Result, a3: a3Result, s4, i1: i1Result, wouldWrite, warnings,
+    candidates, s1, a1: a1Result, a3: a3Result, s4, i1: i1Result,
+    excludedFromA1, wouldWrite, warnings,
   };
 }
