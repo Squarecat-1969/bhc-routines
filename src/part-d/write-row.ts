@@ -398,6 +398,13 @@ export async function writeRow(
     '', // Run_ID — filled by caller if needed; not part of WriteRowInput today
     bhcId,
     contactName,
+    // Entry_Date = WRITE time (when this row was created), decided
+    // explicitly 2026-08-21 — NOT the interaction's own time. The field name
+    // invites the other reading, so it is settled here rather than left to
+    // be re-litigated: the interaction's own time lives in Activity_Log's
+    // Interaction_Date, column V. `nowIso` is already exactly that write
+    // time (`new Date()` at the top of writeRow), so this is a statement of
+    // the decision, not a change to what gets written.
     nowIso, // Entry_Date, ISO-Z
     'Email',
     'Email',
