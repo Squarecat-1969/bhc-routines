@@ -73,8 +73,13 @@ function makeActivityId(now: Date = new Date()): string {
   return `ACT-${now.getTime()}-${rand}`;
 }
 
+// Same shape as makeActivityId, and for the same reason: `now` is constant
+// for the whole row, so a timestamp alone gives every task on a multi-task
+// row an identical ID. Tasks_Open Task_ID is what PASS 2.5 matches
+// reconciliation rows on by overlap — duplicates there merge distinct tasks.
 function makeTaskId(now: Date = new Date()): string {
-  return `TASK-${now.getTime()}`;
+  const rand = Math.random().toString(36).slice(2, 8);
+  return `TASK-${now.getTime()}-${rand}`;
 }
 
 /**
