@@ -43,6 +43,14 @@ export interface ReconcilerFixReport {
    * good reason" - never folded into A1's needs_manual outcomes.
    */
   readonly excludedFromA1: readonly string[];
+  /**
+   * BHC_IDs whose I1 finding was skipped because that same BHC_ID is an active
+   * S1 duplicate this run. Same reasoning and same structural separation as
+   * excludedFromA1: "not acted on because ownership is unresolved" is a
+   * different fact from I1's needs_manual outcomes, and folding the two
+   * together would hide it.
+   */
+  readonly excludedFromI1: readonly string[];
   /** Every write that WOULD have been issued, when dryRun. */
   readonly wouldWrite: readonly string[];
   readonly warnings: readonly string[];
@@ -174,7 +182,32 @@ export async function runReconcilerFix(opts: {
   logger.info(`PASS 6 - S4: ${s4Pointers.size} flagged pointer(s), ${s4Rows.length} matching Master_ID row(s)`);
   const s4 = await repairS4(s4Rows, { sheets: ports.sheets, attio: ports.attio, logger, fixRunId });
 
+  // I1 MUST NOT SYNC ONTO A DISPUTED IDENTITY.
+  //
+  // The residual the A1/S4 exclusion found and left for its own follow-up.
+  // I1's two-part gate (name + bhc_contact_id == BHC_ID) is not enough here,
+  // and passes for a reason that looks like correctness: when two Master_ID
+  // rows claim the same BHC_ID while pointing at their OWN distinct Attio
+  // records, each record genuinely carries that BHC_ID and a matching name, so
+  // each row's gate passes correctly FROM THAT ROW'S OWN PERSPECTIVE. Neither
+  // row can see that a human has not yet decided which of the two is the real
+  // person.
+  //
+  // Milder than the A1/S4 bug - no cross-contamination, each write stays on its
+  // own record - but still a write onto an identity formally under dispute, and
+  // S1 exists precisely because that judgment is not mechanically resolvable.
+  //
+  // Reuses s1Ids, already built above for PASS 3. Keyed on BHC_ID, which is
+  // what S1 disputes; the A1 exclusion keys on the Attio pointer, which is what
+  // S4 disputes. Different disputes, different keys.
+  const excludedFromI1: string[] = [];
   const i1: I1Candidate[] = of('I1').flatMap((r) => {
+    const bhcId = cell(r, COL.bhcId);
+    if (s1Ids.has(bhcId)) {
+      excludedFromI1.push(bhcId);
+      logger.info(`  ${bhcId} excluded from I1: S1-disputed, ownership not yet resolved - a human must settle the duplicate first`);
+      return [];
+    }
     const field = cell(r, COL.notes).trim();
     if (field !== 'Title' && field !== 'Company' && field !== 'Email') {
       warnings.push(`I1 row for ${cell(r, COL.bhcId)} has unrecognised Field ${JSON.stringify(field)} - skipped`);
@@ -186,7 +219,7 @@ export async function runReconcilerFix(opts: {
       attioRecordId: cell(r, COL.attioRecordId), field: field as I1Field, expected: cell(r, COL.expected),
     }];
   });
-  logger.info(`PASS 6.5 - I1: ${i1.length} candidate(s)`);
+  logger.info(`PASS 6.5 - I1: ${i1.length} candidate(s)${excludedFromI1.length > 0 ? ` (${excludedFromI1.length} excluded as S1-disputed)` : ''}`);
   const i1Result = await repairI1(i1, { sheets: ports.sheets, attio: ports.attio, logger, fixRunId });
 
   if (dryRun) logger.info(`DRY RUN - ${wouldWrite.length} write(s) computed, 0 issued`);
@@ -194,6 +227,6 @@ export async function runReconcilerFix(opts: {
   return {
     fixRunId, dryRun, sourceRunId, startedAt, finishedAt: new Date().toISOString(),
     candidates, s1, a1: a1Result, a3: a3Result, s4, i1: i1Result,
-    excludedFromA1, wouldWrite, warnings,
+    excludedFromA1, excludedFromI1, wouldWrite, warnings,
   };
 }
