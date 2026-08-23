@@ -15,6 +15,7 @@ import { loadEnv } from '../config/env.js';
 import { AttioClient } from '../lib/attio.js';
 import { createLogger } from '../lib/logger.js';
 import { SheetsClient } from '../lib/sheets.js';
+import { createNoopSlackPoster, createSlackPoster } from '../lib/slack.js';
 import { runReconcilerFix } from '../passes/reconciler-fix/index.js';
 
 interface Args { dryRun: boolean; jsonOut: string | undefined; fixRunId: string | undefined }
@@ -48,7 +49,17 @@ async function main(): Promise<void> {
     onRetry: ({ attempt, delayMs }) => logger.warn(`  attio retry ${attempt} in ${delayMs}ms`),
   });
 
-  const report = await runReconcilerFix({ sheets, attio, logger, dryRun: args.dryRun, fixRunId });
+  // Same ternary, same env var, same #aida identity as run-reconciler.ts.
+  // Deliberately not a second Slack pathway - one poster module, one hook.
+  const slack =
+    !args.dryRun && env.ZAPIER_SLACK_HOOK_URL
+      ? createSlackPoster({ hookUrl: env.ZAPIER_SLACK_HOOK_URL })
+      : createNoopSlackPoster((text) => {
+          logger.info(`Slack post skipped (${args.dryRun ? 'dry run' : 'no ZAPIER_SLACK_HOOK_URL'}). Would post:`);
+          console.log(text);
+        });
+
+  const report = await runReconcilerFix({ sheets, attio, logger, dryRun: args.dryRun, fixRunId, slack });
 
   logger.info('');
   logger.info(`candidates : ${JSON.stringify(report.candidates)}`);

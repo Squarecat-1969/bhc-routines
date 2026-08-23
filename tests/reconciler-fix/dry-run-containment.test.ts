@@ -68,4 +68,37 @@ describe('dry run cannot reach a real write, even with candidates present', () =
     });
     for (const w of r.wouldWrite) expect(w).toMatch(/^(SHEETS Master_ID!|ATTIO )/);
   });
+
+  // A Slack post is a side effect OUTSIDE this process, so it belongs to the
+  // same containment guarantee as a sheet write — a dry run must be
+  // indistinguishable from not having run at all. Proved the same way: rig
+  // post() to throw, and let a passing run be the proof it was never called.
+  it('issues no Slack post on a dry run', async () => {
+    const exploding = {
+      async post() { throw new Error('SLACK POST REACHED — dry run is not contained'); },
+    };
+    const r = await runReconcilerFix({
+      sheets: sheets as never, attio: attio as never, logger: silent,
+      dryRun: true, fixRunId: 'RECON-FIX-TEST', slack: exploding,
+    });
+    expect(r.dryRun).toBe(true);
+  });
+
+  // The other half of the same property: suppression must be specific to dry
+  // run, not an accidental "never posts". Without this, a guard inverted to
+  // always-skip would pass the test above and silently kill the report.
+  it('DOES post exactly once on a live run, with the run in the message', async () => {
+    const posted: string[] = [];
+    const recording = { async post(text: string) { posted.push(text); } };
+    // Live, but every write port still throws — so this also confirms the post
+    // happens after the passes, not instead of them.
+    const readOnlySheets = { ...sheets, async update() { return {}; } };
+    const readOnlyAttio = { ...attio, async updatePersonRecord() { return undefined as never; } };
+    await runReconcilerFix({
+      sheets: readOnlySheets as never, attio: readOnlyAttio as never, logger: silent,
+      dryRun: false, fixRunId: 'RECON-FIX-LIVE', slack: recording,
+    });
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toContain('RECON-FIX-LIVE');
+  });
 });

@@ -13,6 +13,9 @@
 import { RANGES } from '../../config/constants.js';
 import { cell, type SheetsClient } from '../../lib/sheets.js';
 import type { AttioClient } from '../../lib/attio.js';
+import type { SlackPoster } from '../../lib/slack.js';
+import type { IssueCode } from '../reconciler/types.js';
+import { buildFixSlackMessage, outOfScopeCodes } from './report.js';
 import { makeAttioIdentityWritePort, makeMasterSheetPort } from './adapters.js';
 import { repairS1, type S1Result, type S1Row } from './s1.js';
 import { repairS4, type S4Result, type S4Row } from './s4.js';
@@ -51,6 +54,16 @@ export interface ReconcilerFixReport {
    * together would hide it.
    */
   readonly excludedFromI1: readonly string[];
+  /**
+   * HIGH/MEDIUM findings in the SOURCE Reconciler run whose code Fix has no
+   * repair pass for - S2, S3, S5, G1, G3, A5 as ISSUE_META stands today.
+   * Counted in findings-rows, the same unit as `candidates`, and derived
+   * purely from the Reconciler_Report rows already read for PASS 1: no extra
+   * read, no write. Present so "never attempted" can be told apart from
+   * "attempted and needs a human" downstream, which is the whole point of the
+   * Slack report.
+   */
+  readonly outOfScope: Readonly<Partial<Record<IssueCode, number>>>;
   /** Every write that WOULD have been issued, when dryRun. */
   readonly wouldWrite: readonly string[];
   readonly warnings: readonly string[];
@@ -85,6 +98,14 @@ export async function runReconcilerFix(opts: {
   readonly logger: Logger;
   readonly dryRun: boolean;
   readonly fixRunId: string;
+  /**
+   * Optional so the existing unit tests can call this without one. A LIVE run
+   * with no poster warns rather than posting silently - the absence of a
+   * report is never allowed to look like a clean run. Posting lives here
+   * rather than in the CLI so dry-run containment is provable by the same
+   * throwing-port method the write paths already use.
+   */
+  readonly slack?: SlackPoster;
 }): Promise<ReconcilerFixReport> {
   const { logger, dryRun, fixRunId } = opts;
   const startedAt = new Date().toISOString();
@@ -107,6 +128,17 @@ export async function runReconcilerFix(opts: {
   const issues = report.filter((r) => cell(r, COL.runId) === sourceRunId);
   const of = (code: string) => issues.filter((r) => cell(r, COL.code) === code);
   logger.info(`PASS 1 - source run ${sourceRunId ?? '(none)'} · ${issues.length} row(s)`);
+
+  // Same frozen snapshot, no extra read: what this run's source audit raised
+  // that Fix has no pass for. Reported, never acted on.
+  const outOfScope: Partial<Record<IssueCode, number>> = {};
+  for (const code of outOfScopeCodes()) {
+    const n = of(code).length;
+    if (n > 0) outOfScope[code] = n;
+  }
+  if (Object.keys(outOfScope).length > 0) {
+    logger.info(`  out of Fix's scope (reported, never repaired): ${JSON.stringify(outOfScope)}`);
+  }
 
   // PASS 2 - Master_ID index.
   const master = await opts.sheets.read(RANGES.masterId);
@@ -224,9 +256,26 @@ export async function runReconcilerFix(opts: {
 
   if (dryRun) logger.info(`DRY RUN - ${wouldWrite.length} write(s) computed, 0 issued`);
 
-  return {
+  // `report` is already taken above - it is the raw Reconciler_Report rows.
+  const fixReport: ReconcilerFixReport = {
     fixRunId, dryRun, sourceRunId, startedAt, finishedAt: new Date().toISOString(),
     candidates, s1, a1: a1Result, a3: a3Result, s4, i1: i1Result,
-    excludedFromA1, excludedFromI1, wouldWrite, warnings,
+    excludedFromA1, excludedFromI1, outOfScope, wouldWrite, warnings,
   };
+
+  // SLACK IS SUPPRESSED ON DRY RUN, exactly as reconciler/index.ts does it. A
+  // dry run is meant to be indistinguishable from not having run at all from
+  // outside this process, and a post to #aida is outside this process.
+  const message = buildFixSlackMessage(fixReport);
+  if (dryRun) {
+    logger.info('DRY RUN - Slack suppressed. Would post:');
+    logger.info(message);
+  } else if (opts.slack) {
+    await opts.slack.post(message);
+  } else {
+    logger.warn('LIVE run with no Slack poster configured - report NOT posted:');
+    logger.info(message);
+  }
+
+  return fixReport;
 }
