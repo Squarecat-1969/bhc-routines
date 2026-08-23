@@ -6,12 +6,13 @@ name: Reconciler Fix
 #
 # MODE BY TRIGGER, and the two halves are deliberately different:
 #
-#   • The UNATTENDED paths (schedule, workflow_run) run LIVE. This routine
-#     exists to repair, and a weekly job that only ever reports what it would
-#     have done never actually fixes anything.
+#   • The UNATTENDED path (workflow_run) runs LIVE. This routine exists to
+#     repair, and a chained job that only ever reports what it would have
+#     done never actually fixes anything.
 #   • MANUAL dispatch stays DRY-RUN BY DEFAULT, live only on explicit opt-in.
-#     That is a separate safety property and it is unchanged — a human at a
-#     keyboard should have to say "yes, live" out loud.
+#     That is a separate safety property and it is unchanged — a human (or
+#     Aida's Settings button, on Bobby's explicit click) has to say "yes,
+#     live" out loud.
 #   • ANYTHING ELSE runs dry. The live cases are enumerated in the run step;
 #     a trigger not on that list falls through to dry rather than inheriting
 #     write access it was never granted.
@@ -19,7 +20,9 @@ name: Reconciler Fix
 # WHY THE UNATTENDED PATHS WERE LOOSENED (2026-08-21). They ran dry from the
 # day this file was written, deliberately, because two interaction bugs were
 # open — both of which corrupted data in exactly the "nobody is watching" shape
-# an unattended live run has:
+# an unattended live run has. This applied to both unattended triggers that
+# existed at the time — the standalone schedule (since removed, see below) and
+# workflow_run:
 #
 #   PR #19  A1 acted on an Attio pointer S4 was still adjudicating, overwrote a
 #           shared record with the wrong claimant's BHC_ID, and S4 then cleared
@@ -32,26 +35,39 @@ name: Reconciler Fix
 # pinned by a mutation-checked test. That is what changed; nothing about the
 # routine's write surface did.
 #
-# THREE TRIGGERS, mirroring reconciler.yml:
+# TWO TRIGGERS (standalone schedule removed 2026-08-23 — see note below):
 #
-#   1. workflow_dispatch — on demand, DRY-RUN by default, live on opt-in.
+#   1. workflow_dispatch — on demand, DRY-RUN by default, live on opt-in. This
+#      is also the trigger Aida's Settings page will call for a manual "Run
+#      Fix" button — same mechanism Part D already uses from Aida's resolve
+#      route — so Bobby can re-run Fix on its own after correcting an upstream
+#      cause, without re-running Resync + Reconciler first.
 #
-#   2. schedule — Sunday 10:00 UTC = 3am PDT / 2am PST, one hour AFTER
-#      Reconciler's 2am slot, for the same reason Resync IDs sits an hour
-#      before it: the pass that produces the findings should land before the
-#      pass that consumes them. The gap is a courtesy, not the mechanism —
-#      GitHub cron is best-effort, so ORDER is guaranteed by the chain below.
-#
-#      RUNS LIVE. It ran dry until 2026-08-21 while the A1/S4 and I1/S1
-#      interaction bugs were open (see the header). With those closed, the
-#      weekly sweep repairs rather than merely reporting — the report artifact
-#      is still uploaded either way, so the run is auditable after the fact.
-#
-#   3. workflow_run — chained off Reconciler's completion, success only. A
+#   2. workflow_run — chained off Reconciler's completion, success only. A
 #      failed audit means the findings are unreliable, and repairing against
-#      unreliable findings is worse than not repairing.
+#      unreliable findings is worse than not repairing. This is now the ONLY
+#      automated path into a live Fix run.
 #
-# The full chain, once all three are on main:
+# STANDALONE SCHEDULE REMOVED 2026-08-23. It existed to catch one narrow
+# failure mode: Reconciler succeeds, but the Reconciler -> Fix workflow_run
+# event itself fails to deliver (a typo in `workflows:` below, a rename,
+# GitHub Actions event delivery dropping it). That's real but thin — no
+# precedent as of this decision, versus Resync's schedule, which protects
+# against a documented failure (the 2026-08-19 incident, run 32311256297,
+# where Resync itself failed at startup). Fix's schedule also protected less
+# than it looked like: its only input is Reconciler_Report, which Reconciler
+# clears and rewrites every run, so a standalone Fix run reprocessed whatever
+# was already sitting there rather than independently verifying anything
+# fresh — it was never an audit the way Reconciler's own schedule is. On top
+# of that, every unattended run cost real Attio read/write volume for a
+# failure mode that has never occurred. Once Fix's Slack report ships
+# (tracked separately), a Reconciler post with no matching Fix post becomes
+# the detection signal for a broken chain link, replacing what the schedule
+# was insuring against — removing it here doesn't trade away visibility, it
+# moves the visibility from "ran uselessly every week" to "silence is itself
+# the signal, and silence is loud now that Fix posts."
+#
+# The full chain:
 #   Resync IDs -> Reconciler -> Reconciler Fix
 
 on:
@@ -64,9 +80,6 @@ on:
         type: choice
         options: [dry-run, live]
 
-  schedule:
-    - cron: '0 10 * * 0'
-
   workflow_run:
     workflows: ['Reconciler']
     types: [completed]
@@ -78,8 +91,8 @@ concurrency:
 jobs:
   fix:
     runs-on: ubuntu-latest
-    # `github.event.workflow_run` is null for schedule and dispatch, so testing
-    # conclusion alone would evaluate false and silently disable both.
+    # `github.event.workflow_run` is null for workflow_dispatch, so testing
+    # conclusion alone would evaluate false and silently disable it.
     if: >-
       github.event_name != 'workflow_run' ||
       github.event.workflow_run.conclusion == 'success'
@@ -97,14 +110,15 @@ jobs:
 
       # THE LIVE CASES ARE ENUMERATED; EVERYTHING ELSE FALLS THROUGH TO DRY.
       #
-      # Three ways to be live, listed explicitly: the weekly schedule, the
-      # chain off Reconciler, or a manual dispatch that opted in. Anything not
-      # on that list — a trigger type this file does not yet know about, a
-      # `push`, a future event — gets dry-run.
+      # Two ways to be live now, listed explicitly: the chain off Reconciler,
+      # or a manual dispatch that opted in (whether from a terminal or from
+      # Aida's Settings button — both are workflow_dispatch calls carrying the
+      # same mode input). Anything not on that list — a trigger type this file
+      # does not yet know about, a `push`, a future event — gets dry-run.
       #
       # Written this way deliberately, and NOT as "dispatch AND NOT live ->
       # dry, everything else -> live". That inverted form looks equivalent for
-      # the three triggers that exist today and is not: it makes LIVE the
+      # the two triggers that exist today and is not: it makes LIVE the
       # fallback, so any trigger added later escalates to writing Attio and
       # Master_ID silently, by default, with nobody having decided it should.
       # For a routine whose whole gating history is about not writing
@@ -112,8 +126,7 @@ jobs:
       # side. Adding a trigger should require adding it here on purpose.
       #
       # Note `inputs.mode` is only evaluated inside the workflow_dispatch arm —
-      # it is null for the other triggers, so it is never the deciding test for
-      # them.
+      # it is null for workflow_run, so it is never the deciding test there.
       - name: Run Reconciler Fix
         env:
           BRAIN_API_TOKEN: ${{ secrets.BRAIN_API_TOKEN }}
@@ -124,8 +137,7 @@ jobs:
         run: |
           EVENT="${{ github.event_name }}"
           MODE="${{ inputs.mode }}"
-          if [ "$EVENT" = "schedule" ] \
-            || [ "$EVENT" = "workflow_run" ] \
+          if [ "$EVENT" = "workflow_run" ] \
             || { [ "$EVENT" = "workflow_dispatch" ] && [ "$MODE" = "live" ]; }; then
             npm run reconciler-fix -- --live --json-out out/reconciler-fix-report.json
           else
