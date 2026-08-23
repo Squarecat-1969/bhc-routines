@@ -31,23 +31,32 @@ name: Reconciler
 #      would put a third-party service in the middle of an internal chain. The
 #      native event needs no credentials and no external dependency.
 #
-# ACCEPTED REDUNDANCY, documented rather than suppressed: on a Sunday, Resync
-# IDs' schedule fires, succeeds, and chains into Reconciler — while Reconciler's
-# own schedule fires in the same window. That is two Reconciler runs. It is
-# harmless: the routine is read-only and idempotent, so the second run reads the
-# same state and rewrites the same report. The cost is one duplicate Slack post
-# and a second pass of Attio reads (~2250 GETs, ~3.5 min). Nothing suppresses
-# it, for the same reason the safety-net schedule exists at all — the duplicate
-# is the visible symptom of the redundancy working, and silencing it would hide
-# the case where only one of the two paths ran.
+# REDUNDANCY, RESOLVED 2026-08-23: this used to read "accepted redundancy" —
+# on a Sunday, Resync IDs' schedule fired, succeeded, and chained into
+# Reconciler, while Reconciler's own standalone schedule ALSO fired in the same
+# 08:00-09:00 UTC window, producing two Reconciler runs. Harmless in itself —
+# read-only and idempotent, so the second run just reread the same state and
+# rewrote the same report — but it cost a duplicate Slack post and a second
+# ~3.5 min pass of Attio reads (~2250 GETs) every week, and it silently doubled
+# Reconciler Fix too, since reconciler-fix.yml chains off ANY Reconciler
+# completion, not specifically the chained one. Moving the standalone schedule
+# to Wednesday 08:00 UTC (below) keeps the exact safety-net purpose the Sunday
+# slot had — it still fires independently of the chain, so a silently broken
+# chain is still caught within the week (see resync-ids.yml's 2026-08-19
+# incident, run 32311256297, where a failed Resync took the chain down with
+# it) — it just no longer lands in the chain's own window. Left here as a
+# record of why the schedule sits where it does now, per this repo's
+# correct-in-the-open convention: don't silently edit a wrong prior decision,
+# log why it changed.
 #
-# SCHEDULE ORDERING: this runs at 09:00 UTC (2am PDT / 1am PST); Resync IDs runs
-# an hour earlier at 08:00 UTC. That gap was nominal-only until 2026-08-19 —
-# resync-ids.yml was on '0 9 * * 0' with a comment claiming 1am Pacific, which
-# is wrong (09:00 UTC is 2am PDT), so both fired simultaneously. Corrected in
-# the same change that added this file. The gap is a courtesy, not the
-# mechanism: GitHub cron is best-effort, so the ORDER is guaranteed by the
-# workflow_run chain below, never by the clock.
+# SCHEDULE ORDERING: this now runs Wednesday 08:00 UTC, a separate day from
+# Resync IDs' Sunday 08:00 UTC slot — updated 2026-08-23 (see REDUNDANCY note
+# above) specifically to stop colliding with the Sunday chain window. Ordering
+# relative to Resync IDs was never the reason for the standalone schedule's
+# time-of-day anyway: this run is independent BY DESIGN, and the workflow_run
+# chain below is what guarantees Reconciler runs after a fresh Resync — the
+# schedule's own clock time only matters for spacing it away from that chain,
+# not for ordering against it.
 
 on:
   workflow_dispatch:
@@ -67,12 +76,17 @@ on:
         options: [live, dry-run]
 
   schedule:
-    # Sunday 09:00 UTC = 2am PDT / 1am PST. Reconciler's long-standing standalone
-    # slot, carried over from the Python routine. Single entry, no DST-covering
-    # pair: this routine is read-only and idempotent, so an hour of seasonal
-    # drift costs nothing — unlike Late Edition, where a DST-covering cron pair
-    # caused a real double-run bug.
-    - cron: '0 9 * * 0'
+    # Wednesday 08:00 UTC = 1am PDT / 12am PST. Moved off Sunday on 2026-08-23
+    # to stop colliding with the Resync -> Reconciler chain, which also lands
+    # in the Sunday 08:00-09:00 UTC window (see REDUNDANCY note above, now
+    # resolved rather than merely documented). Wednesday still delivers the
+    # same safety-net purpose as before — an independent slot the chain
+    # doesn't touch, so a silently broken chain still gets caught within the
+    # week — it just no longer produces a duplicate run doing it. Single entry,
+    # no DST-covering pair: this routine is read-only and idempotent, so an
+    # hour of seasonal drift costs nothing — unlike Late Edition, where a
+    # DST-covering cron pair caused a real double-run bug.
+    - cron: '0 8 * * 3'
 
   workflow_run:
     workflows: ['Resync IDs']
