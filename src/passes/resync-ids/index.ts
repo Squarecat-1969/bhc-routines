@@ -98,20 +98,33 @@ export async function runResyncIds(opts: ResyncOptions): Promise<ResyncReport> {
     const failed = tally('WRITE_FAILED') + tally('MISMATCH');
     const unsure = tally('VERIFY_INCONCLUSIVE');
     if (failed > 0) {
-      const w = `${failed} correction(s) did not land (${tally('WRITE_FAILED')} write failed, ${tally('MISMATCH')} read back wrong)`;
+      // Named, not just counted. This is Master_ID — the identity bridge and
+      // the only authority for which Contacts row any later write touches — so
+      // "3 did not land" is not actionable in the way "BHC-00143 at row 145 did
+      // not land" is. An operator must be able to act on the Slack post and the
+      // log alone, without opening the artifact.
+      const notLanded = writes.filter((w) => w.outcome === 'WRITE_FAILED' || w.outcome === 'MISMATCH');
+      const named = notLanded
+        .map((w) => `${w.correction.bhcId} (Master_ID row ${w.correction.masterRow} -> Google_Row ${w.correction.newRow}): ${w.outcome}`)
+        .join('\n    ');
+      const w = `⚠ ${failed} correction(s) did not land (${tally('WRITE_FAILED')} write failed, ${tally('MISMATCH')} read back wrong):\n    ${named}`;
       warnings.push(w);
       logger.warn(`  ${w}`);
     }
     if (unsure > 0) {
       // Said precisely: these were ISSUED. Calling them failures would repeat
       // exactly the misreport this distinction exists to prevent.
-      const w = `${unsure} correction(s) were issued but could not be confirmed — they may well have landed; re-run to confirm`;
+      const named = writes
+        .filter((w2) => w2.outcome === 'VERIFY_INCONCLUSIVE')
+        .map((w2) => `${w2.correction.bhcId} (Master_ID row ${w2.correction.masterRow})`)
+        .join(', ');
+      const w = `${unsure} correction(s) were issued but could not be confirmed — they may well have landed; re-run to confirm: ${named}`;
       warnings.push(w);
       logger.warn(`  ${w}`);
     }
   }
 
-  await slack.post(formatSlackMessage(plan, { dryRun, runId }));
+  await slack.post(formatSlackMessage(plan, { dryRun, runId, writes }));
 
   return {
     runId, dryRun, startedAt, finishedAt: new Date().toISOString(),
@@ -171,9 +184,33 @@ async function applyCorrections(
   for (const [i, batch] of batches.entries()) {
     const data = batch.map((c) => ({ range: rangeFor(c), values: [[c.newRow]] }));
     try {
-      await sheets.batchUpdate(data);
-      for (const c of batch) issued.set(c.masterRow, { ok: true, detail: `${rangeFor(c)} = ${c.newRow}` });
-      logger.info(`    batch ${i + 1}/${batches.length}: ${batch.length} range(s) issued`);
+      const res = await sheets.batchUpdate(data);
+
+      // The response is DIAGNOSTIC; the read-back below stays authoritative.
+      // Consuming it matters anyway, because it separates two failures the
+      // read-back alone would collapse into one misleading answer: a batch
+      // Google REFUSED outright reads back unchanged and would be reported as
+      // MISMATCH — "issued as X but read back as Y" — which points diagnosis
+      // at data drift when the truth is that the write never happened. Same
+      // layer-confusion sheets.ts's own contract warns about.
+      if (res.fieldsPresent && res.totalUpdatedCells === 0) {
+        const detail = `batch of ${batch.length} range(s) REFUSED by Sheets - totalUpdatedCells: 0, nothing was written`;
+        for (const c of batch) issued.set(c.masterRow, { ok: false, detail });
+        logger.warn(`    batch ${i + 1}/${batches.length} REFUSED: ${detail}`);
+      } else {
+        if (!res.fieldsPresent) {
+          // Unverifiable is NOT refused. Say so, and lean on the read-back.
+          logger.warn(
+            `    batch ${i + 1}/${batches.length}: response carried no totalUpdatedCells - unverifiable from the response alone, relying on the read-back`,
+          );
+        } else if (res.totalUpdatedCells < batch.length) {
+          logger.warn(
+            `    batch ${i + 1}/${batches.length}: Sheets reported ${res.totalUpdatedCells} of ${batch.length} cell(s) written - the read-back will name which`,
+          );
+        }
+        for (const c of batch) issued.set(c.masterRow, { ok: true, detail: `${rangeFor(c)} = ${c.newRow}` });
+        logger.info(`    batch ${i + 1}/${batches.length}: ${batch.length} range(s) issued`);
+      }
     } catch (e) {
       // The whole batch failed as one request, so every correction in it is
       // unwritten — not unknown. A failed request wrote nothing.

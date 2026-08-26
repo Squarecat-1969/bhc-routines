@@ -13,7 +13,7 @@
  * Pure — no I/O, no clock. The caller fetches, decides, and writes.
  */
 
-import type { MasterIdRowLite, ResyncPlan, ResyncWriteResult, RowCorrection, Unresolvable } from './types.js';
+import type { MasterIdRowLite, ResyncPlan, ResyncWriteOutcome, ResyncWriteResult, RowCorrection, Unresolvable } from './types.js';
 
 /** Location values whose Google_Row is meaningful. */
 const GOOGLE_LOCATIONS = new Set(['GOOGLE', 'BOTH']);
@@ -126,7 +126,10 @@ export function computeResync(
  * resync-ids-report.json artifact, which already records every correction with
  * its outcome and detail, and is the right place to read 291 of anything.
  */
-export function formatSlackMessage(plan: ResyncPlan, opts: { dryRun: boolean; runId: string }): string {
+export function formatSlackMessage(
+  plan: ResyncPlan,
+  opts: { dryRun: boolean; runId: string; writes?: readonly ResyncWriteResult[] },
+): string {
   const head = opts.dryRun
     ? `🔁 Resync IDs (DRY RUN — nothing written) — ${opts.runId}`
     : `🔁 Resync IDs — ${opts.runId}`;
@@ -136,6 +139,31 @@ export function formatSlackMessage(plan: ResyncPlan, opts: { dryRun: boolean; ru
     `${plan.checked} row(s) checked · ${plan.corrections.length} correction(s) · ` +
       `${plan.alreadyCorrect} already correct · ${plan.unresolvable.length} unresolvable`,
   ];
+
+  // OUTCOME, NOT INTENT — the line above is the PLAN, and on its own it said
+  // "291 correction(s)" whether 291 landed or none did. This is the surface
+  // Bobby actually reads; the artifact he does not. A repair routine that
+  // reports repairs it cannot confirm is worse than no repair routine, because
+  // it removes the suspicion that would have caught the problem.
+  //
+  // Master_ID is the identity bridge: if a correction silently no-ops and the
+  // post says it was fixed, the next routine writes to the wrong person's row
+  // with the log claiming that row was already corrected.
+  const writes = opts.writes ?? [];
+  if (!opts.dryRun && writes.length > 0) {
+    const n = (o: ResyncWriteOutcome) => writes.filter((w) => w.outcome === o).length;
+    const verified = n('VERIFIED');
+    const failed = n('WRITE_FAILED') + n('MISMATCH');
+    const unsure = n('VERIFY_INCONCLUSIVE');
+
+    lines.push(`✅ ${verified} of ${writes.length} correction(s) CONFIRMED by read-back`);
+    if (failed > 0) {
+      lines.push(`⚠ ${failed} did not land (${n('WRITE_FAILED')} write failed, ${n('MISMATCH')} read back wrong) — Master_ID pointers are still wrong`);
+    }
+    if (unsure > 0) {
+      lines.push(`❔ ${unsure} issued but unconfirmed — the read-back itself failed; re-run to confirm`);
+    }
+  }
 
   if (plan.corrections.length === 0 && plan.unresolvable.length === 0) {
     lines.push('All Google_Row pointers already correct.');

@@ -29,6 +29,16 @@ interface FakeOpts {
   failVerifyRead?: boolean;
   /** what the verification read reports back, when it succeeds */
   verifyValues?: SheetRow[];
+  /**
+   * Accept the write, report success, change NOTHING — the silent-no-op shape.
+   * `verifyValues` supplies the unchanged column, so the read-back is what
+   * catches it.
+   */
+  swallowWrites?: boolean;
+  /** Sheets reports 0 cells written: an outright REFUSAL, not a lost response. */
+  refuseWrite?: boolean;
+  /** Response carries no totalUpdatedCells: unverifiable, NOT refused. */
+  noCellsField?: boolean;
 }
 
 function fakeSheets(o: FakeOpts): { client: SheetsClient; batchUpdateCalls: number; readRanges: string[] } {
@@ -45,9 +55,13 @@ function fakeSheets(o: FakeOpts): { client: SheetsClient; batchUpdateCalls: numb
       return [];
     },
     async update(): Promise<void> { throw new Error('update() must not be used — corrections go through batchUpdate'); },
-    async batchUpdate(): Promise<void> {
+    async batchUpdate(data: readonly { range: string; values: readonly SheetRow[] }[]) {
       state.batchUpdateCalls += 1;
       if (o.failWrite) throw quota('Write');
+      if (o.noCellsField) return { totalUpdatedCells: 0, fieldsPresent: false, rangesRequested: data.length };
+      if (o.refuseWrite) return { totalUpdatedCells: 0, fieldsPresent: true, rangesRequested: data.length };
+      // swallowWrites still reports success — that is the whole point.
+      return { totalUpdatedCells: data.length, fieldsPresent: true, rangesRequested: data.length };
     },
     async append() { throw new Error('append() not used by resync'); },
   } as unknown as SheetsClient;
@@ -129,5 +143,91 @@ describe('corrections are batched, not one request per correction', () => {
   it('never falls back to per-cell update()', async () => {
     // fakeSheets throws from update(); a clean run proves it is unused.
     await expect(run({})).resolves.toBeDefined();
+  });
+});
+
+/**
+ * THE SILENT NO-OP. A batchUpdate that is accepted, reports success, and
+ * changes nothing.
+ *
+ * This is worse here than anywhere else in the repo. Resync IDs repairs
+ * Master_ID — the identity bridge, and the only authority for which Contacts
+ * row any later write touches. If a no-op is reported as a repair, the next
+ * routine writes to the wrong person's row while the log says that row was
+ * already corrected. A repair routine that cannot confirm its repairs removes
+ * the suspicion that would have caught the problem.
+ */
+describe('a write that is accepted, reports success, and changes nothing', () => {
+  it('confirms ZERO corrections and names every one that did not land', async () => {
+    // The verification read returns the OLD values — the write never took.
+    const fake = fakeSheets({ swallowWrites: true, verifyValues: [['99'], ['99']] });
+    const report = await runResyncIds({
+      sheets: fake.client, logger: silentLogger, slack: silentSlack,
+      dryRun: false, runId: 'RESYNC-NOOP',
+    });
+
+    expect(report.writes).toHaveLength(2);
+    expect(report.writes.every((w) => w.outcome === 'MISMATCH')).toBe(true);
+    expect(report.writes.every((w) => w.verified === false)).toBe(true);
+
+    // Named, not merely counted — an operator must be able to act on this.
+    const warned = report.warnings.join('\n');
+    expect(warned).toContain('did not land');
+    for (const w of report.writes) {
+      expect(warned).toContain(w.correction.bhcId);
+      expect(warned).toContain(`Master_ID row ${w.correction.masterRow}`);
+    }
+  });
+
+  it('the Slack post says ZERO confirmed, never the planned count', async () => {
+    const fake = fakeSheets({ swallowWrites: true, verifyValues: [['99'], ['99']] });
+    let posted = '';
+    const report = await runResyncIds({
+      sheets: fake.client, logger: silentLogger,
+      slack: { post: async (t: string) => { posted = t; } },
+      dryRun: false, runId: 'RESYNC-NOOP',
+    });
+    expect(report.plan.corrections.length).toBe(2); // 2 were PLANNED
+    expect(posted).toContain('0 of 2 correction(s) CONFIRMED');
+    expect(posted).toContain('did not land');
+    expect(posted).toContain('Master_ID pointers are still wrong');
+  });
+
+  it('a REFUSED batch is WRITE_FAILED, not MISMATCH — the layers are different', async () => {
+    // totalUpdatedCells: 0 means Sheets declined. Reporting that as "read back
+    // wrong" would aim diagnosis at data drift instead of a refused write.
+    const fake = fakeSheets({ refuseWrite: true, verifyValues: [['99'], ['99']] });
+    const report = await runResyncIds({
+      sheets: fake.client, logger: silentLogger, slack: silentSlack,
+      dryRun: false, runId: 'RESYNC-REFUSED',
+    });
+    expect(report.writes.every((w) => w.outcome === 'WRITE_FAILED')).toBe(true);
+    expect(report.writes.every((w) => w.written === false)).toBe(true);
+    expect(report.warnings.join(' ')).toContain('did not land');
+  });
+
+  it('an unverifiable response is NOT treated as refused — the read-back decides', async () => {
+    // No totalUpdatedCells field. Different fact from a 0: the write may well
+    // have landed, so the read-back is what settles it.
+    const fake = fakeSheets({ noCellsField: true, verifyValues: [['3'], ['4']] });
+    const report = await runResyncIds({
+      sheets: fake.client, logger: silentLogger, slack: silentSlack,
+      dryRun: false, runId: 'RESYNC-UNVERIFIABLE',
+    });
+    expect(report.writes.every((w) => w.outcome === 'VERIFIED')).toBe(true);
+    expect(report.warnings).toEqual([]);
+  });
+
+  it('a fully successful run reports every correction CONFIRMED', async () => {
+    const fake = fakeSheets({ verifyValues: [['3'], ['4']] });
+    let posted = '';
+    const report = await runResyncIds({
+      sheets: fake.client, logger: silentLogger,
+      slack: { post: async (t: string) => { posted = t; } },
+      dryRun: false, runId: 'RESYNC-OK',
+    });
+    expect(report.writes.every((w) => w.outcome === 'VERIFIED')).toBe(true);
+    expect(posted).toContain('2 of 2 correction(s) CONFIRMED');
+    expect(posted).not.toContain('did not land');
   });
 });
