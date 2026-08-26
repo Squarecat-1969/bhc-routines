@@ -1,0 +1,95 @@
+name: Zoom Discovery
+
+# Polls Fathom for new meetings, appends them to Zoom_Staging as NEW, and
+# backfills blank toplines on rows already sitting in the queue. Replaces
+# D-STEP 1/2/3 of routines/BHC_Zoom.md. STEP 0, PASS 1 and PASS 2 are untouched.
+#
+# WRITE SURFACE: Zoom_Staging only — an append of new rows, plus G (and E when
+# blank) on pre-triage rows. No CRM write of any kind, no new columns, no
+# transcripts stored. Fill-blanks-only: a populated E or G may be PASS 2's and
+# is strictly better than anything derivable at capture time.
+#
+# WHY EVERY 30 MINUTES, SINGLE CRON, NO DST PAIR:
+#   Late Edition needs two cron expressions to hit a specific LOCAL hour, and
+#   that pair caused a real double-run bug. A 30-minute sweep has no target
+#   time, so seasonal drift is meaningless and one expression is correct.
+#
+#   GitHub cron delay is also irrelevant here, which is worth stating because
+#   late-edition.yml documents runs firing 2.5-4 hours late. On a sweep with a
+#   24h lookback a late fire simply picks up everything since — there is no
+#   correctness dependency on WHEN it runs. That dependency is exactly what
+#   made cron dangerous for Late Edition and harmless for this.
+#
+# ⚠ DEFAULTS TO LIVE AND BRANCHES ON event_name, per reconciler.yml.
+#   late-edition.yml documents the trap this avoids: with --live coming solely
+#   from `inputs.mode`, the schedule (which carries no inputs context at all)
+#   silently falls through to dry-run and the workflow runs GREEN while writing
+#   nothing. Only a manual dispatch reads the dropdown.
+#
+# Scheduled workflows are disabled after 60 days of repository inactivity — a
+# silent-stop mode worth knowing about if the queue ever quietly stops filling.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'live appends Zoom_Staging + backfills toplines + posts to #aida; dry-run computes everything and writes nothing'
+        required: true
+        default: 'live'
+        type: choice
+        options: [live, dry-run]
+
+  schedule:
+    # Every 30 minutes. Single expression, deliberately — see the header.
+    - cron: '*/30 * * * *'
+
+concurrency:
+  group: zoom-discovery
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    # Fathom's heavy-request budget (30/60s, degrading to 5/60s) makes this a
+    # deliberately small run: one list call plus at most 10 backfill calls.
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+      # THE LIVE CASE IS THE DEFAULT; ONLY AN EXPLICIT DISPATCH OPTS OUT.
+      # Written in reconciler.yml's shape rather than branching on inputs.mode
+      # alone, because `inputs` does not exist for a scheduled run — testing it
+      # first would leave the schedule permanently dry.
+      - name: Run Zoom Discovery
+        env:
+          BRAIN_API_TOKEN: ${{ secrets.BRAIN_API_TOKEN }}
+          SHEETS_PROXY_URL: ${{ secrets.SHEETS_PROXY_URL }}
+          FATHOM_API_KEY: ${{ secrets.FATHOM_API_KEY }}
+          ZAPIER_SLACK_HOOK_URL: ${{ secrets.ZAPIER_SLACK_HOOK_URL }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.mode }}" = "dry-run" ]; then
+            npm run zoom-discovery -- --dry-run --json-out out/zoom-discovery-report.json
+          else
+            npm run zoom-discovery -- --live --json-out out/zoom-discovery-report.json
+          fi
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: zoom-discovery-report-${{ github.run_id }}
+          path: out/zoom-discovery-report.json
+          # Meeting titles, participant names and recording URLs — no transcript
+          # content, no summaries beyond the 200-char topline. Short retention,
+          # same as every routine here.
+          retention-days: 7
+          if-no-files-found: warn

@@ -7,11 +7,45 @@ export class HttpError extends Error {
     readonly status: number,
     readonly url: string,
     readonly body: string,
+    /**
+     * `Retry-After` as milliseconds, when the response carried one. Optional
+     * because most endpoints here never send it; a 429 without it falls back
+     * to the fixed floor in `withRetry`.
+     */
+    readonly retryAfterMs?: number,
   ) {
     super(`HTTP ${status} for ${url}: ${body.slice(0, 500)}`);
     this.name = 'HttpError';
   }
 }
+
+/**
+ * `Retry-After` per RFC 9110: either delay-seconds or an HTTP-date. Both forms
+ * are accepted because a server may send either and guessing wrong means
+ * hammering an endpoint that just asked to be left alone.
+ *
+ * Returns undefined for absent/garbage values, and clamps to 120s: a
+ * pathological Retry-After (or a clock skew making a date look far future)
+ * should not park a scheduled run for an hour holding a job slot.
+ */
+export function parseRetryAfter(header: string | null, now: number = Date.now()): number | undefined {
+  if (header === null) return undefined;
+  const raw = header.trim();
+  if (raw === '') return undefined;
+
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds)) {
+    if (seconds < 0) return undefined;
+    return Math.min(seconds * 1_000, MAX_RETRY_AFTER_MS);
+  }
+
+  const at = Date.parse(raw);
+  if (Number.isNaN(at)) return undefined;
+  // A date already in the past means "retry now", not "retry in the past".
+  return Math.min(Math.max(at - now, 0), MAX_RETRY_AFTER_MS);
+}
+
+const MAX_RETRY_AFTER_MS = 120_000;
 
 export interface RetryOptions {
   readonly attempts?: number;
@@ -40,9 +74,14 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: RetryOptions = {}
     } catch (error) {
       lastError = error;
       if (attempt === attempts || !isRetryable(error)) throw error;
-      // Attio asks for a 5s pause on rate limits (spec 4.5b); honour that floor.
+      // A server-supplied Retry-After always wins. Fathom's heavy-request
+      // budget (30/60s, degrading to 5/60s under load) is communicated this
+      // way, and backing off on our own schedule instead of theirs is how a
+      // rate limit turns into a longer rate limit. Attio asks for a 5s pause
+      // on rate limits (spec 4.5b); that stays the floor when no header came.
       const rateLimited = error instanceof HttpError && error.status === 429;
-      const delayMs = rateLimited ? 5_000 : baseDelayMs * 2 ** (attempt - 1);
+      const serverAsked = error instanceof HttpError ? error.retryAfterMs : undefined;
+      const delayMs = serverAsked ?? (rateLimited ? 5_000 : baseDelayMs * 2 ** (attempt - 1));
       opts.onRetry?.({ attempt, error, delayMs });
       await sleep(delayMs);
     }
@@ -60,7 +99,7 @@ export async function requestJson<T = unknown>(
   try {
     const res = await fetch(url, { ...init, signal: controller.signal });
     const text = await res.text();
-    if (!res.ok) throw new HttpError(res.status, url, text);
+    if (!res.ok) throw new HttpError(res.status, url, text, parseRetryAfter(res.headers.get('retry-after')));
     return (text ? JSON.parse(text) : {}) as T;
   } finally {
     clearTimeout(timer);
@@ -80,7 +119,7 @@ export async function requestText(url: string, init: RequestInit, timeoutMs = 60
   try {
     const res = await fetch(url, { ...init, signal: controller.signal });
     const text = await res.text();
-    if (!res.ok) throw new HttpError(res.status, url, text);
+    if (!res.ok) throw new HttpError(res.status, url, text, parseRetryAfter(res.headers.get('retry-after')));
     return text;
   } finally {
     clearTimeout(timer);
