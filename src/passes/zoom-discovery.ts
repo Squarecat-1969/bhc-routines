@@ -513,25 +513,64 @@ export async function runZoomDiscovery(deps: ZoomDiscoveryDeps): Promise<ZoomDis
     }
   }
 
-  // ── 3. Backfill blank toplines ───────────────────────────────────────────
+  // ── 3. Backfill blank cells ──────────────────────────────────────────────
   // SAME extraction functions as above, deliberately — a second implementation
   // drifts, and then the queue and new captures disagree.
   //
-  // FILL BLANKS ONLY. A non-empty column E or G may be PASS 2's and is
-  // strictly better than anything derivable here.
-  const candidates: { row: number; recordingId: string; hasParticipants: boolean }[] = [];
+  // FILL BLANKS ONLY, PER COLUMN. A non-empty E or G may be PASS 2's and is
+  // strictly better than anything derivable here, so neither is ever
+  // overwritten. The two are decided INDEPENDENTLY.
+  //
+  // WHY INDEPENDENTLY, AND NOT "G IS BLANK" AS BEFORE: gating the whole
+  // candidate on a blank G conflated "needs a topline" with "needs
+  // backfilling". Rows written by an earlier sweep got their G filled while
+  // their E stayed blank — the Next-Steps regex matched nothing on any real
+  // summary at the time — and were then permanently ineligible, so E would
+  // never be revisited on them. Four such rows were sitting in the live sheet
+  // (166787602, 168021862, 170154946, 170114152): status NEW, G filled, E
+  // blank, and the fixed extractor produces real owners for them.
+  //
+  // ACCEPTED COST, deliberately not optimised away: a Tier 3 row — no
+  // invitees and no Next-Steps owners — has a legitimately blank E and will be
+  // re-fetched on every sweep until it is triaged. That is bounded by
+  // BACKFILL_CAP and by NEW rows draining as they are triaged. A "tried and
+  // failed" marker column would fix it and is the wrong trade: the schema is
+  // fixed, and one wasted heavy request per sweep is cheaper than a new column
+  // and the state it would carry.
+  const candidates: {
+    row: number;
+    recordingId: string;
+    needsTopline: boolean;
+    needsParticipants: boolean;
+  }[] = [];
   rows.forEach((r, i) => {
-    const status = cell(r, COL.status);
-    if (!PRE_TRIAGE_STATUSES.has(status)) return;
-    if (cell(r, COL.toplineSummary) !== '') return; // never overwrite
+    if (!PRE_TRIAGE_STATUSES.has(cell(r, COL.status))) return;
     const id = cell(r, COL.recordingId);
     if (id === '') return; // nothing to fetch by
-    candidates.push({ row: i + 2, recordingId: id, hasParticipants: cell(r, COL.participants) !== '' });
+    const needsTopline = cell(r, COL.toplineSummary) === '';
+    const needsParticipants = cell(r, COL.participants) === '';
+    if (!needsTopline && !needsParticipants) return; // nothing blank, nothing to do
+    candidates.push({ row: i + 2, recordingId: id, needsTopline, needsParticipants });
+  });
+
+  // Rows needing BOTH cells first, so a capped run does the most good per
+  // heavy request. Stable within each group, so row order is otherwise kept.
+  candidates.sort((a, b) => {
+    const score = (c: typeof a) => (c.needsTopline ? 1 : 0) + (c.needsParticipants ? 1 : 0);
+    return score(b) - score(a);
   });
 
   // PLANNED, not done. Nothing enters `backfilled` until a read-back confirms
-  // it landed — see the verification block below.
-  const planned: { recordingId: string; row: number; what: string; topline: string; participants: string | null }[] = [];
+  // it landed — see the verification block below. `expectG`/`expectE` are null
+  // for a cell this row did not need, so verification only ever checks what
+  // was actually written.
+  const planned: {
+    recordingId: string;
+    row: number;
+    what: string;
+    expectG: string | null;
+    expectE: string | null;
+  }[] = [];
   const batch: { range: string; values: readonly SheetRow[] }[] = [];
 
   for (const c of candidates.slice(0, BACKFILL_CAP)) {
@@ -542,25 +581,37 @@ export async function runZoomDiscovery(deps: ZoomDiscoveryDeps): Promise<ZoomDis
       warnings.push(`Backfill summary fetch failed for ${c.recordingId} (row ${c.row}): ${String(e)}`);
       continue;
     }
-    const topline = extractMeetingPurpose(md);
-    if (!topline) continue; // still processing, or no purpose section - a later sweep retries
 
-    batch.push({ range: `Zoom_Staging!G${c.row}`, values: [[topline]] });
-    const what: string[] = ['G'];
-    let participants: string | null = null;
+    const what: string[] = [];
+    let expectG: string | null = null;
+    let expectE: string | null = null;
 
-    // Column E only when it is blank AND the ladder produces something. Same
-    // blanks-only rule; a populated E is never touched. Same self-labelling as
-    // the capture path — one ladder, not two.
-    if (!c.hasParticipants) {
+    // G only when G is blank. A missing purpose section leaves it blank for a
+    // later sweep rather than blocking this row's E write.
+    if (c.needsTopline) {
+      const topline = extractMeetingPurpose(md);
+      if (topline) {
+        expectG = topline;
+        batch.push({ range: `Zoom_Staging!G${c.row}`, values: [[topline]] });
+        what.push('G');
+      }
+    }
+
+    // E only when E is blank. Same ladder and same self-labelling as the
+    // capture path — one implementation, not two.
+    if (c.needsParticipants) {
       const owners = extractNextStepsOwners(md).map((n) => (SELF_NAMES.has(n.toLowerCase()) ? SELF_LABEL : n));
       if (owners.length > 0) {
-        participants = `${owners.join(', ')} ${DERIVED_SUFFIX}`;
-        batch.push({ range: `Zoom_Staging!E${c.row}`, values: [[participants]] });
+        expectE = `${owners.join(', ')} ${DERIVED_SUFFIX}`;
+        batch.push({ range: `Zoom_Staging!E${c.row}`, values: [[expectE]] });
         what.push('E');
       }
     }
-    planned.push({ recordingId: c.recordingId, row: c.row, what: what.join('+'), topline, participants });
+
+    // Nothing extractable yet — still processing, or a Tier 3 row. A later
+    // sweep retries; nothing is recorded as planned.
+    if (what.length === 0) continue;
+    planned.push({ recordingId: c.recordingId, row: c.row, what: what.join('+'), expectG, expectE });
   }
 
   const backfilled: { recordingId: string; row: number; what: string }[] = [];
@@ -603,14 +654,19 @@ export async function runZoomDiscovery(deps: ZoomDiscoveryDeps): Promise<ZoomDis
       for (const p of planned) {
         const row = after[p.row - 2];
         if (row === undefined) { mismatched.push(`row ${p.row} (${p.recordingId}): not readable after write`); continue; }
-        const gotG = cell(row, COL.toplineSummary);
-        if (gotG !== p.topline) {
-          mismatched.push(`row ${p.row} (${p.recordingId}): G is ${gotG === '' ? 'STILL BLANK' : JSON.stringify(gotG.slice(0, 40))}, expected ${JSON.stringify(p.topline.slice(0, 40))}`);
-          continue;
+        if (p.expectG !== null) {
+          const gotG = cell(row, COL.toplineSummary);
+          if (gotG !== p.expectG) {
+            mismatched.push(`row ${p.row} (${p.recordingId}): G is ${gotG === '' ? 'STILL BLANK' : JSON.stringify(gotG.slice(0, 40))}, expected ${JSON.stringify(p.expectG.slice(0, 40))}`);
+            continue;
+          }
         }
-        if (p.participants !== null && cell(row, COL.participants) !== p.participants) {
-          mismatched.push(`row ${p.row} (${p.recordingId}): E did not land`);
-          continue;
+        if (p.expectE !== null) {
+          const gotE = cell(row, COL.participants);
+          if (gotE !== p.expectE) {
+            mismatched.push(`row ${p.row} (${p.recordingId}): E is ${gotE === '' ? 'STILL BLANK' : JSON.stringify(gotE)}, expected ${JSON.stringify(p.expectE)}`);
+            continue;
+          }
         }
         backfilled.push({ recordingId: p.recordingId, row: p.row, what: p.what });
       }

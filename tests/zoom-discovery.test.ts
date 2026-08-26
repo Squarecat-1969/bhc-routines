@@ -444,8 +444,11 @@ describe('backfill: blanks only, capped', () => {
   const rowNew = (id: string, topline = '', participants = '', status = 'NEW') =>
     [id, 'T', '2026-08-23', '', participants, `https://fathom.video/calls/${id}`, topline, status, '', '', '', '', '', 'R'];
 
-  it('fills a blank G on a NEW row and never touches a populated one', async () => {
-    const sheets = fakeSheets([rowNew('a'), rowNew('b', 'already has a topline')]);
+  it('fills a blank G and never writes G on a row that already has one', async () => {
+    // Row 'b' is fully populated — G AND E — so it is genuinely not a
+    // candidate. Populating only G would leave it a candidate for E, which is
+    // the whole point of deciding the two columns independently.
+    const sheets = fakeSheets([rowNew('a'), rowNew('b', 'already has a topline', 'Real Invitee')]);
     const fathom = fakeFathom([], { a: CLEAN_RECORDING_SUMMARY, b: CLEAN_RECORDING_SUMMARY });
     const r = await runZoomDiscovery({
       sheets: sheets.client as never, fathom: fathom.client as never, logger: silent,
@@ -502,6 +505,97 @@ describe('backfill: blanks only, capped', () => {
     });
     expect(r.backfilled).toEqual([]);
     expect(sheets.batches).toHaveLength(0);
+  });
+});
+
+describe('candidate selection: G and E are decided independently', () => {
+  // The gap this closes: gating the whole candidate on a blank G meant a row
+  // whose G was filled by an earlier sweep could never have its E revisited,
+  // even though the fixed extractor produces owners for it.
+  const row = (id: string, g: string, e: string, status = 'NEW') =>
+    [id, 'T', '2026-08-23', '', e, `https://fathom.video/calls/${id}`, g, status, '', '', '', '', '', 'R'];
+
+  it('IS a candidate when G is filled and E is blank', async () => {
+    const sheets = fakeSheets([row('a', 'already has a topline', '')]);
+    const fathom = fakeFathom([], { a: REAL_RECORDING_SUMMARY });
+    const r = await runZoomDiscovery({
+      sheets: sheets.client as never, fathom: fathom.client as never, logger: silent,
+      dryRun: false, runId: 'T', now: NOW,
+    });
+    expect(r.backfillCandidates).toBe(1);
+    expect(r.backfilled).toEqual([{ recordingId: 'a', row: 2, what: 'E' }]);
+    // G untouched — fill-blanks-only still holds per column.
+    expect(sheets.state[0]![6]).toBe('already has a topline');
+    expect(sheets.state[0]![4]).toBe(`Andrew, you ${DERIVED_SUFFIX}`);
+    expect(sheets.batches.some((b) => b.range.startsWith('Zoom_Staging!G'))).toBe(false);
+  });
+
+  it('is NOT a candidate when both G and E are filled', async () => {
+    const sheets = fakeSheets([row('a', 'topline', 'Real Person')]);
+    const fathom = fakeFathom([], { a: REAL_RECORDING_SUMMARY });
+    const r = await runZoomDiscovery({
+      sheets: sheets.client as never, fathom: fathom.client as never, logger: silent,
+      dryRun: false, runId: 'T', now: NOW,
+    });
+    expect(r.backfillCandidates).toBe(0);
+    expect(fathom.summaryCalls).toEqual([]); // no heavy request at all
+    expect(sheets.batches).toHaveLength(0);
+  });
+
+  it('IS a candidate when G is blank and E is filled, and writes only G', async () => {
+    const sheets = fakeSheets([row('a', '', 'Real Invitee')]);
+    const fathom = fakeFathom([], { a: REAL_RECORDING_SUMMARY });
+    const r = await runZoomDiscovery({
+      sheets: sheets.client as never, fathom: fathom.client as never, logger: silent,
+      dryRun: false, runId: 'T', now: NOW,
+    });
+    expect(r.backfilled).toEqual([{ recordingId: 'a', row: 2, what: 'G' }]);
+    expect(sheets.state[0]![4]).toBe('Real Invitee'); // never overwritten
+  });
+
+  it('writes both when both are blank', async () => {
+    const sheets = fakeSheets([row('a', '', '')]);
+    const fathom = fakeFathom([], { a: REAL_RECORDING_SUMMARY });
+    const r = await runZoomDiscovery({
+      sheets: sheets.client as never, fathom: fathom.client as never, logger: silent,
+      dryRun: false, runId: 'T', now: NOW,
+    });
+    expect(r.backfilled).toEqual([{ recordingId: 'a', row: 2, what: 'G+E' }]);
+  });
+
+  it('orders rows needing BOTH cells before rows needing one', async () => {
+    // Only one slot, so the ordering decides which row gets it.
+    const sheets = fakeSheets([row('needs-e', 'has topline', ''), row('needs-both', '', '')]);
+    const fathom = fakeFathom([], { 'needs-e': REAL_RECORDING_SUMMARY, 'needs-both': REAL_RECORDING_SUMMARY });
+    await runZoomDiscovery({
+      sheets: sheets.client as never, fathom: fathom.client as never, logger: silent,
+      dryRun: false, runId: 'T', now: NOW,
+    });
+    expect(fathom.summaryCalls[0]).toBe('needs-both');
+  });
+
+  it('a Tier 3 row stays a candidate rather than being marked off — the accepted cost', async () => {
+    // No invitees, no Next-Steps owners: E is legitimately blank and will be
+    // re-fetched each sweep until triaged. Deliberate: no marker column.
+    const sheets = fakeSheets([row('a', 'has topline', '')]);
+    const fathom = fakeFathom([], { a: '## Meeting Purpose\nx\n\n## Next Steps\n- nothing bolded' });
+    const r = await runZoomDiscovery({
+      sheets: sheets.client as never, fathom: fathom.client as never, logger: silent,
+      dryRun: false, runId: 'T', now: NOW,
+    });
+    expect(r.backfillCandidates).toBe(1);
+    expect(r.backfillPlanned).toBe(0); // nothing extractable, nothing written
+    expect(sheets.batches).toHaveLength(0);
+  });
+
+  it('ignores rows past pre-triage even when E is blank', async () => {
+    const sheets = fakeSheets([row('a', 'topline', '', 'PASS'), row('b', 'topline', '', 'DONE')]);
+    const fathom = fakeFathom([], { a: REAL_RECORDING_SUMMARY, b: REAL_RECORDING_SUMMARY });
+    const r = await runZoomDiscovery({
+      sheets: sheets.client as never, fathom: fathom.client as never, logger: silent,
+      dryRun: false, runId: 'T', now: NOW,
+    });
+    expect(r.backfillCandidates).toBe(0);
   });
 });
 
