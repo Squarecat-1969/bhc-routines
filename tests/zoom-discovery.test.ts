@@ -21,11 +21,16 @@ import {
   extractNextStepsOwners,
   meetingDate,
   meetingDuration,
+  describeBodyShape,
+  extractTranscriptSpeakers,
+  isSelf,
   participantsFor,
   runZoomDiscovery,
   toStagingRow,
   trimToWordBoundary,
+  transcriptShapeWarning,
   urlKey,
+  TRANSCRIPT_SUFFIX,
   type ZoomDiscoveryReport,
 } from '../src/passes/zoom-discovery.js';
 
@@ -200,48 +205,174 @@ describe('Next-Steps owner regex', () => {
   });
 });
 
-describe('the account owner renders as "you" (Tier 2 only)', () => {
+describe('the account owner renders as "you" in derived lists', () => {
   it('maps Bobby to "you" while keeping his position in the list', () => {
-    expect(participantsFor({ calendar_invitees: [] }, REAL_RECORDING_SUMMARY)).toBe(
+    expect(participantsFor({ calendar_invitees: [] }, { summary: REAL_RECORDING_SUMMARY }).value).toBe(
       `Andrew, you ${DERIVED_SUFFIX}`,
     );
   });
 
-  it('is case-insensitive', () => {
-    expect(participantsFor({}, '## Next Steps\n- [**BOBBY:** do it](u)')).toBe(`you ${DERIVED_SUFFIX}`);
+  it('matches the whole name or just the first token', () => {
+    // Next Steps says "Bobby"; a transcript speaker label says "Bobby
+    // Hougham". Both must map, or the self rule silently stops working the
+    // moment Tier 2 becomes the primary source.
+    expect(isSelf('Bobby')).toBe(true);
+    expect(isSelf('bobby')).toBe(true);
+    expect(isSelf('Bobby Hougham')).toBe(true);
+    expect(isSelf('Bobbie')).toBe(false);
+    expect(isSelf('Andrew')).toBe(false);
   });
 
   it('NEVER rewrites Tier 1 calendar_invitees — those are verified data', () => {
     const m: FathomMeeting = { calendar_invitees: [{ name: 'Bobby Hougham' }, { name: 'Andrew Reid' }] };
-    expect(participantsFor(m, REAL_RECORDING_SUMMARY)).toBe('Bobby Hougham, Andrew Reid');
+    expect(participantsFor(m, { summary: REAL_RECORDING_SUMMARY }).value).toBe('Bobby Hougham, Andrew Reid');
   });
 
-  it('keeps a 1:1 with only Bobby distinguishable from an empty list', () => {
-    expect(participantsFor({}, '## Next Steps\n- [**Bobby:** follow up](u)')).toBe(`you ${DERIVED_SUFFIX}`);
-    expect(participantsFor({}, '## Next Steps\n- nothing bolded')).toBe('');
+  // DELIBERATE REVERSAL. A previous test asserted the opposite — that a
+  // solo-Bobby derived list should be written as `you (from summary)` so a 1:1
+  // stayed distinguishable from an empty list. Aida promotes participants into
+  // the headline when the title is generic, so that rendered as "Meeting with
+  // you": a meeting with yourself, less informative than the generic title it
+  // replaced. Blank is now the honest answer for a DERIVED list.
+  it('writes blank rather than a list naming only the owner', () => {
+    expect(participantsFor({}, { summary: '## Next Steps\n- [**Bobby:** follow up](u)' }).value).toBe('');
+    expect(participantsFor({}, { summary: '## Next Steps\n- nothing bolded' }).value).toBe('');
+  });
+});
+
+/**
+ * VERBATIM from get_meeting_transcript(174479646) — the ad-hoc client call.
+ *
+ * Chosen deliberately over the internal recording: the previous Next-Steps
+ * regex passed its tests and failed live precisely because its fixture was
+ * hand-constructed from spec prose rather than taken from a live response.
+ * Note "Andrew" is a bare first name — Fathom labels speakers from the
+ * platform display name, and an ad-hoc external guest often has no surname.
+ */
+const REAL_TRANSCRIPT = `[00:01](https://fathom.video/calls/789762032?timestamp=1) Andrew: it is. I haven't got anything on the walls or anything yet.
+[00:12](https://fathom.video/calls/789762032?timestamp=12) Bobby Hougham: What's that?
+[00:14](https://fathom.video/calls/789762032?timestamp=14) Andrew: You've got a computer set up.`;
+
+/**
+ * VERBATIM SHAPE from the REST endpoint /recordings/174479646/transcript —
+ * confirmed live: {"transcript":[{speaker:{display_name},text,timestamp}]},
+ * 184 segments, speakers Andrew and Bobby Hougham.
+ *
+ * This is what the scheduled sweep actually receives. The line-formatted
+ * fixture above is the MCP tool's rendering of the same call. Both are real,
+ * they disagree, and the parser has to survive both — the line regex alone
+ * scores ZERO against this payload.
+ */
+const REAL_REST_TRANSCRIPT = JSON.stringify({
+  transcript: [
+    { speaker: { display_name: 'Andrew', matched_calendar_invitee_email: null }, text: "it is. I haven't got anything on the walls yet.", timestamp: '00:01' },
+    { speaker: { display_name: 'Bobby Hougham', matched_calendar_invitee_email: 'bobby@thenewblank.com' }, text: "What's that?", timestamp: '00:12' },
+    { speaker: { display_name: 'Andrew', matched_calendar_invitee_email: null }, text: "You've got a computer set up.", timestamp: '00:14' },
+  ],
+});
+
+describe('transcript speaker extraction', () => {
+  it('extracts from the REAL REST payload — structured JSON, not lines', () => {
+    expect(extractTranscriptSpeakers(REAL_REST_TRANSCRIPT)).toEqual(['Andrew', 'Bobby Hougham']);
+    expect(participantsFor({}, { transcript: REAL_REST_TRANSCRIPT }).value).toBe(`Andrew, you ${TRANSCRIPT_SUFFIX}`);
+  });
+
+  it('recovers speakers from a TRUNCATED JSON body, which parses as neither shape', () => {
+    const cut = REAL_REST_TRANSCRIPT.slice(0, 220);
+    expect(() => JSON.parse(cut)).toThrow();
+    expect(extractTranscriptSpeakers(cut)).toEqual(['Andrew', 'Bobby Hougham']);
+  });
+
+  it('extracts the real ad-hoc call: first-name label kept, self mapped, duplicate collapsed, order preserved', () => {
+    expect(extractTranscriptSpeakers(REAL_TRANSCRIPT)).toEqual(['Andrew', 'Bobby Hougham']);
+    expect(participantsFor({}, { transcript: REAL_TRANSCRIPT }).value).toBe(`Andrew, you ${TRANSCRIPT_SUFFIX}`);
+  });
+
+  it('never expands or enriches a partial name', () => {
+    // "Andrew" stays "Andrew". Guessing a surname is the machine judgement
+    // on insufficient data that §4.2 rejects.
+    expect(extractTranscriptSpeakers(REAL_TRANSCRIPT)[0]).toBe('Andrew');
+  });
+
+  it('handles hour-length timestamps', () => {
+    expect(extractTranscriptSpeakers('[1:02:03](https://x/y) Dana Reid: hello')).toEqual(['Dana Reid']);
+  });
+
+  it('returns [] for anything unparseable rather than guessing', () => {
+    expect(extractTranscriptSpeakers('no timestamps here: just prose')).toEqual([]);
+    expect(extractTranscriptSpeakers('')).toEqual([]);
+    expect(extractTranscriptSpeakers(null)).toEqual([]);
+  });
+
+  it('dedupes case-insensitively, keeping the first spelling seen', () => {
+    const t = '[00:01](u) Sam Roe: a\n[00:05](u) SAM ROE: b\n[00:09](u) Ada: c';
+    expect(extractTranscriptSpeakers(t)).toEqual(['Sam Roe', 'Ada']);
   });
 });
 
 describe('column E fallback ladder', () => {
-  it('Tier 1: real invitees win, comma-joined, with NO suffix', () => {
+  it('Tier 1: real invitees win, comma-joined, with NO suffix and no transcript consulted', () => {
     const m: FathomMeeting = { calendar_invitees: [{ name: 'Ada Lovelace' }, { name: 'Bo Geddes' }] };
-    expect(participantsFor(m, ESCAPED_LIST_SUMMARY)).toBe('Ada Lovelace, Bo Geddes');
-    expect(participantsFor(m, ESCAPED_LIST_SUMMARY)).not.toContain(DERIVED_SUFFIX);
+    const r = participantsFor(m, { transcript: REAL_TRANSCRIPT, summary: ESCAPED_LIST_SUMMARY });
+    expect(r).toEqual({ value: 'Ada Lovelace, Bo Geddes', tier: 1 });
   });
 
   it('Tier 1 falls back to email when an invitee has no name', () => {
-    const m: FathomMeeting = { calendar_invitees: [{ email: 'ada@example.com' }] };
-    expect(participantsFor(m, null)).toBe('ada@example.com');
+    expect(participantsFor({ calendar_invitees: [{ email: 'ada@example.com' }] }, {}).value).toBe('ada@example.com');
   });
 
-  it('Tier 2: no invitees -> summary owners, ALWAYS with the provenance suffix', () => {
-    const m: FathomMeeting = { calendar_invitees: [] };
-    expect(participantsFor(m, ESCAPED_LIST_SUMMARY)).toBe(`Alex, Sam ${DERIVED_SUFFIX}`);
+  it('Tier 2: no invitees -> transcript speakers, marked (from transcript)', () => {
+    const r = participantsFor({ calendar_invitees: [] }, { transcript: REAL_TRANSCRIPT, summary: ESCAPED_LIST_SUMMARY });
+    expect(r.tier).toBe(2);
+    expect(r.value).toBe(`Andrew, you ${TRANSCRIPT_SUFFIX}`);
   });
 
-  it('Tier 3: neither -> blank, never a guess', () => {
-    expect(participantsFor({ calendar_invitees: [] }, null)).toBe('');
-    expect(participantsFor({}, '## Meeting Purpose\nno next steps here')).toBe('');
+  it('Tier 2 beats Tier 3 even when the summary would also produce owners', () => {
+    // 174393868's real shape: Next Steps named only Chuck, the transcript had
+    // three people. The roster is a superset, so it must win.
+    const transcript = '[00:01](u) Chuck Granade: a\n[00:30](u) Sevrin Daniels: b\n[01:00](u) Bobby Hougham: c';
+    const r = participantsFor({}, { transcript, summary: '## Next Steps\n- [**Chuck:** do it](u)' });
+    expect(r.value).toBe(`Chuck Granade, Sevrin Daniels, you ${TRANSCRIPT_SUFFIX}`);
+    expect(r.tier).toBe(2);
+  });
+
+  it('Tier 3: transcript empty or unparseable -> Next-Steps owners, marked (from summary)', () => {
+    const r = participantsFor({}, { transcript: null, summary: ESCAPED_LIST_SUMMARY });
+    expect(r).toEqual({ value: `Alex, Sam ${DERIVED_SUFFIX}`, tier: 3 });
+    const r2 = participantsFor({}, { transcript: 'garbage with no speaker lines', summary: ESCAPED_LIST_SUMMARY });
+    expect(r2.tier).toBe(3);
+  });
+
+  it('Tier 4: neither -> blank, never a guess', () => {
+    expect(participantsFor({}, {})).toEqual({ value: '', tier: 4 });
+    expect(participantsFor({}, { transcript: '', summary: '## Meeting Purpose\nno next steps' }).tier).toBe(4);
+  });
+});
+
+describe('a derived list naming only the account owner is written BLANK', () => {
+  // "Meeting with you" is worse than the generic title it would replace.
+  it('suppresses a Tier 2 list that is only the owner', () => {
+    const r = participantsFor({}, { transcript: '[00:01](u) Bobby Hougham: talking to myself' });
+    expect(r.value).toBe('');
+    expect(r.tier).toBe(2);
+    expect(r.selfOnlySuppressed).toBe(true);
+  });
+
+  it('suppresses a Tier 3 list that is only the owner', () => {
+    const r = participantsFor({}, { summary: '## Next Steps\n- [**Bobby:** follow up](u)' });
+    expect(r.value).toBe('');
+    expect(r.selfOnlySuppressed).toBe(true);
+  });
+
+  it('keeps the list as soon as anyone else appears', () => {
+    const r = participantsFor({}, { transcript: REAL_TRANSCRIPT });
+    expect(r.value).toBe(`Andrew, you ${TRANSCRIPT_SUFFIX}`);
+    expect(r.selfOnlySuppressed).toBeUndefined();
+  });
+
+  it('NEVER applies to Tier 1 — a solo invite is verified data, written verbatim', () => {
+    const m: FathomMeeting = { calendar_invitees: [{ name: 'Bobby Hougham' }] };
+    expect(participantsFor(m, {})).toEqual({ value: 'Bobby Hougham', tier: 1 });
   });
 });
 
@@ -359,13 +490,24 @@ function fakeSheets(rows: unknown[][], opts: { swallowWrites?: boolean; reportZe
   };
 }
 
-function fakeFathom(meetings: FathomMeeting[], summaries: Record<string, string> = {}) {
+function fakeFathom(
+  meetings: FathomMeeting[],
+  summaries: Record<string, string> = {},
+  transcripts: Record<string, string> = {},
+) {
   const summaryCalls: string[] = [];
+  const transcriptCalls: string[] = [];
   return {
-    summaryCalls,
+    summaryCalls, transcriptCalls,
     client: {
       async listMeetings() { return meetings; },
       async getSummary(id: string) { summaryCalls.push(id); return summaries[id] ?? null; },
+      async getTranscript(id: string) {
+        transcriptCalls.push(id);
+        const t = transcripts[id];
+        if (t === undefined) return null;
+        return { text: t, bytes: Buffer.byteLength(t), truncated: false };
+      },
     },
   };
 }
@@ -599,6 +741,183 @@ describe('candidate selection: G and E are decided independently', () => {
   });
 });
 
+describe('transcript is fetched, read, and discarded', () => {
+  const row = (id: string, g: string, e: string) =>
+    [id, 'T', '2026-08-23', '', e, `https://fathom.video/calls/${id}`, g, 'NEW', '', '', '', '', '', 'R'];
+
+  it('prefers the transcript over Next Steps and marks it (from transcript)', async () => {
+    const sheets = fakeSheets([row('a', 'has topline', '')]);
+    const fathom = fakeFathom([], { a: REAL_RECORDING_SUMMARY }, { a: REAL_TRANSCRIPT });
+    const r = await runZoomDiscovery({
+      sheets: sheets.client as never, fathom: fathom.client as never, logger: silent,
+      dryRun: false, runId: 'T', now: NOW,
+    });
+    expect(sheets.state[0]![4]).toBe(`Andrew, you ${TRANSCRIPT_SUFFIX}`);
+    expect(r.participantTiers['row 2']).toBe(2);
+  });
+
+  it('falls back to Tier 3 when the transcript is not ready', async () => {
+    const sheets = fakeSheets([row('a', 'has topline', '')]);
+    const fathom = fakeFathom([], { a: REAL_RECORDING_SUMMARY }, {}); // getTranscript -> null
+    const r = await runZoomDiscovery({
+      sheets: sheets.client as never, fathom: fathom.client as never, logger: silent,
+      dryRun: false, runId: 'T', now: NOW,
+    });
+    expect(sheets.state[0]![4]).toBe(`Andrew, you ${DERIVED_SUFFIX}`);
+    expect(r.participantTiers['row 2']).toBe(3);
+  });
+
+  it('skips the transcript entirely for a meeting that has invitees', async () => {
+    const sheets = fakeSheets([]);
+    const fathom = fakeFathom(
+      [{ recording_id: 'm1', recording_start_time: '2026-08-23T11:00:00Z', calendar_invitees: [{ name: 'Ada' }] }],
+      {}, { m1: REAL_TRANSCRIPT },
+    );
+    await runZoomDiscovery({
+      sheets: sheets.client as never, fathom: fathom.client as never, logger: silent,
+      dryRun: false, runId: 'T', now: NOW,
+    });
+    expect(fathom.transcriptCalls).toEqual([]); // Tier 1 needs no heavy request
+    expect(sheets.appends[0]!.values[0]![4]).toBe('Ada');
+  });
+
+  // ⚠ The transcript text must never be persisted anywhere.
+  it('records only the SIZE of a transcript, never its text', async () => {
+    const secret = '[00:01](u) Andrew: commercially sensitive verbatim content';
+    const sheets = fakeSheets([row('a', 'has topline', '')]);
+    const fathom = fakeFathom([], {}, { a: secret });
+    const r = await runZoomDiscovery({
+      sheets: sheets.client as never, fathom: fathom.client as never, logger: silent,
+      dryRun: false, runId: 'T', now: NOW,
+    });
+    expect(r.transcriptFetches).toEqual([{ recordingId: 'a', bytes: Buffer.byteLength(secret), truncated: false }]);
+    const everythingWritten = JSON.stringify({ report: r, sheet: sheets.state, batches: sheets.batches });
+    expect(everythingWritten).not.toContain('commercially sensitive verbatim');
+    // The extracted NAME is allowed through; nothing else is.
+    expect(sheets.state[0]![4]).toBe(`Andrew ${TRANSCRIPT_SUFFIX}`);
+  });
+
+  it('a self-only transcript leaves column E blank and writes nothing to it', async () => {
+    const sheets = fakeSheets([row('a', 'has topline', '')]);
+    const fathom = fakeFathom([], {}, { a: '[00:01](u) Bobby Hougham: solo recording' });
+    const r = await runZoomDiscovery({
+      sheets: sheets.client as never, fathom: fathom.client as never, logger: silent,
+      dryRun: false, runId: 'T', now: NOW,
+    });
+    expect(sheets.batches.some((b) => b.range.startsWith('Zoom_Staging!E'))).toBe(false);
+    expect(r.backfillPlanned).toBe(0);
+  });
+
+  it('a failed transcript fetch degrades to Tier 3 rather than failing the row', async () => {
+    const sheets = fakeSheets([row('a', 'has topline', '')]);
+    const fathom = {
+      transcriptCalls: [], summaryCalls: [],
+      client: {
+        async listMeetings() { return []; },
+        async getSummary() { return REAL_RECORDING_SUMMARY; },
+        async getTranscript() { throw new Error('503'); },
+      },
+    };
+    const r = await runZoomDiscovery({
+      sheets: sheets.client as never, fathom: fathom.client as never, logger: silent,
+      dryRun: false, runId: 'T', now: NOW,
+    });
+    expect(sheets.state[0]![4]).toBe(`Andrew, you ${DERIVED_SUFFIX}`);
+    expect(r.warnings.join(' ')).toContain('Transcript fetch failed');
+  });
+});
+
+describe('an unrecognised body shape WARNS instead of returning a silent []', () => {
+  // Shape drift has caused three silent failures in this file. A silent [] is
+  // also indistinguishable from a genuinely speakerless recording.
+  const UNKNOWN_SHAPE = JSON.stringify({
+    utterances: [{ who: { label: 'Andrew' }, said: 'commercially sensitive verbatim content', at: '00:01' }],
+  });
+
+  it('returns zero speakers for a shape it does not know', () => {
+    expect(extractTranscriptSpeakers(UNKNOWN_SHAPE)).toEqual([]);
+  });
+
+  it('produces a warning naming the recording and the structural shape', () => {
+    const w = transcriptShapeWarning('174479646', UNKNOWN_SHAPE)!;
+    expect(w).not.toBeNull();
+    expect(w).toContain('174479646');
+    expect(w).toContain('ZERO speakers');
+    expect(w).toContain('utterances'); // field names survive — that is the diagnostic
+    expect(w).not.toContain('commercially sensitive verbatim'); // content does not
+  });
+
+  it('surfaces that warning through a real run rather than failing quietly', async () => {
+    const sheets = fakeSheets([['a', 'T', '2026-08-23', '', '', 'https://f/calls/a', 'has topline', 'NEW', '', '', '', '', '', 'R']]);
+    const fathom = {
+      client: {
+        async listMeetings() { return []; },
+        async getSummary() { return null; },
+        async getTranscript() { return { text: UNKNOWN_SHAPE, bytes: Buffer.byteLength(UNKNOWN_SHAPE), truncated: false }; },
+      },
+    };
+    const r = await runZoomDiscovery({
+      sheets: sheets.client as never, fathom: fathom.client as never, logger: silent,
+      dryRun: false, runId: 'T', now: NOW,
+    });
+    expect(r.warnings.join(' ')).toContain('ZERO speakers');
+    expect(JSON.stringify(r)).not.toContain('commercially sensitive verbatim');
+  });
+
+  it('stays silent for a genuinely empty transcript — that is not drift', () => {
+    expect(transcriptShapeWarning('x', '')).toBeNull();
+    expect(transcriptShapeWarning('x', null)).toBeNull();
+  });
+
+  it('stays silent when speakers WERE found', () => {
+    expect(transcriptShapeWarning('x', REAL_REST_TRANSCRIPT)).toBeNull();
+    expect(transcriptShapeWarning('x', REAL_TRANSCRIPT)).toBeNull();
+  });
+
+  describe('describeBodyShape never leaks content', () => {
+    it('keeps JSON keys and blanks every value', () => {
+      const out = describeBodyShape(REAL_REST_TRANSCRIPT, 300);
+      expect(out).toContain('display_name');
+      expect(out).toContain('timestamp');
+      expect(out).not.toContain('Andrew');
+      expect(out).not.toContain("haven't got anything");
+    });
+
+    it('reduces a non-JSON body to punctuation and digits only', () => {
+      const out = describeBodyShape(REAL_TRANSCRIPT, 300);
+      expect(out).toContain('[00:01]');
+      expect(out).not.toContain('Andrew');
+      expect(out).not.toContain('walls');
+      expect(out).not.toMatch(/[A-WY-Za-wy-z]{3,}/); // only the 'x' placeholder survives
+    });
+
+    it('respects the length cap', () => {
+      expect(describeBodyShape(REAL_REST_TRANSCRIPT).length).toBeLessThanOrEqual(100);
+    });
+  });
+});
+
+describe('transcript payload cap degrades rather than throwing', () => {
+  it('a truncated fetch yields a PARTIAL list, flagged, not an error', async () => {
+    const sheets = fakeSheets([['a', 'T', '2026-08-23', '', '', 'https://f/calls/a', 'has topline', 'NEW', '', '', '', '', '', 'R']]);
+    const partial = REAL_REST_TRANSCRIPT.slice(0, 220); // cut mid-array
+    const fathom = {
+      client: {
+        async listMeetings() { return []; },
+        async getSummary() { return null; },
+        async getTranscript() { return { text: partial, bytes: 500_000, truncated: true }; },
+      },
+    };
+    const r = await runZoomDiscovery({
+      sheets: sheets.client as never, fathom: fathom.client as never, logger: silent,
+      dryRun: false, runId: 'T', now: NOW,
+    });
+    expect(sheets.state[0]![4]).toBe(`Andrew, you ${TRANSCRIPT_SUFFIX}`);
+    expect(r.warnings.join(' ')).toContain('the speaker list is PARTIAL');
+    expect(r.transcriptFetches[0]!.truncated).toBe(true);
+  });
+});
+
 describe('backfill writes are verified by reading them back', () => {
   const rowNew = (id: string) =>
     [id, 'T', '2026-08-23', '', '', `https://fathom.video/calls/${id}`, '', 'NEW', '', '', '', '', '', 'R'];
@@ -661,7 +980,7 @@ describe('backfill writes are verified by reading them back', () => {
       runId: 'T', dryRun: false, startedAt: '', finishedAt: '', lookbackHours: 24,
       existingRows: 0, observedStatuses: {}, fetched: 0, skippedOlderThanCutoff: 0, skippedDuplicate: 0,
       appended: [], appendedWithoutTopline: [], backfillCandidates: 10, backfillPlanned: 10, backfilled: [],
-      wouldWrite: [], warnings: ['x'],
+      transcriptFetches: [], participantTiers: {}, wouldWrite: [], warnings: ['x'],
     });
     expect(msg).not.toBeNull();
     expect(msg!).toContain('10 backfill write(s) NOT confirmed');
@@ -692,7 +1011,7 @@ describe('Slack stays silent on a no-op run', () => {
     runId: 'ZOOM-DISC-1', dryRun: false, startedAt: '', finishedAt: '', lookbackHours: 24,
     existingRows: 0, observedStatuses: {}, fetched: 0, skippedOlderThanCutoff: 0, skippedDuplicate: 0,
     appended: [], appendedWithoutTopline: [], backfillCandidates: 0, backfillPlanned: 0, backfilled: [],
-    wouldWrite: [], warnings: [],
+    transcriptFetches: [], participantTiers: {}, wouldWrite: [], warnings: [],
   };
 
   it('returns null when nothing was added or backfilled', () => {

@@ -22,7 +22,7 @@
  * related is reimplemented in this file.
  */
 
-import { requestJson, withRetry, type RetryOptions } from './http.js';
+import { requestJson, requestTextCapped, withRetry, type RetryOptions } from './http.js';
 
 export const FATHOM_API_BASE = 'https://api.fathom.ai/external/v1';
 
@@ -132,6 +132,37 @@ export class FathomClient {
   }
 
   /**
+   * One recording's transcript. HEAVY — same budget as getSummary.
+   *
+   * ⚠ THE CALLER MUST NOT STORE WHAT THIS RETURNS. BHC_Zoom.md P2-STEP 3 is
+   * explicit that the transcript is "for reasoning only; never store it".
+   * That rule governs STORAGE, not fetching — DISCOVERY fetches it, extracts a
+   * speaker list, and discards the text. Nothing but the extracted names may
+   * reach Zoom_Staging, a log line, or the run artifact. These transcripts
+   * carry commercially and legally sensitive material.
+   *
+   * Read through a byte cap (TRANSCRIPT_MAX_BYTES) so an unbounded meeting
+   * degrades to a partial speaker list rather than an error or a huge buffer.
+   *
+   * Returns null when there is no transcript yet — a meeting still processing
+   * is the ordinary case, not a failure.
+   */
+  async getTranscript(recordingId: string): Promise<FathomTranscript | null> {
+    const base = (this.opts.baseUrl ?? FATHOM_API_BASE).replace(/\/$/, '');
+    const url = `${base}/recordings/${encodeURIComponent(recordingId)}/transcript`;
+    const res = await withRetry(
+      () => requestTextCapped(url, { headers: this.headers }, TRANSCRIPT_MAX_BYTES),
+      { label: `fathom /recordings/${recordingId}/transcript`, ...(this.opts.onRetry ? { onRetry: this.opts.onRetry } : {}) },
+    );
+
+    // Returned RAW. Shape handling lives in the pure extractor, which has to
+    // cope with a truncated body anyway — a cut-off JSON array cannot be
+    // parsed here, so unwrapping at this layer would just lose information.
+    if (res.text.trim() === '') return null;
+    return { text: res.text, bytes: res.bytes, truncated: res.truncated };
+  }
+
+  /**
    * One recording's summary. HEAVY. Used only by the backfill, one call per
    * row, capped by the caller — never in a loop over everything blank.
    *
@@ -145,6 +176,34 @@ export class FathomClient {
     );
     return summaryMarkdown(res.summary);
   }
+}
+
+/**
+ * Cap on a transcript response. A pure safety valve against a pathological
+ * body, NOT a working limit.
+ *
+ * RAISED FROM 500KB (2026-08-26) because 500KB was a live defect, not a
+ * conservative setting. Real payloads measured 31KB–237KB with one probe at
+ * 314.9KB, so an ordinary long meeting would have truncated and returned a
+ * PARTIAL roster — the silent-degradation shape this whole change exists to
+ * eliminate. These bodies are held for one regex pass and discarded, so the
+ * headroom costs nothing.
+ *
+ * Truncation still degrades gracefully rather than throwing, but it is now a
+ * WARNING naming the recording, never a quiet field in the report.
+ */
+export const TRANSCRIPT_MAX_BYTES = 2_000_000;
+
+export interface FathomTranscript {
+  /**
+   * RAW response body, exactly as received. NEVER persisted — see
+   * getTranscript's contract. Parsed by extractTranscriptSpeakers, which
+   * handles both the structured JSON the REST endpoint returns and the
+   * line-formatted rendering the MCP tool produces.
+   */
+  readonly text: string;
+  readonly bytes: number;
+  readonly truncated: boolean;
 }
 
 /**

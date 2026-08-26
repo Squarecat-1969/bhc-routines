@@ -125,3 +125,59 @@ export async function requestText(url: string, init: RequestInit, timeoutMs = 60
     clearTimeout(timer);
   }
 }
+
+/**
+ * Like `requestText`, but stops reading once `maxBytes` have arrived and
+ * reports whether it truncated.
+ *
+ * Exists for Fathom transcripts, which grow with meeting length (~1KB per
+ * minute, measured) and have no upper bound. The cap is a safety valve, not a
+ * normal path: a 33-minute meeting is ~30KB. Streaming the cap rather than
+ * slicing after the fact means a pathological response never lands in memory
+ * in full.
+ *
+ * A truncated body is returned, NOT thrown — a long meeting must degrade to a
+ * partial speaker list rather than to an error.
+ */
+export async function requestTextCapped(
+  url: string,
+  init: RequestInit,
+  maxBytes: number,
+  timeoutMs = 60_000,
+): Promise<{ text: string; bytes: number; truncated: boolean }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...init, signal: controller.signal });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new HttpError(res.status, url, body, parseRetryAfter(res.headers.get('retry-after')));
+    }
+    if (!res.body) {
+      const text = await res.text();
+      return { text, bytes: Buffer.byteLength(text), truncated: false };
+    }
+
+    const reader = res.body.getReader();
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    let truncated = false;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      if (bytes + value.byteLength > maxBytes) {
+        chunks.push(Buffer.from(value.subarray(0, maxBytes - bytes)));
+        bytes = maxBytes;
+        truncated = true;
+        await reader.cancel();
+        break;
+      }
+      chunks.push(Buffer.from(value));
+      bytes += value.byteLength;
+    }
+    return { text: Buffer.concat(chunks).toString('utf8'), bytes, truncated };
+  } finally {
+    clearTimeout(timer);
+  }
+}
