@@ -10,9 +10,14 @@ const EnvSchema = z.object({
   ATTIO_API_KEY: z.string().min(1, 'ATTIO_API_KEY is required'),
   ZAPIER_SLACK_HOOK_URL: z.string().url().optional(),
   ANTHROPIC_BHC_ROUTINES_API: z.string().min(1).optional(),
+  // Optional, not required: only Zoom DISCOVERY needs it, and making it
+  // mandatory here would break every other routine's env load. The Zoom CLI
+  // asserts it explicitly at startup instead.
+  FATHOM_API_KEY: z.string().min(1).optional(),
   RUN_TIMEZONE: z.string().min(1).default('UTC'),
   SHEETS_PROXY_URL: z.string().url().default('https://aida.hougham.us/api/brain/sheets'),
   ATTIO_API_BASE: z.string().url().default('https://api.attio.com/v2'),
+  FATHOM_API_BASE: z.string().url().optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
@@ -28,6 +33,8 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     ATTIO_API_KEY: blankToUndefined(source.ATTIO_API_KEY),
     ZAPIER_SLACK_HOOK_URL: blankToUndefined(source.ZAPIER_SLACK_HOOK_URL),
     ANTHROPIC_BHC_ROUTINES_API: blankToUndefined(source.ANTHROPIC_BHC_ROUTINES_API),
+    FATHOM_API_KEY: blankToUndefined(source.FATHOM_API_KEY),
+    FATHOM_API_BASE: blankToUndefined(source.FATHOM_API_BASE),
     RUN_TIMEZONE: blankToUndefined(source.RUN_TIMEZONE),
     SHEETS_PROXY_URL: blankToUndefined(source.SHEETS_PROXY_URL),
     ATTIO_API_BASE: blankToUndefined(source.ATTIO_API_BASE),
