@@ -48,16 +48,37 @@ Discussed the tiering.
 - \\*\\*Sam\\*\\*: confirm the renewal date with Northwind
 - \\*\\*Alex\\*\\*: book the follow-up`;
 
-/** `/recordings/:id/summary` — clean markdown, purpose heading is a link. */
-const CLEAN_RECORDING_SUMMARY = `## [Meeting Purpose](https://fathom.video/calls/12345)
-Impromptu call with **Riverton Capital** about their onboarding timeline and the data migration blocker.
+/**
+ * VERBATIM from a real response — get_meeting_summary(174479646).
+ *
+ * The previous fixture here was hand-constructed from the spec's prose rather
+ * than taken from a live response, which is exactly why the old regex passed
+ * its tests and scored zero matches in production. Note where the colon sits:
+ * INSIDE the bold, with the whole bullet as a link label.
+ *
+ * Note too that Topics carries the same bulleted-bold-prefix shape for
+ * non-people labels (Method, Black, Feasibility, Rationale). Those are the
+ * false positives an unscoped regex would write into a participants field.
+ */
+const REAL_RECORDING_SUMMARY = `## [Meeting Purpose](https://fathom.video/calls/174479646)
+Review VFX approach for shoe colorways and discuss technical limitations.
 
 ## Key Takeaways
-- Migration is blocked on their IT
+- [**Method:** Map new color textures onto the source footage.](https://fathom.video/calls/174479646?t=45)
+- [**Feasibility:** High.](https://fathom.video/calls/174479646?t=90)
+
+## Topics
+### Colorway Approach
+- [**Black:** Has a tight light-to-shadow gradation.](https://fathom.video/calls/174479646?t=120)
+- [**White:** Needs a wider dynamic range.](https://fathom.video/calls/174479646?t=140)
+- [**Rationale:** The source shoe's material break determines the mask.](https://fathom.video/calls/174479646?t=160)
 
 ## Next Steps
-- [**Dana**](https://fathom.video/calls/12345?t=120): chase Riverton IT for the export
-- **Priya**: draft the migration runbook`;
+- [**Andrew:** Present the two options (VFX-only vs. Full CGI) with costs.](https://fathom.video/calls/174479646?t=200)
+- [**Bobby:** Call Andrew back to continue the discussion.](https://fathom.video/calls/174479646?t=220)`;
+
+/** Kept for the link-wrapped-heading case; not used for owner extraction. */
+const CLEAN_RECORDING_SUMMARY = REAL_RECORDING_SUMMARY;
 
 describe('Meeting Purpose extraction survives both escaping variants', () => {
   it('parses the escaped list-endpoint shape', () => {
@@ -67,10 +88,8 @@ describe('Meeting Purpose extraction survives both escaping variants', () => {
   });
 
   it('parses the clean per-recording shape and unwraps the linked heading', () => {
-    const out = extractMeetingPurpose(CLEAN_RECORDING_SUMMARY);
-    expect(out).toBe(
-      'Impromptu call with Riverton Capital about their onboarding timeline and the data migration blocker.',
-    );
+    const out = extractMeetingPurpose(REAL_RECORDING_SUMMARY);
+    expect(out).toBe('Review VFX approach for shoe colorways and discuss technical limitations.');
     // Link syntax stripped, URL discarded, label kept.
     expect(out).not.toContain('fathom.video');
     expect(out).not.toContain('**');
@@ -78,7 +97,7 @@ describe('Meeting Purpose extraction survives both escaping variants', () => {
 
   it('stops at the next heading and never bleeds Key Takeaways in', () => {
     expect(extractMeetingPurpose(ESCAPED_LIST_SUMMARY)).not.toContain('Northwind wants a 3-year term');
-    expect(extractMeetingPurpose(CLEAN_RECORDING_SUMMARY)).not.toContain('Migration is blocked');
+    expect(extractMeetingPurpose(REAL_RECORDING_SUMMARY)).not.toContain('Method');
   });
 
   it('returns null rather than inventing a topline when the section is absent', () => {
@@ -134,32 +153,72 @@ describe('Next-Steps owner regex', () => {
     expect(extractNextStepsOwners(ESCAPED_LIST_SUMMARY)).toEqual(['Alex', 'Sam']);
   });
 
-  it('picks owners from the clean variant, including a linked bullet', () => {
-    expect(extractNextStepsOwners(CLEAN_RECORDING_SUMMARY)).toEqual(['Dana', 'Priya']);
+  it('matches the REAL shape, where the colon sits inside the bold', () => {
+    // The spec's `**Name**:` pattern cannot match this at all — the name class
+    // excludes ':', so it never reaches the closing `**`. Zero live matches.
+    expect(extractNextStepsOwners(REAL_RECORDING_SUMMARY)).toEqual(['Andrew', 'Bobby']);
   });
 
-  it('ignores capitalised product and vendor names in prose', () => {
-    // The rejected design — scanning for capitalised words — would return
-    // Northwind and Riverton Capital here. Only bulleted owners count.
-    expect(extractNextStepsOwners(ESCAPED_LIST_SUMMARY)).not.toContain('Northwind');
-    expect(extractNextStepsOwners(CLEAN_RECORDING_SUMMARY)).not.toContain('Riverton');
+  it('accepts the colon outside the bold too, in every documented form', () => {
+    expect(extractNextStepsOwners('## Next Steps\n- **Alex**: do it')).toEqual(['Alex']);
+    expect(extractNextStepsOwners('## Next Steps\n- [**Alex**: do it')).toEqual(['Alex']);
+    expect(extractNextStepsOwners('## Next Steps\n- [**Alex**](https://x/y): do it')).toEqual(['Alex']);
+    expect(extractNextStepsOwners('## Next Steps\n- [**Alex:** do it](https://x/y)')).toEqual(['Alex']);
   });
 
-  it("matches §5.2's literal bracket form as well as the linked form", () => {
-    // The spec regex's optional `[` implies `- [**Name**:` occurs in live data;
-    // `- [**Name**](url):` is the same thing with the link actually closed.
-    expect(extractNextStepsOwners('- [**Alex**: do the thing')).toEqual(['Alex']);
-    expect(extractNextStepsOwners('- **Alex**: do the thing')).toEqual(['Alex']);
-    expect(extractNextStepsOwners('- [**Alex**](https://x/y): do the thing')).toEqual(['Alex']);
+  // THE POINT OF FIX 2. Fixing the regex without scoping makes the over-
+  // matching §5.3 rejects strictly worse, not better.
+  it('returns ONLY Next Steps owners when Topics carries the same bullet shape', () => {
+    expect(extractNextStepsOwners(REAL_RECORDING_SUMMARY)).toEqual(['Andrew', 'Bobby']);
+    for (const label of ['Method', 'Black', 'White', 'Feasibility', 'Rationale']) {
+      expect(extractNextStepsOwners(REAL_RECORDING_SUMMARY)).not.toContain(label);
+    }
+  });
+
+  it('never falls back to the whole summary when there is no Next Steps section', () => {
+    const noNextSteps = `## Meeting Purpose\nx\n\n## Topics\n- [**Method:** map it](u)\n- [**Result:** good](u)`;
+    expect(extractNextStepsOwners(noNextSteps)).toEqual([]);
+  });
+
+  it('matches the Next Steps heading case-insensitively', () => {
+    expect(extractNextStepsOwners('## NEXT STEPS\n- [**Andrew:** go](u)')).toEqual(['Andrew']);
+    expect(extractNextStepsOwners('## next steps\n- [**Andrew:** go](u)')).toEqual(['Andrew']);
+  });
+
+  it('stops at the heading after Next Steps', () => {
+    const trailing = `## Next Steps\n- [**Andrew:** go](u)\n\n## Appendix\n- [**Notes:** stuff](u)`;
+    expect(extractNextStepsOwners(trailing)).toEqual(['Andrew']);
   });
 
   it('ignores a bold word that is not at a bullet start or has no colon', () => {
-    expect(extractNextStepsOwners('**Alex** did the thing')).toEqual([]);
-    expect(extractNextStepsOwners('- **Alex** send it')).toEqual([]);
+    expect(extractNextStepsOwners('## Next Steps\n**Alex** did the thing')).toEqual([]);
+    expect(extractNextStepsOwners('## Next Steps\n- **Alex** send it')).toEqual([]);
   });
 
   it('returns [] for no summary', () => {
     expect(extractNextStepsOwners(null)).toEqual([]);
+  });
+});
+
+describe('the account owner renders as "you" (Tier 2 only)', () => {
+  it('maps Bobby to "you" while keeping his position in the list', () => {
+    expect(participantsFor({ calendar_invitees: [] }, REAL_RECORDING_SUMMARY)).toBe(
+      `Andrew, you ${DERIVED_SUFFIX}`,
+    );
+  });
+
+  it('is case-insensitive', () => {
+    expect(participantsFor({}, '## Next Steps\n- [**BOBBY:** do it](u)')).toBe(`you ${DERIVED_SUFFIX}`);
+  });
+
+  it('NEVER rewrites Tier 1 calendar_invitees — those are verified data', () => {
+    const m: FathomMeeting = { calendar_invitees: [{ name: 'Bobby Hougham' }, { name: 'Andrew Reid' }] };
+    expect(participantsFor(m, REAL_RECORDING_SUMMARY)).toBe('Bobby Hougham, Andrew Reid');
+  });
+
+  it('keeps a 1:1 with only Bobby distinguishable from an empty list', () => {
+    expect(participantsFor({}, '## Next Steps\n- [**Bobby:** follow up](u)')).toBe(`you ${DERIVED_SUFFIX}`);
+    expect(participantsFor({}, '## Next Steps\n- nothing bolded')).toBe('');
   });
 });
 
@@ -255,18 +314,46 @@ describe('Retry-After honouring (lib/http.ts)', () => {
 
 const silent = { info: () => {}, warn: () => {} };
 
-function fakeSheets(rows: unknown[][]) {
+/**
+ * A fake that behaves like a sheet: batchUpdate actually mutates the rows, and
+ * read returns what is currently there. Without that, a read-back test proves
+ * nothing.
+ *
+ * `swallowWrites` reproduces the live bug exactly — batchUpdate accepts the
+ * request, reports success, and changes nothing.
+ */
+function fakeSheets(rows: unknown[][], opts: { swallowWrites?: boolean; reportZeroCells?: boolean; noCellsField?: boolean } = {}) {
+  const state = rows.map((r) => [...r]);
   const appends: { range: string; values: unknown[][] }[] = [];
   const batches: { range: string; values: readonly unknown[][] }[] = [];
+  const COL_LETTER: Record<string, number> = { A: 0, B: 1, C: 2, D: 3, E: 4, F: 5, G: 6, H: 7, N: 13 };
   return {
-    appends, batches,
+    appends, batches, state,
     client: {
-      async read() { return rows; },
+      async read() { return state.map((r) => [...r]); },
       async append(range: string, values: unknown[][]) {
         appends.push({ range, values });
+        for (const v of values) state.push([...v]);
         return { updatedRows: values.length, updatesBlockPresent: true, updatedRowsFieldPresent: true };
       },
-      async batchUpdate(data: { range: string; values: readonly unknown[][] }[]) { batches.push(...data); },
+      async batchUpdate(data: { range: string; values: readonly unknown[][] }[]) {
+        batches.push(...data);
+        if (!opts.swallowWrites) {
+          for (const d of data) {
+            const m = /Zoom_Staging!([A-Z])(\d+)/.exec(d.range);
+            if (!m) continue;
+            const rowIdx = Number(m[2]) - 2;
+            const colIdx = COL_LETTER[m[1]!]!;
+            if (state[rowIdx]) state[rowIdx]![colIdx] = d.values[0]?.[0];
+          }
+        }
+        if (opts.noCellsField) return { totalUpdatedCells: 0, fieldsPresent: false, rangesRequested: data.length };
+        return {
+          totalUpdatedCells: opts.reportZeroCells ? 0 : data.length,
+          fieldsPresent: true,
+          rangesRequested: data.length,
+        };
+      },
       async update() { throw new Error('single-cell update should not be used - batchUpdate keeps quota per-request'); },
     },
   };
@@ -418,6 +505,75 @@ describe('backfill: blanks only, capped', () => {
   });
 });
 
+describe('backfill writes are verified by reading them back', () => {
+  const rowNew = (id: string) =>
+    [id, 'T', '2026-08-23', '', '', `https://fathom.video/calls/${id}`, '', 'NEW', '', '', '', '', '', 'R'];
+
+  it('reports a row as backfilled ONLY after the read-back confirms it', async () => {
+    const sheets = fakeSheets([rowNew('a')]);
+    const fathom = fakeFathom([], { a: REAL_RECORDING_SUMMARY });
+    const r = await runZoomDiscovery({
+      sheets: sheets.client as never, fathom: fathom.client as never, logger: silent,
+      dryRun: false, runId: 'T', now: NOW,
+    });
+    expect(r.backfillPlanned).toBe(1);
+    expect(r.backfilled).toHaveLength(1);
+    expect(r.warnings).toEqual([]);
+    expect(sheets.state[0]![6]).toBe('Review VFX approach for shoe colorways and discuss technical limitations.');
+  });
+
+  // THE LIVE BUG: the write is accepted, reported as fine, and lands nothing.
+  it('catches a silently-swallowed write and reports ZERO backfilled', async () => {
+    const sheets = fakeSheets([rowNew('a'), rowNew('b')], { swallowWrites: true });
+    const fathom = fakeFathom([], { a: REAL_RECORDING_SUMMARY, b: REAL_RECORDING_SUMMARY });
+    const r = await runZoomDiscovery({
+      sheets: sheets.client as never, fathom: fathom.client as never, logger: silent,
+      dryRun: false, runId: 'T', now: NOW,
+    });
+    expect(r.backfillPlanned).toBe(2);
+    expect(r.backfilled).toEqual([]); // outcome, not intent
+    const w = r.warnings.join('\n');
+    expect(w).toContain('BACKFILL WRITE NOT CONFIRMED for 2 of 2');
+    expect(w).toContain('STILL BLANK'); // names the specific rows
+    expect(w).toContain('row 2');
+    expect(w).toContain('row 3');
+  });
+
+  it('warns when Google reports 0 cells written', async () => {
+    const sheets = fakeSheets([rowNew('a')], { swallowWrites: true, reportZeroCells: true });
+    const fathom = fakeFathom([], { a: REAL_RECORDING_SUMMARY });
+    const r = await runZoomDiscovery({
+      sheets: sheets.client as never, fathom: fathom.client as never, logger: silent,
+      dryRun: false, runId: 'T', now: NOW,
+    });
+    // Two cells, not one: this row gets both G (topline) and E (owners).
+    expect(r.warnings.join('\n')).toContain('reported 0 of 2 cell(s) written');
+  });
+
+  it('treats a response with no totalUpdatedCells as unverifiable, not as success', async () => {
+    const sheets = fakeSheets([rowNew('a')], { noCellsField: true });
+    const fathom = fakeFathom([], { a: REAL_RECORDING_SUMMARY });
+    const r = await runZoomDiscovery({
+      sheets: sheets.client as never, fathom: fathom.client as never, logger: silent,
+      dryRun: false, runId: 'T', now: NOW,
+    });
+    expect(r.warnings.join('\n')).toContain('UNVERIFIABLE');
+    // The read-back still confirms it, because the cells really did change.
+    expect(r.backfilled).toHaveLength(1);
+  });
+
+  it('Slack breaks silence when writes were attempted and none confirmed', () => {
+    const msg = buildSlackMessage({
+      runId: 'T', dryRun: false, startedAt: '', finishedAt: '', lookbackHours: 24,
+      existingRows: 0, observedStatuses: {}, fetched: 0, skippedOlderThanCutoff: 0, skippedDuplicate: 0,
+      appended: [], appendedWithoutTopline: [], backfillCandidates: 10, backfillPlanned: 10, backfilled: [],
+      wouldWrite: [], warnings: ['x'],
+    });
+    expect(msg).not.toBeNull();
+    expect(msg!).toContain('10 backfill write(s) NOT confirmed');
+  });
+});
+
 describe('dry run writes nothing', () => {
   it('issues no append and no batchUpdate, but computes both', async () => {
     const sheets = fakeSheets([['a', 'T', '2026-08-23', '', '', 'https://fathom.video/calls/a', '', 'NEW', '', '', '', '', '', 'R']]);
@@ -441,7 +597,8 @@ describe('Slack stays silent on a no-op run', () => {
   const base: ZoomDiscoveryReport = {
     runId: 'ZOOM-DISC-1', dryRun: false, startedAt: '', finishedAt: '', lookbackHours: 24,
     existingRows: 0, observedStatuses: {}, fetched: 0, skippedOlderThanCutoff: 0, skippedDuplicate: 0,
-    appended: [], appendedWithoutTopline: [], backfillCandidates: 0, backfilled: [], wouldWrite: [], warnings: [],
+    appended: [], appendedWithoutTopline: [], backfillCandidates: 0, backfillPlanned: 0, backfilled: [],
+    wouldWrite: [], warnings: [],
   };
 
   it('returns null when nothing was added or backfilled', () => {

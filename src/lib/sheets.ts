@@ -108,9 +108,42 @@ export class SheetsClient {
    * single request. Same scope as `update`: these ranges, these values, nothing
    * wider.
    */
-  async batchUpdate(data: readonly { range: string; values: readonly SheetRow[] }[]): Promise<void> {
-    if (data.length === 0) return;
-    await this.post({ action: 'batchUpdate', data }, `sheets:batchUpdate ${data.length} range(s)`);
+  /**
+   * Returns what Google reports actually landed, for the same reason `append`
+   * does: a caller that only knows "the call didn't throw" is asserting intent,
+   * not outcome. This previously returned void, so every batched write in the
+   * repo was unverifiable at the call site — the exact shape of Part D's month
+   * of silent zero-writes, where each run reported clean success while
+   * withholding 100% of its CRM writes.
+   *
+   * The two booleans keep the same three facts apart that a bare 0 collapses,
+   * mirroring `append`'s contract:
+   *
+   *   totalUpdatedCells: 0      Google declined the write. A Sheets fault.
+   *   no response fields        The response never carried them. A transport
+   *                             or proxy fault.
+   *   fields present, cells 0   Google emits totalUpdatedCells on every
+   *                             successful batchUpdate, so this means the
+   *                             write was genuinely refused rather than lost.
+   *
+   * A 0 here is NEVER treated as success. Note also that this response is
+   * diagnostic only — the authoritative check is reading the cells back, which
+   * does not depend on the proxy returning any particular shape.
+   */
+  async batchUpdate(
+    data: readonly { range: string; values: readonly SheetRow[] }[],
+  ): Promise<{ totalUpdatedCells: number; fieldsPresent: boolean; rangesRequested: number }> {
+    if (data.length === 0) return { totalUpdatedCells: 0, fieldsPresent: true, rangesRequested: 0 };
+    const res = await this.post<{ totalUpdatedCells?: number; totalUpdatedRows?: number; responses?: unknown[] }>(
+      { action: 'batchUpdate', data },
+      `sheets:batchUpdate ${data.length} range(s)`,
+    );
+    const cells = res?.totalUpdatedCells;
+    return {
+      totalUpdatedCells: typeof cells === 'number' ? cells : 0,
+      fieldsPresent: typeof cells === 'number',
+      rangesRequested: data.length,
+    };
   }
 
   async append(

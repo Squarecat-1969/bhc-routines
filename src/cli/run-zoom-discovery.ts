@@ -96,7 +96,11 @@ async function main(): Promise<void> {
   logger.info(`appended        : ${report.appended.length}${report.appendedWithoutTopline.length > 0 ? ` (${report.appendedWithoutTopline.length} without a topline)` : ''}`);
   logger.info(`skipped dupe    : ${report.skippedDuplicate}`);
   logger.info(`skipped by age  : ${report.skippedOlderThanCutoff}`);
-  logger.info(`backfilled      : ${report.backfilled.length} of ${report.backfillCandidates} candidate(s)`);
+  logger.info(
+    report.dryRun
+      ? `backfill planned: ${report.backfillPlanned} of ${report.backfillCandidates} candidate(s) (dry run confirms nothing)`
+      : `backfilled      : ${report.backfilled.length} CONFIRMED of ${report.backfillPlanned} written, ${report.backfillCandidates} candidate(s)`,
+  );
   if (report.dryRun) {
     logger.info(`would-write: ${report.wouldWrite.length}`);
     for (const w of report.wouldWrite.slice(0, 20)) logger.info(`  ${w}`);

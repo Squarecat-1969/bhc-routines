@@ -158,31 +158,74 @@ export function extractMeetingPurpose(markdown: string | null | undefined): stri
 }
 
 /**
- * Next-Steps owners: a bolded name followed by a colon at a bullet start.
- *
- * DELIBERATELY NARROW. Scanning the whole summary for capitalised words was
- * considered and rejected — these summaries are dense with product and vendor
- * names, which would land in a participants field. Only people assigned an
- * action item are caught; someone who attended and committed to nothing will
- * not appear and the field stays blank. That is the correct failure mode:
- * never wrong, just silent.
+ * The literal name Fathom uses for the section. Matched case-insensitively
+ * against heading text, never against raw markdown.
  */
+const NEXT_STEPS_HEADING = /^next\s+steps\b/i;
+
 /**
- * §5.2's regex is `/^\s*-\s*\[?\*\*([A-Z][\w'’\-]+)\*\*:/` — an optional
- * opening bracket, then a bolded name, then a colon. That covers `- **Alex**:`
- * and `- [**Alex**:`, but NOT a fully-formed markdown link `- [**Alex**](url):`
- * where the colon falls after the closing paren, which the spec's own optional
- * `[` implies the data sometimes carries. The link segment is therefore
- * optional here too. Defensive, per §3's instruction to parse for both call
- * shapes; the capture group and every other condition are unchanged.
+ * The slice of a summary under a given heading, up to the next heading or the
+ * end of the document. Returns null when the section is absent — the caller
+ * must treat that as "no owners", never as "scan everything".
+ *
+ * Reuses the same isHeadingLine/headingText helpers Meeting Purpose extraction
+ * uses, so the two agree on what a heading is.
  */
-const NEXT_STEPS_OWNER = /^\s*-\s*\[?\*\*([A-Z][\w'’\-]+)\*\*(?:\]\([^)]*\))?\s*:/;
+export function sliceSection(markdown: string, heading: RegExp): string | null {
+  const lines = normalizeMarkdown(markdown).split('\n');
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (!isHeadingLine(lines[i]!)) continue;
+    if (heading.test(headingText(lines[i]!))) { start = i; break; }
+  }
+  if (start === -1) return null;
+
+  const body: string[] = [];
+  for (let i = start + 1; i < lines.length; i++) {
+    if (isHeadingLine(lines[i]!)) break;
+    body.push(lines[i]!);
+  }
+  return body.join('\n');
+}
+
+/**
+ * Next-Steps owners: a bolded name with a colon, at a bullet start, INSIDE the
+ * Next Steps section.
+ *
+ * TWO THINGS MAKE THIS CORRECT, AND EITHER ALONE IS WRONG.
+ *
+ * 1. THE COLON SITS INSIDE THE BOLD. Real Fathom output is
+ *    `- [**Andrew:** Present the two options...](url)` — the colon is part of
+ *    the bolded run, and the whole bullet is the link label. The spec's regex
+ *    in §5.2 expects `**Andrew**:` with the colon outside, and its name class
+ *    cannot match ':', so it never reaches the closing `**`. That pattern
+ *    scores ZERO matches on every real summary. Both placements are accepted
+ *    here; the capture group is unchanged.
+ *
+ * 2. THE SEARCH IS SCOPED TO THE SECTION. Fixing only the regex makes things
+ *    strictly WORSE, because the same bulleted-bold-prefix shape is used
+ *    throughout Key Takeaways and Topics for non-people labels — Method,
+ *    Black, White, Result, Feasibility, Rationale, Outcome, Workaround,
+ *    Description, Benefit, Constraint. Every one of those matches
+ *    `[A-Z][\w]+` before a colon, and unscoped they would land in a
+ *    participants field: precisely the over-matching §5.3 rejects. So the
+ *    regex only ever runs against the Next Steps slice, and a summary with no
+ *    Next Steps section yields [] rather than falling back to the whole text.
+ *
+ * The §5.4 limit still stands: only people assigned an action item are caught.
+ * Someone who attended and committed to nothing stays absent, and the field
+ * stays blank — never wrong, just silent.
+ */
+const NEXT_STEPS_OWNER = /^\s*-\s*\[?\*\*([A-Z][\w'’\-]+)(?::\*\*|\*\*(?:\]\([^)]*\))?\s*:)/;
 
 export function extractNextStepsOwners(markdown: string | null | undefined): string[] {
   if (!markdown) return [];
+  const section = sliceSection(markdown, NEXT_STEPS_HEADING);
+  if (section === null) return []; // no section, no owners. Never scan the whole summary.
+
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const line of normalizeMarkdown(markdown).split('\n')) {
+  for (const line of section.split('\n')) {
     const m = NEXT_STEPS_OWNER.exec(line);
     if (!m) continue;
     const name = m[1]!;
@@ -192,6 +235,24 @@ export function extractNextStepsOwners(markdown: string | null | undefined): str
     out.push(name);
   }
   return out;
+}
+
+/**
+ * The account owner, rendered as "you" in a derived participant list.
+ *
+ * Bobby is on nearly every call, so his name as a participant HINT carries no
+ * information — it is the one name guaranteed to be there. Dropping him
+ * entirely would lose something real though: whether the call was a 1:1 or a
+ * group. "you" keeps the shape of the room while spending no attention.
+ *
+ * TIER 2 ONLY. Tier 1 calendar_invitees are verified attendee data and are
+ * written verbatim — never rewritten, never relabelled.
+ */
+export const SELF_NAMES: ReadonlySet<string> = new Set(['bobby']);
+export const SELF_LABEL = 'you';
+
+function asDisplayName(name: string): string {
+  return SELF_NAMES.has(name.toLowerCase()) ? SELF_LABEL : name;
 }
 
 /** The suffix is load-bearing — see participantsFor. */
@@ -220,7 +281,7 @@ export function participantsFor(meeting: FathomMeeting, markdown: string | null)
     .filter((v) => v !== '');
   if (named.length > 0) return named.join(', ');
 
-  const owners = extractNextStepsOwners(markdown);
+  const owners = extractNextStepsOwners(markdown).map(asDisplayName);
   if (owners.length > 0) return `${owners.join(', ')} ${DERIVED_SUFFIX}`;
 
   return '';
@@ -319,6 +380,14 @@ export interface ZoomDiscoveryReport {
   readonly appended: readonly string[];
   readonly appendedWithoutTopline: readonly string[];
   readonly backfillCandidates: number;
+  /** Rows a write was computed and issued for. Intent. */
+  readonly backfillPlanned: number;
+  /**
+   * Rows whose write was CONFIRMED by reading the cell back. Outcome.
+   * Deliberately distinct from `backfillPlanned`: a report that cannot tell
+   * those apart is how a run of 10 withheld writes read as 10 successes.
+   * Always empty on a dry run, because a dry run writes nothing.
+   */
   readonly backfilled: readonly { readonly recordingId: string; readonly row: number; readonly what: string }[];
   readonly wouldWrite: readonly string[];
   readonly warnings: readonly string[];
@@ -460,7 +529,9 @@ export async function runZoomDiscovery(deps: ZoomDiscoveryDeps): Promise<ZoomDis
     candidates.push({ row: i + 2, recordingId: id, hasParticipants: cell(r, COL.participants) !== '' });
   });
 
-  const backfilled: { recordingId: string; row: number; what: string }[] = [];
+  // PLANNED, not done. Nothing enters `backfilled` until a read-back confirms
+  // it landed — see the verification block below.
+  const planned: { recordingId: string; row: number; what: string; topline: string; participants: string | null }[] = [];
   const batch: { range: string; values: readonly SheetRow[] }[] = [];
 
   for (const c of candidates.slice(0, BACKFILL_CAP)) {
@@ -476,25 +547,79 @@ export async function runZoomDiscovery(deps: ZoomDiscoveryDeps): Promise<ZoomDis
 
     batch.push({ range: `Zoom_Staging!G${c.row}`, values: [[topline]] });
     const what: string[] = ['G'];
+    let participants: string | null = null;
 
     // Column E only when it is blank AND the ladder produces something. Same
-    // blanks-only rule; a populated E is never touched.
+    // blanks-only rule; a populated E is never touched. Same self-labelling as
+    // the capture path — one ladder, not two.
     if (!c.hasParticipants) {
-      const owners = extractNextStepsOwners(md);
+      const owners = extractNextStepsOwners(md).map((n) => (SELF_NAMES.has(n.toLowerCase()) ? SELF_LABEL : n));
       if (owners.length > 0) {
-        batch.push({ range: `Zoom_Staging!E${c.row}`, values: [[`${owners.join(', ')} ${DERIVED_SUFFIX}`]] });
+        participants = `${owners.join(', ')} ${DERIVED_SUFFIX}`;
+        batch.push({ range: `Zoom_Staging!E${c.row}`, values: [[participants]] });
         what.push('E');
       }
     }
-    backfilled.push({ recordingId: c.recordingId, row: c.row, what: what.join('+') });
+    planned.push({ recordingId: c.recordingId, row: c.row, what: what.join('+'), topline, participants });
   }
+
+  const backfilled: { recordingId: string; row: number; what: string }[] = [];
 
   if (batch.length > 0) {
     if (dryRun) {
       for (const b of batch) wouldWrite.push(`SHEETS ${b.range} = ${JSON.stringify(b.values[0]?.[0] ?? '')}`);
     } else {
       // One request, not one per cell — Sheets quota is counted per request.
-      await sheets.batchUpdate(batch);
+      const res = await sheets.batchUpdate(batch);
+
+      // OUTCOME, NOT INTENT. This pass previously counted a row as backfilled
+      // the moment it COMPUTED the value, before any write was issued, and
+      // then discarded batchUpdate's response entirely. A live run duly
+      // reported "backfilled 10" while all ten column-G cells stayed blank —
+      // the same silent-success shape as Part D's month of withheld CRM
+      // writes. The response is checked, and then the cells are READ BACK,
+      // because the response alone only says what Google claims it did.
+      if (!res.fieldsPresent) {
+        warnings.push(
+          `Zoom_Staging batchUpdate response carried no totalUpdatedCells - the write is UNVERIFIABLE from the response alone; relying entirely on the read-back below`,
+        );
+      } else if (res.totalUpdatedCells === 0) {
+        warnings.push(
+          `⚠ Zoom_Staging batchUpdate reported 0 of ${batch.length} cell(s) written - Google declined the write`,
+        );
+      }
+
+      // The authoritative check. One extra read for the whole tab, not one per
+      // row, so this costs a single request regardless of batch size.
+      let after: SheetRow[] = [];
+      try {
+        after = await sheets.read(STAGING_RANGE);
+      } catch (e) {
+        warnings.push(`⚠ Backfill read-back FAILED (${String(e)}) - ${planned.length} row(s) are unconfirmed and are NOT reported as backfilled`);
+        after = [];
+      }
+
+      const mismatched: string[] = [];
+      for (const p of planned) {
+        const row = after[p.row - 2];
+        if (row === undefined) { mismatched.push(`row ${p.row} (${p.recordingId}): not readable after write`); continue; }
+        const gotG = cell(row, COL.toplineSummary);
+        if (gotG !== p.topline) {
+          mismatched.push(`row ${p.row} (${p.recordingId}): G is ${gotG === '' ? 'STILL BLANK' : JSON.stringify(gotG.slice(0, 40))}, expected ${JSON.stringify(p.topline.slice(0, 40))}`);
+          continue;
+        }
+        if (p.participants !== null && cell(row, COL.participants) !== p.participants) {
+          mismatched.push(`row ${p.row} (${p.recordingId}): E did not land`);
+          continue;
+        }
+        backfilled.push({ recordingId: p.recordingId, row: p.row, what: p.what });
+      }
+
+      if (mismatched.length > 0) {
+        warnings.push(
+          `⚠ BACKFILL WRITE NOT CONFIRMED for ${mismatched.length} of ${planned.length} row(s) - read-back disagrees with what was written:\n  ${mismatched.join('\n  ')}`,
+        );
+      }
     }
   }
 
@@ -512,6 +637,7 @@ export async function runZoomDiscovery(deps: ZoomDiscoveryDeps): Promise<ZoomDis
     appended,
     appendedWithoutTopline,
     backfillCandidates: candidates.length,
+    backfillPlanned: planned.length,
     backfilled,
     wouldWrite,
     warnings,
@@ -525,7 +651,8 @@ export async function runZoomDiscovery(deps: ZoomDiscoveryDeps): Promise<ZoomDis
  * a no-op run returns null and the caller posts nothing at all.
  */
 export function buildSlackMessage(report: ZoomDiscoveryReport): string | null {
-  if (report.appended.length === 0 && report.backfilled.length === 0) return null;
+  const unconfirmedWrites = !report.dryRun && report.backfillPlanned > report.backfilled.length;
+  if (report.appended.length === 0 && report.backfilled.length === 0 && !unconfirmedWrites) return null;
 
   const lines = [`🎥 Zoom DISCOVERY - ${report.runId}`];
   if (report.appended.length > 0) {
@@ -535,7 +662,14 @@ export function buildSlackMessage(report: ZoomDiscoveryReport): string | null {
     }
   }
   if (report.backfilled.length > 0) {
-    lines.push(`${report.backfilled.length} existing row(s) backfilled${report.backfillCandidates > report.backfilled.length ? ` (${report.backfillCandidates - report.backfilled.length} still pending, capped at ${BACKFILL_CAP}/run)` : ''}`);
+    const pending = report.backfillCandidates - report.backfilled.length;
+    lines.push(`${report.backfilled.length} existing row(s) backfilled (confirmed by read-back)${pending > 0 ? ` · ${pending} still pending, capped at ${BACKFILL_CAP}/run` : ''}`);
+  }
+  // The silent-failure case, said out loud. A run that computed writes and
+  // confirmed none must never render as a quiet success.
+  const unconfirmed = report.backfillPlanned - report.backfilled.length;
+  if (!report.dryRun && unconfirmed > 0) {
+    lines.push(`⚠ ${unconfirmed} backfill write(s) NOT confirmed by read-back - column G may still be blank`);
   }
   if (report.warnings.length > 0) lines.push(`⚠ ${report.warnings.length} warning(s) - see the run artifact`);
   lines.push('Triage: aida.hougham.us (Meetings)');
