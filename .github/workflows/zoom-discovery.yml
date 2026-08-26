@@ -75,6 +75,7 @@ jobs:
           SHEETS_PROXY_URL: ${{ secrets.SHEETS_PROXY_URL }}
           FATHOM_API_KEY: ${{ secrets.FATHOM_API_KEY }}
           ZAPIER_SLACK_HOOK_URL: ${{ secrets.ZAPIER_SLACK_HOOK_URL }}
+          ATTIO_API_KEY: ${{ secrets.ATTIO_API_KEY }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.mode }}" = "dry-run" ]; then
             npm run zoom-discovery -- --dry-run --json-out out/zoom-discovery-report.json
