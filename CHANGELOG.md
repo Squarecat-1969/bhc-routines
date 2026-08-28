@@ -2,6 +2,30 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-08-27 — DISCOVERY removed from BHC Zoom; both implementations had been running for two days
+
+**Two writers on one table, found by reading Slack rather than by any check.** DISCOVERY was ported to deterministic TypeScript on 2026-08-25 (`src/passes/zoom-discovery.ts`, `zoom-discovery.yml`, `*/30` sweep), but D-STEP 1/2/3 were left in the routine prompt. Both paths ran against `Zoom_Staging` for two days.
+
+The 2026-08-27 `#aida` timeline shows it plainly: the sweep staged one row at 10:06, the agentic routine staged two more at 15:11 (`DISCOVERY: 2 new meeting(s) added to triage`), and the sweep backfilled those same two at 18:34. One implementation creating work the other cleaned up.
+
+**No duplicates — both dedup on `recording_id`, and the read-then-append windows never overlapped.** But six rows were staged by the agentic path in a different format: bare participant names with no self-mapping and no provenance suffix. Three of them (`177054672`, `177111613`, `177252637`) carried `Bobby Hougham` alone against a generic title, which Aida's `promote` path renders as "Meeting with Bobby Hougham" — exactly the case the 2026-08-25 solo-name rule exists to prevent, arriving through the path that wasn't closed. Column E cleared by hand on those rows so the next sweep resolves them properly.
+
+**Removed** the whole `### DISCOVERY — Find new Fathom meetings` section (D-STEP 1/2/3, lines 255–295), replaced with a pointer naming both files, the `*/30` cadence, the fact that cols E and G arrive populated, and an explicit "do not poll Fathom, do not append to `Zoom_Staging`".
+
+**Four collateral edits, three of them dangling references that read as live instructions:**
+- Non-negotiable #1 and the standalone run-order note both contained the identical string `Execute first, then discover, then enrich.` A naive first-match replace would have rewritten one and left the other stale. Caught by an assertion, not by inspection.
+- A PASS 1 branch reading `skip to DISCOVERY` — control flow pointing at a section that no longer does work.
+- The STEP 6 Slack template's `DISCOVERY: {D} new meeting(s) added to triage`. Left in place it would report `0` forever, asserting the routine looked and found nothing when it no longer looks. A false zero in the surface an operator reads is worse than no line.
+- The "One data store" description still said *"the routine discovers meetings directly from Fathom"*.
+
+**`list_meetings` is annotated, not removed** from the Fathom connector list: still available, explicitly not used here. Removing it would make the capability list inaccurate; leaving it unannotated puts a loaded tool beside a prohibition, and this file's failure mode is a session doing what the prose left available. The other three Fathom tools are untouched — PASS 2 uses all of them.
+
+**What this routine still does, and why it wasn't retired:** STEP 0, PASS 1 and PASS 2 remain agentic and remain scheduled `0 7,14,22 * * 1-5`. PASS 1 is the minter, and every identity-corruption incident in the ledger lives there — porting capture and the minter in one change would violate phased-by-risk at the most expensive point. `Zoom_Staging` is the interface, so the deterministic and agentic halves coexist without knowing about each other.
+
+**Also this install:** routine model bumped from Sonnet to Opus. PASS 1 allocates BHC_IDs and writes to live CRMs against a five-step atomic contract and roughly fifteen numbered non-negotiables — instruction-following fidelity there is worth more than three runs a day of savings. Worth noting nobody knows whether Sonnet was always the setting or whether it drifted; if it drifted, that is the same silent-config-drift family already documented for this routine's trigger token.
+
+Prompt-only change — 445 → 422 lines. No `src/` touched, no tests affected. Installed to the cloud config Instructions panel and mirrored to the "Claude Code Routines" Google Doc the same day. **Confirmation is the next 15:11 PT post: PASS 1 / PASS 2 / Backfill, with no DISCOVERY line.**
+
 ## 2026-08-15 — Part D executed ZERO primary CRM writes for a month while reporting success
 
 **The bug.** `load-run-set.ts` read the contact's BHC_ID from Brain_Complete col B. That column is blank on every live row — Zap C populates Thread_Staging without doing identity resolution, and PASS 2 passed the blank straight through. The real identity only ever reached the sheet inside `Write_Targets_JSON` (col Z) as `primary.bhc_id`.
