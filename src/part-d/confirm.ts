@@ -44,7 +44,16 @@ interface ResolveCounts {
   google: number;
   attio: number;
   activityEntries: number;
-  tasks: number;
+  /**
+   * Attio tasks created. TWO SYSTEMS, TWO NUMBERS — this one used to be
+   * reported as plain "N tasks", which meant a run whose Tasks_Log appends all
+   * no-opped still posted a healthy count, because Attio's side had succeeded.
+   * Collapsing them is what kept five weeks of appends-to-the-wrong-tab
+   * invisible, so they are never summed and never share a label again.
+   */
+  attioTasks: number;
+  /** Tasks_Log rows CONFIRMED written, from the API's own updatedRows. */
+  taskRows: number;
   enrichedContacts: number;
   failedQAWrites: number;
   /**
@@ -68,7 +77,7 @@ interface ResolveCounts {
  * from the fact that a row was processed at all.
  */
 function countResolved(applied: BranchResult['applied']): ResolveCounts {
-  const counts: ResolveCounts = { google: 0, attio: 0, activityEntries: 0, tasks: 0, enrichedContacts: 0, failedQAWrites: 0, withheld: 0, partial: 0 };
+  const counts: ResolveCounts = { google: 0, attio: 0, activityEntries: 0, attioTasks: 0, taskRows: 0, enrichedContacts: 0, failedQAWrites: 0, withheld: 0, partial: 0 };
   for (const row of applied) {
     if (row.outcome !== 'resolved' || !row.writeResult) continue;
     const w = row.writeResult;
@@ -80,7 +89,10 @@ function countResolved(applied: BranchResult['applied']): ResolveCounts {
       // array of ones attempted.
       counts.activityEntries += 1 + w.secondaries.filter((s) => s.ok).length;
     }
-    counts.tasks += w.taskIds.length;
+    // Attio's own returned IDs — confirmed by Attio, says nothing about Sheets.
+    counts.attioTasks += w.taskIds.length;
+    // Confirmed by the Sheets API's updatedRows. Never an intended count.
+    counts.taskRows += w.tasksLogRowsWritten;
     if (row.qa && row.qa.personalContextChecks.length > 0) counts.enrichedContacts += 1;
     if (row.qa) counts.failedQAWrites += row.qa.primaryChecks.filter((c) => !c.ok).length;
     if (isHollow(w)) counts.withheld += 1;
@@ -101,11 +113,19 @@ export function buildCorrectionsMessage(runLabel: string, result: BranchResult):
 export function buildResolveMessage(runLabel: string, result: BranchResult): string {
   const c = countResolved(result.applied);
 
-  if (c.google === 0 && c.attio === 0 && c.activityEntries === 0 && c.tasks === 0) {
+  if (c.google === 0 && c.attio === 0 && c.activityEntries === 0 && c.attioTasks === 0 && c.taskRows === 0) {
     return `✅ ${runLabel} — done · nothing to write`;
   }
 
-  let msg = `✅ ${runLabel} — done · ${c.google} Google · ${c.attio} Attio · ${c.activityEntries} activity entries · ${c.tasks} tasks → ${BRIEFING_URL}`;
+  // The two task numbers are reported side by side, never summed. When they
+  // disagree, that disagreement IS the signal — one system took the write and
+  // the other did not.
+  const tasksPart =
+    c.attioTasks === c.taskRows
+      ? `${c.taskRows} tasks`
+      : `${c.taskRows} task row(s) · ${c.attioTasks} Attio task(s)`;
+  let msg = `✅ ${runLabel} — done · ${c.google} Google · ${c.attio} Attio · ${c.activityEntries} activity entries · ${tasksPart} → ${BRIEFING_URL}`;
+  if (c.attioTasks !== c.taskRows) msg += ` · ⚠ task counts disagree — Sheets and Attio are out of sync`;
   if (c.enrichedContacts > 0) msg += ` · ${c.enrichedContacts} contact(s) enriched`;
   if (c.failedQAWrites > 0) msg += ` · ⚠ ${c.failedQAWrites} write(s) failed QA — check manually`;
   if (c.withheld > 0) msg += ` · ⚠ ${c.withheld} write(s) withheld by identity gate`;
@@ -121,7 +141,9 @@ export function buildMixedMessage(runLabel: string, result: BranchResult): strin
   const skippedPositions = result.applied.filter((a) => a.outcome === 'skipped_invalid_position').length;
   const totalSkipped = skippedPositions + result.skippedLines.length;
 
-  let msg = `✅ ${runLabel} — done · ${accepted} accepted (${c.google} Google · ${c.attio} Attio · ${c.activityEntries} activity entries · ${c.tasks} tasks) · ${corrected} corrected · ${dismissed} dismissed`;
+  const mixedTasks =
+    c.attioTasks === c.taskRows ? `${c.taskRows} tasks` : `${c.taskRows} task row(s) · ${c.attioTasks} Attio task(s)`;
+  let msg = `✅ ${runLabel} — done · ${accepted} accepted (${c.google} Google · ${c.attio} Attio · ${c.activityEntries} activity entries · ${mixedTasks}) · ${corrected} corrected · ${dismissed} dismissed`;
   if (c.failedQAWrites > 0) msg += ` · ⚠ ${c.failedQAWrites} write(s) failed QA — check manually`;
   if (c.withheld > 0) msg += ` · ⚠ ${c.withheld} write(s) withheld by identity gate`;
   if (c.partial > 0) msg += ` · ⚠ ${c.partial} row(s) partially written — CRMs may be out of sync`;

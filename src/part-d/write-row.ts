@@ -31,14 +31,38 @@
  *     UNVERIFIED (see AttioClient.createTask's own doc comment — no genuine
  *     create call exists anywhere in either repo yet). last_meeting_summary
  *     update reuses updatePersonRecord, already live-verified by PASS 4.
- *   - Tasks_Open (4e): CROSS-VERIFIED, and a real discrepancy was FOUND and
- *     fixed here, not assumed away: the spec calls this tab "Tasks_Log" and
- *     describes a 15-field append (...Company · Title at the end). The real,
- *     live-verified tab is Tasks_Open, 13 columns A-M (pass2_5/tasks.ts's
- *     own comment: "verified live 2026-07-19: real tab is Tasks_Open, not
- *     Tasks_Log, a stale name from an old memory summary"), with no
- *     Company/Title columns at all. This module writes to the real,
- *     verified 13-column shape, not the spec's stale 15-field description.
+ *   - Tasks_Log (4e): the append target is Tasks_Log, and this is the one
+ *     place in this file where an earlier "correction" was itself the bug.
+ *
+ *     WHAT THIS COMMENT USED TO SAY, and why it was wrong: it claimed the
+ *     spec's "Tasks_Log" was stale and that the real tab was Tasks_Open,
+ *     citing constants.ts's `tasksOpenData: 'Tasks_Open!A2:M'` and
+ *     pass2_5/tasks.ts's "verified live 2026-07-19: real tab is Tasks_Open".
+ *     Both citations are READ targets and both are correct as read targets —
+ *     PASS 2.5 does read the view. The error was generalising a verified READ
+ *     to the WRITE, which inverts the actual rule: READ FROM THE VIEW, WRITE
+ *     TO THE SOURCE.
+ *
+ *     Tasks_Open is a read-only ARRAYFORMULA view. Tasks_Open!A2 holds
+ *     `=IFERROR(FILTER(Tasks_Log!A2:N, <status is Open/In Progress/Deferred>,
+ *     Tasks_Log!A2:A<>""),"")`. An append inside its A-N spill range does not
+ *     merge into the view — it lands as a literal that the FILTER cannot see,
+ *     cannot close, and will eventually collide with, at which point Sheets
+ *     refuses to expand the array and the whole tab returns #REF!. BHC Zoom's
+ *     non-negotiable #18 states this; Part D's own routine spec says "4e.
+ *     Tasks_Log (append, one row per task)". The spec was right.
+ *
+ *     LIVE SCHEMA, verified 2026-08-27 by reading Tasks_Log!A1:O1 rather than
+ *     inferring it: FIFTEEN columns, A-O — Task_ID · Created_At · Contact_ID ·
+ *     LinkedIn_URL · Contact_Name · Task_Type · Task_Description · Due_Date ·
+ *     Status · Priority · Owner · Closed_At · Related_Activity_ID · Company ·
+ *     Title. The FILTER pulls only A2:N, which is why the view looks 14 wide.
+ *     BHC_Zoom.md's P1-STEP 3e appends the same 15 fields in the same order
+ *     and is the reference implementation.
+ *
+ *     Part D sources 13 of the 15. Company (N) and Title (O) have no source
+ *     here and are written blank — a TRAILING gap, so nothing shifts; every
+ *     one of the 13 maps to its column by header name and by position.
  *
  * Identity-verification gate (added here, not in the spec — see the
  * project's own §6 hard contract and the June 12 corruption incident it
@@ -66,7 +90,13 @@ import type { SecondaryWriteResult, StagedTask, WriteRowInput, WriteRowResult } 
 const OUTCOME_DEFAULT = 'Neutral';
 const ACTIVITY_LOG_APPEND_RANGE = 'Activity_Log!A1'; // append target — actual landing row determined by the API, same convention as PASS 0's own Activity_Log appends
 const CONTACT_HISTORY_APPEND_RANGE = 'Contact_History!A1';
-const TASKS_OPEN_APPEND_RANGE = 'Tasks_Open!A1';
+/**
+ * Tasks_Log, NOT Tasks_Open. Tasks_Open is a read-only ARRAYFORMULA view of
+ * this table (`=IFERROR(FILTER(Tasks_Log!A2:N,...),"")` in Tasks_Open!A2) and a
+ * write inside its spill range breaks the FILTER and needs manual repair.
+ * Read the view, write the source. See the 4e note in this file's header.
+ */
+const TASKS_LOG_APPEND_RANGE = 'Tasks_Log!A1';
 
 function makeActivityId(now: Date = new Date()): string {
   const rand = Math.random().toString(36).slice(2, 8);
@@ -124,6 +154,8 @@ export async function writeRow(
   const writes: string[] = [];
   const warnings: string[] = [];
   const taskIds: string[] = [];
+  /** Tasks_Log appends CONFIRMED by the API's own updatedRows. Never a plan. */
+  let tasksLogRowsWritten = 0;
   const now = new Date();
   const nowIso = now.toISOString();
   const dateOnly = nowIso.slice(0, 10);
@@ -457,26 +489,41 @@ export async function writeRow(
     }
   }
 
-  // ── 4e. Tasks_Open (append, one row per task) — real 13-col A-M shape ───
+  // ── 4e. Tasks_Log (append, one row per task) — live 15-col A-O shape ────
+  // Padded to the full 15 rather than stopping at M: the table is 15 wide and
+  // an explicit shape is what makes a future column insertion visible instead
+  // of silently shifting everything after it.
   for (const task of tasks) {
     const taskId = makeTaskId(now);
     const taskRow: unknown[] = [
-      taskId, // A
+      taskId, // A Task_ID
       nowIso, // B Created_At
       bhcId, // C Contact_ID
       linkedinUrl, // D LinkedIn_URL
       contactName, // E Contact_Name
       'Follow-up', // F Task_Type
-      task.description, // G
-      task.due_date, // H
+      task.description, // G Task_Description
+      task.due_date, // H Due_Date
       'Open', // I Status
-      task.priority || 'Medium', // J
+      task.priority || 'Medium', // J Priority
       'Bobby', // K Owner
       '', // L Closed_At
       activityId, // M Related_Activity_ID
+      '', // N Company — no source in Part D
+      '', // O Title — no source in Part D
     ];
-    await sheets.append(TASKS_OPEN_APPEND_RANGE, [taskRow]);
-    writes.push(`Tasks_Open ${taskId} appended`);
+    // Outcome, not intent: confirm.ts reports the sheet-side task count from
+    // this, so it has to mean "landed". The Attio task count is a separate
+    // number measuring a separate system — collapsing the two is what kept
+    // five weeks of misdirected appends invisible.
+    const taskAppend = await sheets.append(TASKS_LOG_APPEND_RANGE, [taskRow]);
+    if (taskAppend.updatedRows > 0) {
+      tasksLogRowsWritten += 1;
+      writes.push(`Tasks_Log ${taskId} appended`);
+    } else {
+      warnings.push(describeFailedAppend(`Tasks_Log append for ${taskId}`, taskAppend));
+      writes.push(`Tasks_Log ${taskId} append returned 0 rows — NOT written`);
+    }
   }
 
   // ── 4f. Secondary contacts (lighter loop) ────────────────────────────────
@@ -605,7 +652,7 @@ export async function writeRow(
   // callers wanting to know about partial failures should check
   // warnings.length, which is the real, itemized signal, not this boolean.
   return {
-    ok: true, bhcId, activityId, writes, warnings, taskIds,
+    ok: true, bhcId, activityId, writes, warnings, taskIds, tasksLogRowsWritten,
     googleWritten: googleOk, attioWritten: attioOk,
     googleTargeted, attioTargeted, identityGateWarnings,
     activityLogWritten, secondaries,

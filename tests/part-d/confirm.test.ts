@@ -13,7 +13,7 @@ const RUN_LABEL = 'LATE-EDITION-1784499863693';
 function writeResult(overrides: Partial<WriteRowResult> = {}): WriteRowResult {
   const base = {
     ok: true, bhcId: 'BHC-1', activityId: 'ACT-1', writes: [], warnings: [],
-    taskIds: [], googleWritten: false, attioWritten: false,
+    taskIds: [], tasksLogRowsWritten: 0, googleWritten: false, attioWritten: false,
     activityLogWritten: true, identityGateWarnings: [] as readonly string[],
     secondaries: [] as readonly WriteRowResult['secondaries'][number][],
     ...overrides,
@@ -81,11 +81,33 @@ describe('buildCorrectionsMessage', () => {
 describe('buildResolveMessage', () => {
   it('builds the full template with real counts', () => {
     const result = branchResult('RESOLVE', [
-      resolvedRow({ writeResult: writeResult({ googleWritten: true, attioWritten: true, taskIds: ['t1'] }) }),
+      resolvedRow({ writeResult: writeResult({ googleWritten: true, attioWritten: true, taskIds: ['t1'], tasksLogRowsWritten: 1 }) }),
       resolvedRow({ digestPosition: 2, writeResult: writeResult({ googleWritten: true, secondaries: [{ bhcId: 'BHC-9', activityId: 'ACT-2', attioRecordId: null, ok: true, warnings: [] }] }) }),
     ]);
     const msg = buildResolveMessage(RUN_LABEL, result);
     expect(msg).toBe(`✅ ${RUN_LABEL} — done · 2 Google · 1 Attio · 3 activity entries · 1 tasks → https://aida.hougham.us/briefing/emails`);
+  });
+
+  // THE BLIND SPOT THIS CLOSES. taskIds counts Attio; tasksLogRowsWritten
+  // counts confirmed Sheets appends. Reporting only the former is why five
+  // weeks of appends landing on the wrong tab still posted a healthy count.
+  it('reports the two task systems separately and flags a disagreement', () => {
+    const result = branchResult('RESOLVE', [
+      resolvedRow({ writeResult: writeResult({ googleWritten: true, taskIds: ['t1', 't2'], tasksLogRowsWritten: 0 }) }),
+    ]);
+    const msg = buildResolveMessage(RUN_LABEL, result);
+    expect(msg).toContain('0 task row(s) · 2 Attio task(s)');
+    expect(msg).toContain('task counts disagree');
+    expect(msg).not.toContain('2 tasks'); // never the Attio number alone
+  });
+
+  it('collapses to one number only when both systems agree', () => {
+    const result = branchResult('RESOLVE', [
+      resolvedRow({ writeResult: writeResult({ googleWritten: true, taskIds: ['t1'], tasksLogRowsWritten: 1 }) }),
+    ]);
+    const msg = buildResolveMessage(RUN_LABEL, result);
+    expect(msg).toContain('1 tasks');
+    expect(msg).not.toContain('disagree');
   });
 
   it('replaces the whole message with "nothing to write" when every count is zero', () => {

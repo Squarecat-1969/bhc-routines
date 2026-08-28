@@ -63,6 +63,16 @@ export interface WriteRowResult {
   /** Attio task IDs created in 4d — QA reads these back; if exactly one, it's also written to Activity_Log col T per spec. */
   readonly taskIds: readonly string[];
   /**
+   * Tasks_Log rows CONFIRMED written in 4e, from the API's own `updatedRows`.
+   *
+   * Deliberately separate from `taskIds`. That array counts Attio tasks, and
+   * confirm.ts used to report it as "N tasks" — so a run whose sheet appends
+   * all no-opped still posted a healthy task count because Attio's side had
+   * succeeded. The two measure different systems and collapsing them is what
+   * kept five weeks of appends-to-the-wrong-tab invisible.
+   */
+  readonly tasksLogRowsWritten: number;
+  /**
    * Explicit, set directly from the identity-gate result rather than left
    * for a caller to infer from parsing `writes`' human-readable strings —
    * confirm.ts (STEP 6) needs exactly this for its "{g} Google · {a} Attio"

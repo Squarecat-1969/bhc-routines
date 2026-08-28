@@ -307,7 +307,50 @@ describe('writeRow — 4b.5 personal context', () => {
   }, 12_000);
 });
 
-describe('writeRow — 4e Tasks_Open (real 13-col A-M shape, not the spec\'s stale 15-field description)', () => {
+/**
+ * THE TARGET IS TASKS_LOG. NEVER TASKS_OPEN.
+ *
+ * Tasks_Open is a read-only ARRAYFORMULA view of Tasks_Log
+ * (`=IFERROR(FILTER(Tasks_Log!A2:N,...),"")` in Tasks_Open!A2). An append
+ * inside its A-N spill range lands as a literal the FILTER cannot see or
+ * close, and eventually collides with the spill, at which point Sheets
+ * refuses to expand the array and the whole tab returns #REF!.
+ *
+ * This shipped for five weeks because a verified READ target
+ * (pass2_5 reads Tasks_Open!A2:M — correct) was generalised to the WRITE
+ * target. The rule is: read from the view, write to the source. These are
+ * literal-string assertions specifically so that "correction" fails loudly
+ * instead of shipping again.
+ */
+describe('writeRow — 4e append target', () => {
+  it('appends to Tasks_Log, and NEVER to Tasks_Open', async () => {
+    const { sheets, attio, masterId } = await setup({
+      entries: [], people: {}, masterId: MASTER_ID_ROWS, contactsHeader: [], contacts: [],
+    });
+    await writeRow(sheets, attio, masterId, baseInput({
+      tasks: [{ description: 'Send follow-up', due_date: '2026-07-25', priority: 'High' }],
+    }));
+    const ranges = backend.sheetsWrites.map((w) => String((w.body as { range?: string }).range ?? ''));
+    expect(ranges).toContain('Tasks_Log!A1');
+    for (const r of ranges) expect(r.startsWith('Tasks_Open')).toBe(false);
+  });
+
+  it('never writes to Tasks_Open under any range form', async () => {
+    const { sheets, attio, masterId } = await setup({
+      entries: [], people: {}, masterId: MASTER_ID_ROWS, contactsHeader: [], contacts: [],
+    });
+    await writeRow(sheets, attio, masterId, baseInput({
+      tasks: [
+        { description: 'One', due_date: '2026-07-25', priority: 'High' },
+        { description: 'Two', due_date: '2026-07-26', priority: 'Low' },
+      ],
+    }));
+    const body = JSON.stringify(backend.sheetsWrites.map((w) => w.body));
+    expect(body).not.toContain('Tasks_Open');
+  });
+});
+
+describe('writeRow — 4e Tasks_Log (live 15-col A-O shape)', () => {
   it('appends one row per task with exactly 13 columns', async () => {
     const { sheets, attio, masterId } = await setup({
       entries: [], people: {}, masterId: MASTER_ID_ROWS, contactsHeader: [], contacts: [],
@@ -315,10 +358,12 @@ describe('writeRow — 4e Tasks_Open (real 13-col A-M shape, not the spec\'s sta
     await writeRow(sheets, attio, masterId, baseInput({
       tasks: [{ description: 'Send follow-up', due_date: '2026-07-25', priority: 'High' }],
     }));
-    const append = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Tasks_Open!A1');
+    const append = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Tasks_Log!A1');
     expect(append).toBeDefined();
     const row = (append!.body as { values: unknown[][] }).values[0]!;
-    expect(row).toHaveLength(13); // A-M, not the spec's stale 15
+    expect(row).toHaveLength(15); // A-O, the live schema
+    expect(row[13]).toBe(''); // N Company — no source in Part D
+    expect(row[14]).toBe(''); // O Title — no source in Part D
     expect(row[0]).toMatch(/^TASK-\d+-[a-z0-9]+$/);
     expect(row[6]).toBe('Send follow-up'); // G
     expect(row[7]).toBe('2026-07-25'); // H
@@ -327,7 +372,7 @@ describe('writeRow — 4e Tasks_Open (real 13-col A-M shape, not the spec\'s sta
   });
 
   // `now` is per-row constant, so a Task_ID built only from now.getTime()
-  // gives every task on the same row the SAME ID. Tasks_Open Task_ID is the
+  // gives every task on the same row the SAME ID. Tasks_Log Task_ID is the
   // key PASS 2.5 matches reconciliation rows on (reconciliation-queue-write's
   // Source_Task_ID overlap) — duplicate IDs there collapse distinct tasks into
   // one. Same fix makeActivityId already carries.
@@ -342,7 +387,7 @@ describe('writeRow — 4e Tasks_Open (real 13-col A-M shape, not the spec\'s sta
         { description: 'Task three', due_date: '2026-07-27', priority: 'Low' },
       ],
     }));
-    const appends = backend.sheetsWrites.filter((w) => (w.body as { range?: string }).range === 'Tasks_Open!A1');
+    const appends = backend.sheetsWrites.filter((w) => (w.body as { range?: string }).range === 'Tasks_Log!A1');
     expect(appends).toHaveLength(3);
     const ids = appends.map((w) => (w.body as { values: unknown[][] }).values[0]![0] as string);
     expect(new Set(ids).size).toBe(3);
@@ -355,7 +400,7 @@ describe('writeRow — 4e Tasks_Open (real 13-col A-M shape, not the spec\'s sta
     await writeRow(sheets, attio, masterId, baseInput({
       tasks: [{ description: 'Send follow-up', due_date: '', priority: '' }],
     }));
-    const append = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Tasks_Open!A1');
+    const append = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Tasks_Log!A1');
     const row = (append!.body as { values: unknown[][] }).values[0]!;
     expect(row[9]).toBe('Medium');
   });
@@ -551,7 +596,7 @@ describe('writeRow — sensitive-data gate (added after the fact, found missing 
       tasks: [{ description: 'Charge card 4111111111111111 for the deposit', due_date: '2026-07-25', priority: 'High' }],
     }));
     expect(result.warnings.some((w) => w.includes('credit_card'))).toBe(true);
-    const append = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Tasks_Open!A1');
+    const append = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Tasks_Log!A1');
     const row = (append!.body as { values: unknown[][] }).values[0]!;
     expect(row[6]).toBe(''); // G Task description — blanked
     expect(row[7]).toBe('2026-07-25'); // H due date — untouched
