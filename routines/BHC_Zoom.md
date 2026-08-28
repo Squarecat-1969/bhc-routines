@@ -374,9 +374,34 @@ Rules:
 
 #### P2-STEP 6 — Write back to Google Sheet
 
-Update the row using sheet_row from P2-STEP 1:
+**PASS 2 owns H–L and N. Write only those.** Two small explicit ranges, using
+sheet_row from P2-STEP 1:
 
-`sheets("update", f"Zoom_Staging!A{row}:N{row}", [[recording_id, title, meeting_date, duration, participants, recording_url, topline_summary, "REVIEW", triaged_at, proposed_entry_str, resolved_participants_str, review_notes, "", RUN_ID]])`
+`sheets("update", f"Zoom_Staging!H{row}:L{row}", [["REVIEW", triaged_at, proposed_entry_str, resolved_participants_str, review_notes]])`
+
+`sheets("update", f"Zoom_Staging!N{row}", [[RUN_ID]])`
+
+**Why the range is narrow — do not widen it back.** P2-STEP 1 reads only six
+things: sheet row, recording_url (F), recording_id (A), title (B),
+meeting_date (C) and review_notes (L). It never reads duration (D),
+participants (E) or topline_summary (G). A full-row `A:N` write therefore
+supplies values this pass never read — **a full-row write from a partial read
+fabricates every column it did not read.** In practice the routine wrote
+whatever it happened to be holding, which after P2-STEP 3 is the entire
+`get_meeting_summary` output, which is why REVIEW rows ended up carrying
+several thousand characters of markdown in `topline_summary`. It also wrote
+`""` into M, blanking `commit_result`, which belongs to PASS 1.
+
+**A–G are DISCOVERY's**, written by the TypeScript zoom-discovery sweep at
+capture time, and must not be touched here. `topline_summary` (G) is the
+triage one-liner that sweep writes so a row is decidable at a glance; the full
+professional summary belongs in `proposed_entry.summary` (col J), which is what
+Aida's review card actually reads. **M is PASS 1's** (`commit_result`).
+
+**This pass must never rewrite a column it did not capture in P2-STEP 1.** If a
+column is ever genuinely needed in the write, add it to the write only after
+P2-STEP 1 reads it — never by widening the range and hoping the variable is
+populated.
 
 Row flips to REVIEW. Aida's Meeting Notes shows it in the review section on next load.
 

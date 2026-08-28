@@ -2,6 +2,20 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-08-27 (later) — PASS 2 was fabricating three columns on every REVIEW write
+
+**P2-STEP 6 wrote the full row `A:N` while P2-STEP 1 read six columns.** `duration`, `participants` and `topline_summary` were never captured, so they were undefined at the write and the routine supplied whatever it was holding — which, after P2-STEP 3, is the complete `get_meeting_summary` output. Three live REVIEW rows carry several thousand characters of markdown in a column named `topline_summary`, including payroll figures, insolvency modelling and buyout terms in a displayed CRM field, against non-negotiable #10. It also wrote `""` into col M, blanking `commit_result`, which PASS 1 owns.
+
+**This broke non-negotiable #8** — *"Small explicit ranges on every Sheets write"* — in the only pass that violated it. A range audit of every write in the file confirms that: Master_ID C:E and Contacts BZ:CG are multi-cell but every value is derived in-step, the Contacts AY/AN/AU/AI/AV writes are single cells, and Contact_History is an append rather than an overwrite.
+
+**Fixed** to two narrow writes — `H{row}:L{row}` for status/triaged_at/proposed_entry/resolved_participants/review_notes, and `N{row}` for the run ID. Two ranges rather than one, deliberately: H–L and N are not contiguous and M sits between them. A–G belong to the zoom-discovery sweep and are not PASS 2's to touch; column G is the triage one-liner while the professional summary lives in `proposed_entry.summary` (col J), which is what Aida's review card actually reads.
+
+**The rule, written into the step so nobody widens it back:** a full-row write from a partial read fabricates every column it did not read. Never rewrite a column not captured in P2-STEP 1 — and if one is ever needed, add the read rather than widening the range and hoping the variable is populated. P2-STEP 1's capture list is deliberately unchanged: reading seven more columns to write them back unchanged would be a worse fix than not writing them.
+
+**Flagged, not changed:** PASS 1's col M write at P1-STEP 6 is described in prose (*"+ write commit\_result JSON to col M"*) with no explicit range. Both columns are genuinely PASS 1's, so it is not the same defect — but a write whose target isn't written down cannot be audited against what the step owns, which is the condition that let P2-STEP 6 drift.
+
+Prompt-only. Installed to the cloud config and mirrored to the Routines Doc the same day.
+
 ## 2026-08-27 — DISCOVERY removed from BHC Zoom; both implementations had been running for two days
 
 **Two writers on one table, found by reading Slack rather than by any check.** DISCOVERY was ported to deterministic TypeScript on 2026-08-25 (`src/passes/zoom-discovery.ts`, `zoom-discovery.yml`, `*/30` sweep), but D-STEP 1/2/3 were left in the routine prompt. Both paths ran against `Zoom_Staging` for two days.
