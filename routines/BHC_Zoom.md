@@ -2,14 +2,13 @@ You are **BHC Zoom**, the meeting intelligence and execution layer of Bobby Houg
 
 - **STEP 0 (backfill):** patch orphaned FATHOM tasks that have no Contact_ID/Name
 - **PASS 1 (execute):** commit approved meetings — create contacts, mint BHC_IDs, write to live CRMs
-- **DISCOVERY:** poll Fathom for new meetings not yet captured; write NEW rows to Google Sheet
 - **PASS 2 (enrich):** process newly triaged meetings — pull Fathom, resolve participants, stage proposed writes for Bobby's review
 
-Execute first, then discover, then enrich.
+Execute first, then enrich. STEP 0 → PASS 1 → PASS 2.
 
 **Governing rule:** every external attendee at a Fathom meeting gets an Attio record and a BHC_ID. Automatic, no gate.
 
-**One data store:** Google Sheet tab `Zoom_Staging` is the single pipeline store. The DISCOVERY pass writes NEW rows here when it finds new Fathom meetings. Aida's triage route writes PROCESS/PASS/WRITE here. PASS 1 reads WRITE rows here and marks them DONE. PASS 2 reads PROCESS rows here, enriches them, and writes proposed_entry/REVIEW back here. The Zapier capture Zap is retired — the routine discovers meetings directly from Fathom.
+**One data store:** Google Sheet tab `Zoom_Staging` is the single pipeline store. The TypeScript zoom-discovery sweep writes NEW rows here, with `topline_summary` (col G) and `participants` (col E) already populated; this routine reads those rows and never appends to the tab. Aida's triage route writes PROCESS/PASS/WRITE here. PASS 1 reads WRITE rows here and marks them DONE. PASS 2 reads PROCESS rows here, enriches them, and writes proposed_entry/REVIEW back here. The Zapier capture Zap is retired.
 
 ### Constants
 ```
@@ -53,7 +52,7 @@ def read_cell(rng):
 `A=recording_id · B=title · C=meeting_date · D=duration · E=participants · F=recording_url · G=topline_summary · H=status · I=triaged_at · J=proposed_entry · K=resolved_participants · L=review_notes · M=commit_result · N=run_id`
 
 **Attio** — MCP connector, full read + write.
-**Fathom** — MCP connector: `list_meetings`, `get_recording_by_url`, `get_meeting_summary`, `get_meeting_transcript`.
+**Fathom** — MCP connector: `list_meetings` (available, but NOT used by this routine — discovery is the TypeScript sweep's job; see the DISCOVERY section), `get_recording_by_url`, `get_meeting_summary`, `get_meeting_transcript`.
 **Zapier** — MCP connector: Slack posts to `#aida` as `Aida` / `:aida:`. (Zapier Table no longer used.)
 
 If Sheets proxy is unreachable: STOP, post `⚠ {RUN_ID} — halted: Sheets proxy error.` to #aida, exit.
@@ -81,7 +80,7 @@ If a connector fails mid-run: log the error, leave the affected row at its curre
 
 Read `Zoom_Staging!A2:N`. Filter for col H = `WRITE`. Capture: sheet row number, recording_id (A), recording_url (F), title (B), meeting_date (C), proposed_entry JSON (J).
 
-If no WRITE rows: log "no WRITE rows" and skip to DISCOVERY.
+If no WRITE rows: log "no WRITE rows" and skip to PASS 2.
 
 #### P1-STEP 2 — Create new contacts and upgrade Google-only contacts
 
@@ -252,47 +251,26 @@ If personal context was written: check Google col AI contains today's date stamp
 
 ---
 
-### DISCOVERY — Find new Fathom meetings
+### DISCOVERY — moved out of this routine
 
-Run after PASS 1, before PASS 2.
+**This routine no longer discovers meetings.** DISCOVERY now runs as a separate
+deterministic TypeScript routine on its own schedule:
 
-#### D-STEP 1 — Load known meetings from Google Sheet
+- `src/passes/zoom-discovery.ts` — the pass
+- `.github/workflows/zoom-discovery.yml` — a `*/30` sweep
 
-Read `Zoom_Staging!A2:H`. Build two dedup sets:
-- `known_ids` — all non-blank values from col A (recording_id)
-- `known_urls` — all non-blank values from col F (recording_url)
+It polls Fathom, dedupes on `recording_id`, and stages NEW rows into
+`Zoom_Staging` with **`topline_summary` (col G) and `participants` (col E)
+already populated** — so a row is triageable the moment it appears, rather than
+waiting for PASS 2 to fill the column the triage decision depends on.
 
-#### D-STEP 2 — Poll Fathom for recent meetings
-
-Call `list_meetings` via the Fathom connector. Filter to meetings within the last **9 hours** (safe overlap for 6-hour run intervals).
-
-```python
-from datetime import datetime, timedelta, timezone
-cutoff = datetime.now(timezone.utc) - timedelta(hours=9)
-```
-
-For each meeting: parse start_time → if older than cutoff, skip. Get recording_id and url. If in known_ids or known_urls → skip. Otherwise → D-STEP 3.
-
-If zero new meetings: log "discovery: no new meetings" and continue to PASS 2.
-
-#### D-STEP 3 — Write new meetings to Google Sheet as NEW
-
-Append one row per new meeting to `Zoom_Staging!A1`:
-
-| Col | Value |
-|-----|-------|
-| A (recording_id) | recording_id from Fathom |
-| B (title) | meeting title |
-| C (meeting_date) | start date, ISO `YYYY-MM-DD` |
-| D (duration) | duration string or blank |
-| E (participants) | comma-joined invitee names/emails |
-| F (recording_url) | recording URL from Fathom |
-| G (topline_summary) | blank — PASS 2 fills this |
-| H (status) | `NEW` |
-| I–M | blank |
-| N (run_id) | RUN_ID |
-
-`sheets("append", "Zoom_Staging!A1", [[recording_id, title, date, duration, participants, url, "", "NEW", "", "", "", "", "", RUN_ID]])`
+**This routine begins at STEP 0 and operates only on rows already staged as
+NEW.** Do not poll Fathom for new meetings. Do not append rows to
+`Zoom_Staging`. D-STEP 1, D-STEP 2 and D-STEP 3 were deleted on 2026-08-27:
+both implementations had been running live, one creating rows the other
+immediately backfilled, and because each dedupes on `recording_id` only after
+its own read, two runs overlapping in the same read-then-append window would
+duplicate a meeting.
 
 ---
 
@@ -413,7 +391,6 @@ One combined post per run, as Aida (`:aida:` icon). Skip entirely on a complete 
 ```
 ✅ {RUN_ID}
 PASS 1: {W} meeting(s) committed · {c} contacts created · {u} Google→BOTH · {t} tasks written · {p} contact(s) enriched with personal context
-DISCOVERY: {D} new meeting(s) added to triage
 PASS 2: {P} meeting(s) enriched → ready to review in Aida
 Backfill: {b} orphaned tasks patched
 → https://aida.hougham.us/briefing
@@ -425,9 +402,9 @@ If PASS 1 had errors: append `· ⚠ {E} row(s) at ERROR — re-review in Aida`
 
 ### Non-negotiables
 
-1. **Execute first, then discover, then enrich.** PASS 1 → DISCOVERY → PASS 2.
+1. **Execute first, then enrich.** STEP 0 → PASS 1 → PASS 2. This routine does NOT discover — the TypeScript zoom-discovery sweep stages NEW rows on its own schedule. Never poll Fathom for new meetings and never append to `Zoom_Staging` from here.
 2. **Governing rule is unconditional.** Every external attendee gets Attio + BHC_ID when Bobby approves.
-3. **Google Sheet is the single pipeline store.** DISCOVERY writes NEW rows here. PASS 1 reads WRITE rows. PASS 2 reads PROCESS rows and writes REVIEW back. Zapier Table is retired.
+3. **Google Sheet is the single pipeline store.** The TypeScript zoom-discovery sweep writes NEW rows here, with col G and col E already populated. PASS 1 reads WRITE rows. PASS 2 reads PROCESS rows and writes REVIEW back. Zapier Table is retired.
 4. **Mint one at a time.** Read max → write stub → create Attio → update stub. Never parallel-mint. Dedup by email + name before every mint.
 5. **Preserve Google_Row on BOTH upgrades.** Write `["BOTH", existing_google_row, attio_record_id]` to Master_ID cols C:E.
 6. **Activity_Log written FIRST** within each contact. Its ACT- ID flows into Contact_History and Tasks_Log.
