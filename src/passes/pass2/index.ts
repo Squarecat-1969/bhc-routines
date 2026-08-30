@@ -30,7 +30,7 @@ import { parseRawEmailsJson } from './parse-emails.js';
 import { checkDrift, resolveContact } from './resolve.js';
 import { triageContent } from './triage.js';
 import { filterWorkingSet, loadThreadStagingFullRows } from './thread-staging-row.js';
-import { buildBrainCompleteRow, type BrainCompleteContent } from './brain-complete-row.js';
+import { buildBrainCompleteRow, type BrainCompleteContent, type BrainCompleteRow } from './brain-complete-row.js';
 import { buildWriteTargets, DIRECTION_VALUES, type DirectionValue, type PersonalContextExtract, type SecondaryTargetInput } from './write-targets.js';
 import type { NoiseTag, ResolvedContact, ThreadStagingFullRow } from './types.js';
 
@@ -142,6 +142,70 @@ async function fetchAttioValuesIfNeeded(
 async function runPass2Inner(opts: Pass2Options & { runId: string; startedAt: string }): Promise<Pass2Report> {
   const { sheets, attio, anthropic, logger, dryRun, runId, startedAt } = opts;
   const warnings: string[] = [];
+
+  /**
+   * Commit one row: append to Brain_Complete, and stamp Thread_Staging
+   * PROCESSED **only if the append is confirmed to have landed**.
+   *
+   * THE ORDERING IS THE WHOLE POINT. These two writes were previously issued
+   * back to back with the append's result discarded. A THROWN append aborts
+   * before the stamp — correct, and unchanged. A SILENT NO-OP returned
+   * normally, so the thread was stamped PROCESSED while its Brain_Complete row
+   * did not exist. That is unrecoverable: the stamp is what makes a thread
+   * ineligible for the next run, so the retry path is destroyed by the very
+   * mark that claims success. Same table and same shape as the 2026-07-19
+   * incident, where Part D withheld every primary CRM write for a month while
+   * reporting clean.
+   *
+   * Part D cannot catch it downstream: index.ts throws only when
+   * totalRowsRead === 0, and an empty FILTERED run set stops silently by
+   * design, so a partial shortfall — nine rows where twelve were expected —
+   * processes nine and reports success.
+   *
+   * BIAS TO NOT-STAMPING. Leaving a thread unprocessed costs one re-read next
+   * run, which is duplicate-risk-free because the row is only ever appended
+   * after this check passes. Wrongly stamping loses the thread permanently.
+   * So "unverifiable" is treated like "refused" for the stamp decision, while
+   * being reported as the different fact it is.
+   *
+   * No read-back and no extra I/O: `updatedRows` is already returned here and
+   * was simply discarded.
+   *
+   * Returns true only when the append is CONFIRMED — the caller uses that to
+   * increment writtenCount, so the count means landed, not attempted.
+   */
+  async function commitRow(row: BrainCompleteRow, source: { threadId: string; sheetRow: number }): Promise<boolean> {
+    if (dryRun) return true; // nothing issued; the dry-run count is what WOULD be written
+
+    const res = await sheets.append('Brain_Complete!A1', [row.values]);
+
+    if (res.updatedRows > 0) {
+      await sheets.update(`Thread_Staging!V${source.sheetRow}:W${source.sheetRow}`, [['PROCESSED', runId]]);
+      return true;
+    }
+
+    // Three states kept apart, per sheets.ts's own contract — they point at
+    // different layers and a shared message would aim diagnosis at the wrong
+    // one. Neither stamps PROCESSED.
+    if (!res.updatesBlockPresent) {
+      warnings.push(
+        `${source.threadId}: Brain_Complete append returned no \`updates\` block — UNVERIFIABLE (transport or proxy fault), ` +
+          `NOT a refusal. Thread_Staging row ${source.sheetRow} left UNPROCESSED so the next run retries it.`,
+      );
+    } else if (!res.updatedRowsFieldPresent) {
+      warnings.push(
+        `${source.threadId}: Brain_Complete append returned an \`updates\` block with no \`updatedRows\` — UNVERIFIABLE ` +
+          `(the response was reshaped between here and Google). Thread_Staging row ${source.sheetRow} left UNPROCESSED.`,
+      );
+    } else {
+      warnings.push(
+        `⚠ ${source.threadId}: Brain_Complete append reported 0 rows written — Google DECLINED the write. ` +
+          `Thread_Staging row ${source.sheetRow} left UNPROCESSED so the next run retries it.`,
+      );
+    }
+    return false;
+  }
+
 
   logger.info('PASS 2 — Enrichment');
   logger.info(`  run_id : ${runId}`);
@@ -298,11 +362,8 @@ async function runPass2Inner(opts: Pass2Options & { runId: string; startedAt: st
           runId,
         });
 
-        if (!dryRun) {
-          await sheets.append('Brain_Complete!A1', [row.values]);
-          await sheets.update(`Thread_Staging!V${source.sheetRow}:W${source.sheetRow}`, [['PROCESSED', runId]]);
-        }
-        writtenCount += 1;
+        // Outcome, not attempt: writtenCount only moves on a confirmed append.
+        if (await commitRow(row, source)) writtenCount += 1;
         previews.push({
           threadId: source.threadId,
           contactName: contactNameForSlack,
@@ -335,11 +396,7 @@ async function runPass2Inner(opts: Pass2Options & { runId: string; startedAt: st
       slackIndex: 0,
       runId,
     });
-    if (!dryRun) {
-      await sheets.append('Brain_Complete!A1', [row.values]);
-      await sheets.update(`Thread_Staging!V${source.sheetRow}:W${source.sheetRow}`, [['PROCESSED', runId]]);
-    }
-    writtenCount += 1;
+    if (await commitRow(row, source)) writtenCount += 1;
     previews.push({
       threadId: source.threadId,
       contactName: null,

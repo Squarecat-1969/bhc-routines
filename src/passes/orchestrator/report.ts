@@ -66,6 +66,15 @@ export function renderReport(report: LateEditionReport): string {
   out.push('');
   out.push('PASS 3 — Slack Digest');
   out.push(line('aborted', String(report.pass3.aborted)));
+  // rowCount printed beside PASS 2's written count deliberately. These are the
+  // two numbers that expose a silent shortfall — PASS 2 confirmed N appends,
+  // PASS 3 read M rows back for the same run — and both were already available
+  // and never compared. A divergence here is a Brain_Complete row that did not
+  // land; nothing else in the pipeline surfaces one.
+  out.push(line('Brain_Complete rows read back', `${report.pass3.rowCount} (PASS 2 confirmed ${report.pass2.writtenCount})`));
+  if (report.pass3.rowCount !== report.pass2.writtenCount) {
+    out.push(line('⚠ shortfall', `PASS 2 confirmed ${report.pass2.writtenCount} append(s), PASS 3 read ${report.pass3.rowCount} row(s) for this run`));
+  }
   out.push(line('surfaced / filtered / posted', `${report.pass3.surfacedCount} / ${report.pass3.filteredCount} / ${report.pass3.posted}`));
 
   out.push('');

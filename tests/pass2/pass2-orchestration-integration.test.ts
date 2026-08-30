@@ -361,3 +361,92 @@ describe('PASS 2 orchestration — fail-soft', () => {
     }
   }, 15_000);
 });
+
+/**
+ * THE APPEND AND THE PROCESSED STAMP MUST NOT BE INDEPENDENT.
+ *
+ * A thrown append aborts before the stamp — always did, still does. The
+ * dangerous case is a SILENT NO-OP: the append returns 200 having written
+ * nothing, the thread gets stamped PROCESSED anyway, and because the stamp is
+ * what makes a thread ineligible next run, the retry path is destroyed by the
+ * very mark that claims success. Part D cannot catch it — it throws only when
+ * Brain_Complete reads back completely empty, so a partial shortfall processes
+ * fewer rows and reports clean.
+ *
+ * Bias is to NOT stamp. An unprocessed thread costs one re-read; a wrongly
+ * stamped one is gone.
+ */
+describe('PASS 2 — Brain_Complete append gates the PROCESSED stamp', () => {
+  const oneThread = {
+    threadStaging: [
+      threadStagingRow({
+        threadId: 'T1',
+        rawEmails: rawEmailsJson({ msgId: 'm1', senderEmail: 'alice@x.com', body: 'Following up on the project timeline as discussed last week.' }),
+      }),
+    ],
+  };
+
+  const stampFor = (backend: FakeBackend) =>
+    backend.sheetsWrites.find((w) => String((w.body as { range?: string }).range ?? '').startsWith('Thread_Staging!V'));
+
+  it('CONFIRMED: stamps PROCESSED and counts the row', async () => {
+    const { report, sheetsBackend } = await run(oneThread, JSON.stringify(VALID_ENRICHMENT), false);
+    expect(report.writtenCount).toBe(1);
+    const stamp = stampFor(sheetsBackend);
+    expect(stamp).toBeDefined();
+    expect((stamp!.body as { values: unknown[][] }).values[0]).toEqual(['PROCESSED', report.runId]);
+    // No append-related warning. (An unrelated identity-drift warning from the
+    // fixture may be present; this assertion is scoped to the append.)
+    expect(report.warnings.join('\n')).not.toContain('Brain_Complete append');
+  });
+
+  it('REFUSED (0 rows written): leaves the thread UNPROCESSED, does not count it, names it', async () => {
+    const { report, sheetsBackend } = await run(
+      { ...oneThread, appendZeroRowsFor: 'Brain_Complete' },
+      JSON.stringify(VALID_ENRICHMENT),
+      false,
+    );
+    // The append WAS issued...
+    expect(sheetsBackend.sheetsWrites.some((w) => (w.body as { range?: string }).range === 'Brain_Complete!A1')).toBe(true);
+    // ...and the stamp was NOT, so the next run retries this thread.
+    expect(stampFor(sheetsBackend)).toBeUndefined();
+    expect(report.writtenCount).toBe(0); // outcome, not attempt
+    const w = report.warnings.join('\n');
+    expect(w).toContain('T1');
+    expect(w).toContain('DECLINED');
+    expect(w).toContain('UNPROCESSED');
+  });
+
+  it('UNVERIFIABLE (no updates block): also leaves it UNPROCESSED, but says transport, not refusal', async () => {
+    const { report, sheetsBackend } = await run(
+      { ...oneThread, appendNoUpdatesBlockFor: 'Brain_Complete' },
+      JSON.stringify(VALID_ENRICHMENT),
+      false,
+    );
+    expect(stampFor(sheetsBackend)).toBeUndefined();
+    expect(report.writtenCount).toBe(0);
+    const w = report.warnings.join('\n');
+    expect(w).toContain('T1');
+    expect(w).toContain('UNVERIFIABLE');
+    expect(w).toContain('NOT a refusal'); // the layers are kept apart
+    expect(w).not.toContain('DECLINED');
+  });
+
+  it('UNVERIFIABLE (block present, field missing): reported as a reshaped response', async () => {
+    const { report, sheetsBackend } = await run(
+      { ...oneThread, appendNoUpdatedRowsFieldFor: 'Brain_Complete' },
+      JSON.stringify(VALID_ENRICHMENT),
+      false,
+    );
+    expect(stampFor(sheetsBackend)).toBeUndefined();
+    expect(report.writtenCount).toBe(0);
+    expect(report.warnings.join('\n')).toContain('reshaped');
+  });
+
+  it('a dry run still stamps nothing and still counts what WOULD be written', async () => {
+    const { report, sheetsBackend } = await run(oneThread, JSON.stringify(VALID_ENRICHMENT), true);
+    expect(report.writtenCount).toBe(1);
+    expect(sheetsBackend.sheetsWrites.some((w) => (w.body as { range?: string }).range === 'Brain_Complete!A1')).toBe(false);
+    expect(stampFor(sheetsBackend)).toBeUndefined();
+  });
+});
