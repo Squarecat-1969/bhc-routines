@@ -297,19 +297,69 @@ async function runPass45Inner(
     const priorLastRow = 1 + priorIds.length; // A2:A read; row 1 is header
     const newLastRow = 1 + rows.length; // spec's "1+N"; N=0 -> newLastRow=1 (no data rows)
 
+    const cacheRange = `Pipeline_Cache!A2:R${newLastRow}`;
+
+    // THE BLANK IS STRICTLY CONDITIONAL ON A CONFIRMED CACHE WRITE.
+    //
+    // Same defect and same fix as pass1's Brain_Complete compaction
+    // (2026-08-29): write the survivors at the top, then blank the tail they
+    // used to occupy. Issued unconditionally, the failure mode is DATA LOSS by
+    // partial success — if the cache write silently no-ops and the blank
+    // proceeds, rows 2..newLastRow keep the OLD content while the tail, which
+    // still held the real rows, is erased.
+    //
+    // LOWER BLAST RADIUS THAN pass1, AND THAT IS THE ONLY DIFFERENCE.
+    // Pipeline_Cache is rebuilt from Attio every run, so a corrupted cache
+    // self-repairs overnight with no human input. Brain_Complete holds staged
+    // judgement that exists nowhere else once blanked. Recorded here so the
+    // two fixes are not read as equally urgent — and, more importantly, so the
+    // lower stakes are never mistaken for a reason to weaken the guard. The
+    // guard is identical because the failure is identical; only the recovery
+    // cost differs.
+    //
+    // One margin pass1 lacks: priorLastRow comes from a SEPARATE read of
+    // pipelineCachePriorIds, not from the array that produced `rows`, so the
+    // blank span is measured against live state rather than inferred. That
+    // narrows the window; it does not remove the need for the gate.
+    //
+    // batchUpdate rather than update because update returns void: a batch of
+    // ONE range is a verified single-range write, and for a single range
+    // totalUpdatedCells is unambiguous. Widening sheets.update was considered
+    // and rejected — see Chapter 11 of the Developer's Plan; do not
+    // re-litigate it here.
+    let cacheWriteConfirmed = true;
     if (rows.length > 0) {
-      await sheets.update(
-        `Pipeline_Cache!A2:R${newLastRow}`,
-        rows.map((r) => cacheRowToSheetRow(r)),
-      );
+      const res = await sheets.batchUpdate([
+        { range: cacheRange, values: rows.map((r) => cacheRowToSheetRow(r)) },
+      ]);
+      if (!res.fieldsPresent) {
+        cacheWriteConfirmed = false;
+        warnings.push(
+          `⚠ Pipeline_Cache write to ${cacheRange} is UNVERIFIABLE — the response carried no ` +
+            `totalUpdatedCells (transport or proxy fault), NOT a refusal. Trailing rows ` +
+            `${newLastRow + 1}-${priorLastRow} were NOT blanked; the cache is left uncompacted and is safe to re-run.`,
+        );
+      } else if (res.totalUpdatedCells === 0) {
+        cacheWriteConfirmed = false;
+        warnings.push(
+          `⚠ Pipeline_Cache write to ${cacheRange} was REFUSED — Sheets reported 0 cells written. ` +
+            `Trailing rows ${newLastRow + 1}-${priorLastRow} were NOT blanked; the cache is left uncompacted ` +
+            `and is safe to re-run.`,
+        );
+      }
+      if (!cacheWriteConfirmed) logger.warn(`  ${warnings[warnings.length - 1]}`);
     }
 
     if (priorLastRow > newLastRow) {
-      const blankRow = new Array(18).fill('');
-      const blankCount = priorLastRow - newLastRow;
-      const blankRows = Array.from({ length: blankCount }, () => blankRow);
-      await sheets.update(`Pipeline_Cache!A${newLastRow + 1}:R${priorLastRow}`, blankRows);
-      logger.info(`  blanked ${blankCount} trailing row(s) from the previous run`);
+      if (!cacheWriteConfirmed) {
+        logger.warn('  blanking SKIPPED — the cache write was not confirmed, so the tail still holds the only copy');
+      } else {
+        const blankRow = new Array(18).fill('');
+        const blankCount = priorLastRow - newLastRow;
+        const blankRows = Array.from({ length: blankCount }, () => blankRow);
+        await sheets.update(`Pipeline_Cache!A${newLastRow + 1}:R${priorLastRow}`, blankRows);
+        logger.info(`  blanked ${blankCount} trailing row(s) from the previous run`);
+      }
     }
   }
 

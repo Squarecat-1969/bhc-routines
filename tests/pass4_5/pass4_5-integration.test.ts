@@ -203,9 +203,13 @@ describe('PASS 4.5 — dry-run vs live writes', () => {
   it('writes the cache block to Pipeline_Cache!A2:R{N} in live mode', async () => {
     const { backend } = await run(baseConfig(), { dryRun: false });
     const writes = backend.sheetsWrites;
-    const cacheWrite = writes.find((w) => (w.body as { range?: string }).range === 'Pipeline_Cache!A2:R2');
+    // The cache write is a batchUpdate of ONE range — a verified single-range
+    // write, so the blank below can be gated on its result.
+    const cacheWrite = writes.find(
+      (w) => (w.body as { data?: { range: string }[] }).data?.[0]?.range === 'Pipeline_Cache!A2:R2',
+    );
     expect(cacheWrite).toBeDefined();
-    const values = (cacheWrite!.body as { values?: unknown[][] }).values!;
+    const values = (cacheWrite!.body as { data: { values: unknown[][] }[] }).data[0]!.values;
     expect(values).toHaveLength(1);
     expect(values[0]![0]).toBe('BHC-00001');
   });
@@ -228,7 +232,9 @@ describe('PASS 4.5 — dry-run vs live writes', () => {
   it('does not blank anything when the new run is the same size or larger', async () => {
     const config = baseConfig({ pipelineCachePriorIds: [['BHC-A']] }); // prior had 1 row, same as new
     const { backend } = await run(config, { dryRun: false });
-    const blankWrite = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range?.includes('R') && (w.body as { range?: string }).range !== 'Pipeline_Cache!A2:R2');
+    const blankWrite = backend.sheetsWrites.find((w) =>
+      String((w.body as { range?: string }).range ?? '').startsWith('Pipeline_Cache!A'),
+    );
     expect(blankWrite).toBeUndefined();
   });
 
@@ -242,7 +248,9 @@ describe('PASS 4.5 — dry-run vs live writes', () => {
     expect(report.rows).toHaveLength(0);
 
     // No main-block write (nothing eligible), but the stale 3 prior rows must still clear.
-    const mainWrite = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Pipeline_Cache!A2:R2');
+    const mainWrite = backend.sheetsWrites.find(
+      (w) => (w.body as { data?: { range: string }[] }).data?.[0]?.range === 'Pipeline_Cache!A2:R2',
+    );
     expect(mainWrite).toBeUndefined();
     const blankWrite = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Pipeline_Cache!A2:R4');
     expect(blankWrite).toBeDefined();
@@ -339,4 +347,66 @@ describe('PASS 4.5 — fail-soft (4.5f)', () => {
     expect(report.abortReason).toBeTruthy();
     expect(buildSlackAddendum(report)).toMatch(/aborted/);
   }, 15_000);
+});
+
+/**
+ * THE BLANK IS CONDITIONAL ON A CONFIRMED CACHE WRITE.
+ *
+ * Same defect and same guard as pass1's Brain_Complete compaction: if the
+ * cache write silently no-ops and the blank proceeds, rows 2..newLastRow keep
+ * the OLD content while the tail — still holding the real rows — is erased.
+ *
+ * Pipeline_Cache rebuilds from Attio every run, so the recovery cost is a
+ * night rather than unrecoverable staged judgement. That is the ONLY
+ * difference, and it is not a reason for a weaker guard.
+ */
+describe('PASS 4.5 — an unconfirmed cache write never blanks the tail', () => {
+  // Prior run had 5 rows (2-6); this run has 1, so rows 3-6 would be blanked.
+  const shrinking = () => baseConfig({
+    pipelineCachePriorIds: [['BHC-A'], ['BHC-B'], ['BHC-C'], ['BHC-D'], ['BHC-E']],
+  });
+
+  const blankWriteIn = (backend: FakeBackend) =>
+    backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Pipeline_Cache!A3:R6');
+
+  it('REFUSED (0 cells written): blanks nothing, names the range and the span', async () => {
+    const { report, backend } = await run(
+      { ...shrinking(), batchUpdateZeroCellsFor: 'Pipeline_Cache' },
+      { dryRun: false },
+    );
+
+    // The cache write WAS issued...
+    const attempted = backend.sheetsWrites.find(
+      (w) => (w.body as { data?: { range: string }[] }).data?.[0]?.range === 'Pipeline_Cache!A2:R2',
+    );
+    expect(attempted).toBeDefined();
+    // ...and nothing was blanked, so the tail still holds the prior rows.
+    expect(blankWriteIn(backend)).toBeUndefined();
+
+    const w = report.warnings.join('\n');
+    expect(w).toContain('REFUSED');
+    expect(w).toContain('Pipeline_Cache!A2:R2'); // the range
+    expect(w).toContain('3-6');                   // the span left untouched
+    expect(w).toContain('safe to re-run');
+  });
+
+  it('UNVERIFIABLE (no totalUpdatedCells): also blanks nothing, and says so distinctly', async () => {
+    const { report, backend } = await run(
+      { ...shrinking(), batchUpdateNoCellsFieldFor: 'Pipeline_Cache' },
+      { dryRun: false },
+    );
+    expect(blankWriteIn(backend)).toBeUndefined();
+    const w = report.warnings.join('\n');
+    expect(w).toContain('UNVERIFIABLE');
+    expect(w).toContain('NOT a refusal'); // the two layers stay apart
+    expect(w).not.toContain('REFUSED');
+  });
+
+  it('CONFIRMED: blanks the tail exactly as before, with no warning', async () => {
+    const { report, backend } = await run(shrinking(), { dryRun: false });
+    const blank = blankWriteIn(backend);
+    expect(blank).toBeDefined();
+    expect((blank!.body as { values: unknown[][] }).values).toHaveLength(4);
+    expect(report.warnings.join('\n')).not.toContain('Pipeline_Cache write to');
+  });
 });
