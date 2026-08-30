@@ -223,9 +223,12 @@ describe('the account owner renders as "you" in derived lists', () => {
     expect(isSelf('Andrew')).toBe(false);
   });
 
-  it('NEVER rewrites Tier 1 calendar_invitees — those are verified data', () => {
+  // REVERSED 2026-08-29. This asserted 'Bobby Hougham, Andrew Reid' — that
+  // Tier 1 is written verbatim. Self-mapping is now uniform across all tiers:
+  // the data is still verified, its raw form was simply not what to render.
+  it('self-maps the account owner in Tier 1, like every other tier', () => {
     const m: FathomMeeting = { calendar_invitees: [{ name: 'Bobby Hougham' }, { name: 'Andrew Reid' }] };
-    expect(participantsFor(m, { summary: REAL_RECORDING_SUMMARY }).value).toBe('Bobby Hougham, Andrew Reid');
+    expect(participantsFor(m, { summary: REAL_RECORDING_SUMMARY }).value).toBe('you, Andrew Reid');
   });
 
   // DELIBERATE REVERSAL. A previous test asserted the opposite — that a
@@ -370,9 +373,90 @@ describe('a derived list naming only the account owner is written BLANK', () => 
     expect(r.selfOnlySuppressed).toBeUndefined();
   });
 
-  it('NEVER applies to Tier 1 — a solo invite is verified data, written verbatim', () => {
+  // REVERSED 2026-08-29. This asserted a solo invite renders 'Bobby Hougham'.
+  // Once Tier 1 self-maps it would render "you", and Aida's promote path turns
+  // that into "Meeting with you" — the exact case this rule exists to prevent,
+  // reaching it through the one tier that used to be exempt.
+  it('APPLIES to Tier 1 too — a solo invite is blank, not "you"', () => {
     const m: FathomMeeting = { calendar_invitees: [{ name: 'Bobby Hougham' }] };
-    expect(participantsFor(m, {})).toEqual({ value: 'Bobby Hougham', tier: 1 });
+    expect(participantsFor(m, {})).toEqual({ value: '', tier: 1, selfOnlySuppressed: true });
+  });
+});
+
+/**
+ * TIER 1 CLEANUP, against the REAL invitee shape.
+ *
+ * ⚠ The fixtures below are built from row 177490588, whose column E was
+ * written verbatim as:
+ *
+ *   Bobby Hougham, Daniel Assunção, jorgemtrp@gmail.com, Bobby Hougham
+ *
+ * — the organiser duplicated, and a bare email where a name belonged. Every
+ * pre-existing calendar_invitees fixture in this file was idealised: two
+ * distinct named people, or one. NOT ONE HAD A DUPLICATE, so a dedupe test
+ * written against them would have passed with the dedupe removed. The shape a
+ * fixture carries decides what its assertions can prove.
+ */
+describe('Tier 1 — deduped and self-mapped, still unsuffixed', () => {
+  // Row 177490588's actual list, both defects intact.
+  const REAL_INVITEES: FathomMeeting = {
+    calendar_invitees: [
+      { name: 'Bobby Hougham', email: 'bobby@thenewblank.com' },
+      { name: 'Daniel Assunção', email: 'daniel@example.com' },
+      { name: '', email: 'jorgemtrp@gmail.com' },
+      { name: 'Bobby Hougham', email: 'bobby@thenewblank.com' },
+    ],
+  };
+
+  it('cleans the real row: duplicate dropped, owner mapped, email left alone', () => {
+    const r = participantsFor(REAL_INVITEES, {});
+    expect(r.tier).toBe(1);
+    expect(r.value).toBe('you, Daniel Assunção, jorgemtrp@gmail.com');
+    // Still Tier 1 data, so still no provenance suffix.
+    expect(r.value).not.toContain('from');
+  });
+
+  it('dedupes case-insensitively, keeping order of first appearance', () => {
+    const m: FathomMeeting = {
+      calendar_invitees: [
+        { name: 'Andrew Reid' },
+        { name: 'Dana Ko' },
+        { name: 'ANDREW REID' },
+        { name: 'andrew reid' },
+      ],
+    };
+    expect(participantsFor(m, {}).value).toBe('Andrew Reid, Dana Ko');
+  });
+
+  it('an invitee with no name falls back to its email, unchanged', () => {
+    expect(participantsFor({ calendar_invitees: [{ name: '', email: 'jorgemtrp@gmail.com' }] }, {}).value).toBe(
+      'jorgemtrp@gmail.com',
+    );
+    // Deliberately NOT resolved to a person — see participantsFor's Tier 1 note.
+    expect(participantsFor({ calendar_invitees: [{ email: 'ada@example.com' }] }, {}).value).toBe('ada@example.com');
+  });
+
+  it('a mixed list puts "you" in its position of first appearance', () => {
+    const m: FathomMeeting = {
+      calendar_invitees: [{ name: 'Dana Ko' }, { name: 'Bobby Hougham' }, { name: 'Andrew Reid' }],
+    };
+    expect(participantsFor(m, {}).value).toBe('Dana Ko, you, Andrew Reid');
+  });
+
+  it('an invite naming ONLY the owner, however many times, is BLANK', () => {
+    const m: FathomMeeting = {
+      calendar_invitees: [{ name: 'Bobby Hougham' }, { name: 'bobby hougham' }, { name: 'Bobby' }],
+    };
+    expect(participantsFor(m, {})).toEqual({ value: '', tier: 1, selfOnlySuppressed: true });
+  });
+
+  it('does not fall through to Tier 2 when Tier 1 is suppressed', () => {
+    // Suppression means "write blank", not "try the next tier" — the invitees
+    // were real, they just name nobody worth rendering.
+    const m: FathomMeeting = { calendar_invitees: [{ name: 'Bobby Hougham' }] };
+    const r = participantsFor(m, { transcript: REAL_TRANSCRIPT });
+    expect(r.tier).toBe(1);
+    expect(r.value).toBe('');
   });
 });
 

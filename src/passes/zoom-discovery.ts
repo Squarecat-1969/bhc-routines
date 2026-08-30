@@ -238,15 +238,31 @@ export function extractNextStepsOwners(markdown: string | null | undefined): str
 }
 
 /**
- * The account owner, rendered as "you" in a derived participant list.
+ * The account owner, rendered as "you" in EVERY tier's participant list.
  *
- * Bobby is on nearly every call, so his name as a participant HINT carries no
+ * Bobby is on nearly every call, so his name as a participant hint carries no
  * information — it is the one name guaranteed to be there. Dropping him
  * entirely would lose something real though: whether the call was a 1:1 or a
  * group. "you" keeps the shape of the room while spending no attention.
  *
- * TIER 2 ONLY. Tier 1 calendar_invitees are verified attendee data and are
- * written verbatim — never rewritten, never relabelled.
+ * REVERSED 2026-08-29. This comment used to read "TIER 2 ONLY. Tier 1
+ * calendar_invitees are verified attendee data and are written verbatim —
+ * never rewritten, never relabelled." That was deliberate and it was wrong,
+ * because it conflated two different things: whether the DATA is trustworthy
+ * with whether its RAW FORM is the right thing to render.
+ *
+ * The evidence is row 177490588, whose real invitee list was written verbatim
+ * as `Bobby Hougham, Daniel Assunção, jorgemtrp@gmail.com, Bobby Hougham` —
+ * the organiser duplicated, and a bare email where a human name belonged.
+ * With column E cleared by hand the Tier 2 path produced `you, Jorge Ramos,
+ * Daniel (from transcript)`: deduped, self-mapped, and carrying a real name
+ * for the address, because a platform display name has one where a calendar
+ * invite does not.
+ *
+ * THE LADDER IS UNCHANGED AND TIER 1 STAYS FIRST. Invitees legitimately
+ * capture people who attended and said nothing, which no transcript recovers.
+ * The defect was never that Tier 1 is the wrong source — it is that Tier 1's
+ * OUTPUT was raw.
  */
 export const SELF_NAMES: ReadonlySet<string> = new Set(['bobby']);
 export const SELF_LABEL = 'you';
@@ -276,8 +292,17 @@ function asDisplayName(name: string): string {
  * yourself, less informative than the "Impromptu Zoom Meeting" it replaced.
  * Writing blank keeps the honest generic title.
  *
- * DERIVED LISTS ONLY. Tier 1 invitee data is verified and always written
- * verbatim, even if Bobby is the only invitee.
+ * UNIFORM ACROSS ALL THREE TIERS as of 2026-08-29. This previously read
+ * "DERIVED LISTS ONLY. Tier 1 invitee data is verified and always written
+ * verbatim, even if Bobby is the only invitee." Once Tier 1 self-maps, a solo
+ * calendar invite yields ["you"] and Aida's promote path renders "Meeting with
+ * you" — the exact case this rule exists to prevent, arriving through the one
+ * tier that was exempt from it.
+ *
+ * The exemption was a category error: this suppression was never about data
+ * provenance. It is about a headline that names nobody but its own reader.
+ * That is equally useless whether the name came from a calendar invite, a
+ * transcript, or a summary.
  */
 export function isSelfOnly(displayNames: readonly string[]): boolean {
   return displayNames.length > 0 && displayNames.every((n) => n === SELF_LABEL);
@@ -472,13 +497,32 @@ export function participantsFor(
   meeting: FathomMeeting,
   sources: { transcript?: string | null; summary?: string | null },
 ): ParticipantResult {
+  // TIER 1 — verified attendees, but CLEANED before rendering.
+  //
+  // Deduped case-insensitively in order of first appearance (Fathom returns
+  // the organiser twice on some invites), and self-mapped so the account owner
+  // reads "you" as in every other tier. Neither changes who was in the room,
+  // so NO SUFFIX: the `(from …)` marker distinguishes "who was there" from
+  // "who we inferred", and this is still the former. An entry with no name
+  // falls back to its email, unchanged — resolving an address to a person is
+  // a separate, genuinely open question and is deliberately not attempted
+  // here.
   const invitees = meeting.calendar_invitees ?? [];
-  const named = invitees
-    .map((i) => (i.name ?? '').trim() || (i.email ?? '').trim())
-    .filter((v) => v !== '');
-  // Tier 1 is never subject to the self-only rule — verified data is written
-  // as it stands, even for a genuine solo invite.
-  if (named.length > 0) return { value: named.join(', '), tier: 1 };
+  const seenInvitee = new Set<string>();
+  const named: string[] = [];
+  for (const i of invitees) {
+    const raw = (i.name ?? '').trim() || (i.email ?? '').trim();
+    if (raw === '') continue;
+    const key = raw.toLowerCase();
+    if (seenInvitee.has(key)) continue;
+    seenInvitee.add(key);
+    named.push(asDisplayName(raw));
+  }
+  if (named.length > 0) {
+    // Same suppression as Tiers 2 and 3, for the same reason — see isSelfOnly.
+    if (isSelfOnly(named)) return { value: '', tier: 1, selfOnlySuppressed: true };
+    return { value: named.join(', '), tier: 1 };
+  }
 
   const speakers = extractTranscriptSpeakers(sources.transcript).map(asDisplayName);
   if (speakers.length > 0) {
