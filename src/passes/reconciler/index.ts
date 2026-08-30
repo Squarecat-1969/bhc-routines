@@ -132,7 +132,7 @@ export async function runReconciler(opts: ReconcilerOptions): Promise<Reconciler
   if (dryRun) {
     logger.info(`PASS 5 - DRY RUN: ${findings.length} report row(s) and ${toEnqueue.length} conflict row(s) computed, 0 written`);
   } else {
-    await writeReport(sheets, findings, { runId, checkedAt }, logger);
+    await writeReport(sheets, findings, { runId, checkedAt }, logger, warnings);
     if (toEnqueue.length > 0) {
       const rows = toEnqueue.map((d, i) =>
         toNameConflictRow(d.candidate, { runId, conflictId: `NC-${Date.now()}-${i}`, detectedAt: checkedAt }),
@@ -174,6 +174,7 @@ async function writeReport(
   findings: readonly Finding[],
   opts: { runId: string; checkedAt: string },
   logger: Logger,
+  warnings: string[],
 ): Promise<void> {
   const prior = await sheets.read(REPORT_RANGES.data);
   const rows = findings.map((f) => toReportRow(f, opts));
@@ -188,9 +189,23 @@ async function writeReport(
   const range = `Reconciler_Report!A2:N${1 + span}`;
   await sheets.update(range, padded);
 
+  // THE READ-BACK ALREADY RAN; ITS VERDICT NOW REACHES A HUMAN.
+  //
+  // This compared nothing and warned about nothing — it logged a number
+  // beside another number and left the reader to notice. That is the third
+  // instance of this exact shape in this repo (resync-ids' Slack post,
+  // Part D's counts.tasks, this), where verification happens and the operator
+  // never sees the verdict. A check nobody reads is not a check.
   const back = await sheets.read(REPORT_RANGES.data);
   const landed = back.filter((r) => cell(r, 0) === opts.runId).length;
   logger.info(`PASS 5 - wrote ${rows.length} finding(s) to ${range}; read-back sees ${landed} row(s) for this run`);
+  if (landed !== rows.length) {
+    const w =
+      `⚠ Reconciler_Report read-back disagrees: wrote ${rows.length} finding(s) to ${range}, ` +
+      `but only ${landed} row(s) for run ${opts.runId} read back. The report Aida shows is incomplete.`;
+    warnings.push(w);
+    logger.warn(`  ${w}`);
+  }
 }
 
 /** Batches of 10, retry with a pause on failure, A4 after MAX_RETRIES. */

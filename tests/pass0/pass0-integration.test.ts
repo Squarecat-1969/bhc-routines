@@ -77,12 +77,16 @@ describe('PASS 0 — EXACT Thread_ID match', () => {
     );
     expect(report.exactMatches).toHaveLength(1);
 
-    const bodyWrite = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Activity_Log!J2:J2');
-    expect(bodyWrite).toBeDefined();
-    const outcomeWrite = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Activity_Log!N2:N2');
-    expect((outcomeWrite!.body as { values: unknown[][] }).values[0]![0]).toBe('Replied');
-    const noteWrite = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Activity_Log!P2:P2');
-    expect((noteWrite!.body as { values: unknown[][] }).values[0]![0]).toBe('');
+    // J, N and P now go out as ONE batchUpdate — three ranges, one request,
+    // no point at which the resolution can half-succeed.
+    const batch = backend.sheetsWrites.find((w) => Array.isArray((w.body as { data?: unknown[] }).data));
+    expect(batch).toBeDefined();
+    const data = (batch!.body as { data: { range: string; values: unknown[][] }[] }).data;
+    expect(data.map((d) => d.range)).toEqual(['Activity_Log!J2:J2', 'Activity_Log!N2:N2', 'Activity_Log!P2:P2']);
+    expect(data[1]!.values[0]![0]).toBe('Replied');
+    expect(data[2]!.values[0]![0]).toBe('');
+
+    // And the stamp follows only after that batch is confirmed.
     const threadWrite = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Thread_Staging!U2:V2');
     expect((threadWrite!.body as { values: unknown[][] }).values[0]).toEqual(['recon:matched ACT-1', 'PROCESSED']);
   });
@@ -189,4 +193,39 @@ describe('PASS 0 — fail-soft', () => {
     expect(report.aborted).toBe(true);
     expect(report.abortReason).toBeTruthy();
   }, 15_000);
+});
+
+/**
+ * THE PROCESSED STAMP CONSUMES THE CANDIDATE THREAD, so it must not outrun
+ * the Activity_Log write that resolves the placeholder. If it does, the
+ * placeholder stays open while the one thread that would have closed it is
+ * removed from every future working set — and isStalePlaceholder only notices
+ * after 7 days, naming no cause.
+ */
+describe('PASS 0 — the PROCESSED stamp is gated on the Activity_Log batch', () => {
+  const exactMatchSetup = {
+    activityLog: [activityLogRow({ activityId: 'ACT-1', nextActionNote: 'PENDING_CAPTURE thread:T-1' })],
+    threadStaging: [threadStagingRow({ threadId: 'T-1' })],
+  };
+
+  const stampIn = (backend: FakeBackend) =>
+    backend.sheetsWrites.find((w) => String((w.body as { range?: string }).range ?? '').startsWith('Thread_Staging!U'));
+
+  it('REFUSED: does not stamp PROCESSED, and names the placeholder and the row', async () => {
+    const { report, backend } = await run({ ...exactMatchSetup, batchUpdateZeroCellsFor: 'Activity_Log' }, false);
+    expect(stampIn(backend)).toBeUndefined();
+    expect(report.exactMatches).toHaveLength(0); // not claimed as resolved
+    const w = report.warnings.join('\n');
+    expect(w).toContain('ACT-1');
+    expect(w).toContain('REFUSED');
+    expect(w).toContain('NOT stamped PROCESSED');
+  });
+
+  it('UNVERIFIABLE: also leaves the thread unstamped, reported as a different fact', async () => {
+    const { report, backend } = await run({ ...exactMatchSetup, batchUpdateNoCellsFieldFor: 'Activity_Log' }, false);
+    expect(stampIn(backend)).toBeUndefined();
+    const w = report.warnings.join('\n');
+    expect(w).toContain('UNVERIFIABLE');
+    expect(w).toContain('NOT a refusal');
+  });
 });

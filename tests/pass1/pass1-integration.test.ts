@@ -62,9 +62,13 @@ describe('PASS 1 — Brain_Complete housekeeping', () => {
       },
       false,
     );
-    const mainWrite = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Brain_Complete!A2:AD2');
+    // The survivor write is a batchUpdate of one range — a verified
+    // single-range write, so the blank below can be gated on its result.
+    const mainWrite = backend.sheetsWrites.find(
+      (w) => (w.body as { data?: { range: string }[] }).data?.[0]?.range === 'Brain_Complete!A2:AD2',
+    );
     expect(mainWrite).toBeDefined();
-    const values = (mainWrite!.body as { values: unknown[][] }).values;
+    const values = (mainWrite!.body as { data: { values: unknown[][] }[] }).data[0]!.values;
     expect(values).toHaveLength(1);
     expect(values[0]![0]).toBe('BC2');
 
@@ -79,7 +83,9 @@ describe('PASS 1 — Brain_Complete housekeeping', () => {
       false,
     );
     expect(report.brainCompleteSurvivorCount).toBe(0);
-    const mainWrite = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Brain_Complete!A2:AD1');
+    const mainWrite = backend.sheetsWrites.find(
+      (w) => (w.body as { data?: { range: string }[] }).data?.[0]?.range === 'Brain_Complete!A2:AD1',
+    );
     expect(mainWrite).toBeUndefined();
     const blankWrite = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Brain_Complete!A2:AD3');
     expect(blankWrite).toBeDefined();
@@ -92,7 +98,7 @@ describe('PASS 1 — Brain_Complete housekeeping', () => {
     // about it changed.
     expect(backend.sheetsWrites).toHaveLength(1);
     const write = backend.sheetsWrites[0]!;
-    expect((write.body as { range?: string }).range).toBe('Brain_Complete!A2:AD2');
+    expect((write.body as { data: { range: string }[] }).data[0]!.range).toBe('Brain_Complete!A2:AD2');
   });
 
   it('writes truly nothing when Brain_Complete is empty to begin with', async () => {
@@ -135,4 +141,63 @@ describe('PASS 1 — fail-soft', () => {
     expect(report.aborted).toBe(true);
     expect(report.abortReason).toBeTruthy();
   }, 15_000);
+});
+
+/**
+ * THE BLANK IS CONDITIONAL ON A CONFIRMED SURVIVOR WRITE.
+ *
+ * This compaction's failure mode is DATA LOSS, not the omission most write
+ * gaps here produce. Survivors are rewritten at the top, then the tail they
+ * used to occupy is blanked. If the survivor write silently no-ops and the
+ * blank proceeds, rows 2..newLastRow keep the OLD uncompacted content while
+ * the tail — still holding the only copy of the real survivors — is erased.
+ * Brain_Complete is the table Part D executes from.
+ *
+ * A stale uncompacted tab is recoverable next run. A blanked one is not.
+ */
+describe('PASS 1 — an unconfirmed survivor write never blanks the tail', () => {
+  const threeRows = {
+    brainComplete: [brainCompleteRow('BC1', true), brainCompleteRow('BC2', false), brainCompleteRow('BC3', true)],
+  };
+
+  const blankWriteIn = (backend: FakeBackend) =>
+    backend.sheetsWrites.find((w) => String((w.body as { range?: string }).range ?? '').startsWith('Brain_Complete!A3'));
+
+  it('REFUSED (0 cells written): leaves the tab uncompacted, blanks nothing, names the range', async () => {
+    const { report, backend } = await run({ ...threeRows, batchUpdateZeroCellsFor: 'Brain_Complete' }, false);
+
+    // The survivor write WAS issued...
+    const attempted = backend.sheetsWrites.find(
+      (w) => (w.body as { data?: { range: string }[] }).data?.[0]?.range === 'Brain_Complete!A2:AD2',
+    );
+    expect(attempted).toBeDefined();
+    // ...and nothing was blanked, so the tail still holds the survivors.
+    expect(blankWriteIn(backend)).toBeUndefined();
+
+    const w = report.warnings.join('\n');
+    expect(w).toContain('REFUSED');
+    expect(w).toContain('Brain_Complete!A2:AD2');
+    expect(w).toContain('NOT blanked');
+    expect(w).toContain('safe to re-run');
+  });
+
+  it('UNVERIFIABLE (no totalUpdatedCells): also blanks nothing, and says so distinctly', async () => {
+    const { report, backend } = await run({ ...threeRows, batchUpdateNoCellsFieldFor: 'Brain_Complete' }, false);
+
+    expect(blankWriteIn(backend)).toBeUndefined();
+    const w = report.warnings.join('\n');
+    expect(w).toContain('UNVERIFIABLE');
+    expect(w).toContain('NOT a refusal'); // the two layers stay apart
+    expect(w).not.toContain('REFUSED');
+    expect(w).toContain('Brain_Complete!A2:AD2');
+  });
+
+  it('CONFIRMED: blanks the tail exactly as before, with no warning', async () => {
+    const { report, backend } = await run(threeRows, false);
+
+    const blank = blankWriteIn(backend);
+    expect(blank).toBeDefined();
+    expect((blank!.body as { values: unknown[][] }).values).toHaveLength(2);
+    expect(report.warnings.join('\n')).not.toContain('Brain_Complete survivor write');
+  });
 });

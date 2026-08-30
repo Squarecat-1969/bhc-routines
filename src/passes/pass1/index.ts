@@ -82,16 +82,56 @@ async function runPass1Inner(
   if (!dryRun) {
     const priorLastRow = 1 + brainCompleteRows.length; // A2:AD read; row 1 is header
     const newLastRow = 1 + survivors.length;
+    const survivorRange = `Brain_Complete!A2:AD${newLastRow}`;
 
+    // THE BLANK IS STRICTLY CONDITIONAL ON A CONFIRMED SURVIVOR WRITE.
+    //
+    // This is a compaction: rewrite the survivors at the top, then blank the
+    // tail they used to occupy. Issued unconditionally, the failure mode is
+    // DATA LOSS rather than the omission most of this repo's write gaps
+    // produce — if the survivor write silently no-ops and the blank succeeds,
+    // rows 2..newLastRow keep the OLD uncompacted content while the tail,
+    // which still held the real survivors, is erased. Brain_Complete is the
+    // table Part D executes from, and nothing downstream detects it.
+    //
+    // A stale uncompacted tab is recoverable — the next run reads it, splits
+    // it again, and compacts. A blanked one is not. So refusal and
+    // unverifiable both mean DO NOT BLANK.
+    //
+    // batchUpdate rather than update because update returns void: a batch of
+    // ONE range is a verified single-range write, and for a single range
+    // totalUpdatedCells is unambiguous.
+    let survivorWriteConfirmed = true;
     if (survivors.length > 0) {
-      await sheets.update(`Brain_Complete!A2:AD${newLastRow}`, survivors);
+      const res = await sheets.batchUpdate([{ range: survivorRange, values: survivors }]);
+      if (!res.fieldsPresent) {
+        survivorWriteConfirmed = false;
+        warnings.push(
+          `⚠ Brain_Complete survivor write to ${survivorRange} is UNVERIFIABLE — the response carried no ` +
+            `totalUpdatedCells (transport or proxy fault), NOT a refusal. Trailing rows ` +
+            `${newLastRow + 1}-${priorLastRow} were NOT blanked; the tab is left uncompacted and is safe to re-run.`,
+        );
+      } else if (res.totalUpdatedCells === 0) {
+        survivorWriteConfirmed = false;
+        warnings.push(
+          `⚠ Brain_Complete survivor write to ${survivorRange} was REFUSED — Sheets reported 0 cells written. ` +
+            `Trailing rows ${newLastRow + 1}-${priorLastRow} were NOT blanked; the tab is left uncompacted ` +
+            `and is safe to re-run.`,
+        );
+      }
+      if (!survivorWriteConfirmed) logger.warn(`  ${warnings[warnings.length - 1]}`);
     }
+
     if (priorLastRow > newLastRow) {
-      const blankRow = new Array(30).fill(''); // A-AD = 30 columns
-      const blankCount = priorLastRow - newLastRow;
-      const blankRows = Array.from({ length: blankCount }, () => blankRow);
-      await sheets.update(`Brain_Complete!A${newLastRow + 1}:AD${priorLastRow}`, blankRows);
-      logger.info(`  blanked ${blankCount} trailing row(s)`);
+      if (!survivorWriteConfirmed) {
+        logger.warn('  blanking SKIPPED — the survivor write was not confirmed, so the tail still holds the only copy');
+      } else {
+        const blankRow = new Array(30).fill(''); // A-AD = 30 columns
+        const blankCount = priorLastRow - newLastRow;
+        const blankRows = Array.from({ length: blankCount }, () => blankRow);
+        await sheets.update(`Brain_Complete!A${newLastRow + 1}:AD${priorLastRow}`, blankRows);
+        logger.info(`  blanked ${blankCount} trailing row(s)`);
+      }
     }
   } else {
     logger.info('  DRY RUN: would rewrite survivors and blank trailing rows');

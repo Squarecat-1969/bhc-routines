@@ -115,6 +115,18 @@ export interface FakeBackendConfig {
    */
   appendZeroRowsFor?: string;
   /**
+   * Range prefix whose batchUpdate returns HTTP 200 with
+   * `totalUpdatedCells: 0` — Sheets itself refusing the write. Matched
+   * against ANY range in the batch.
+   */
+  batchUpdateZeroCellsFor?: string;
+  /**
+   * Range prefix whose batchUpdate returns HTTP 200 with NO
+   * `totalUpdatedCells` field — unverifiable rather than refused. A different
+   * cause, and the two must stay distinguishable.
+   */
+  batchUpdateNoCellsFieldFor?: string;
+  /**
    * Range prefix whose appends return HTTP 200 with NO `updates` block at
    * all — the write is unverifiable rather than reported-as-zero. A different
    * cause: the field never arrived rather than Google declining the write.
@@ -520,6 +532,23 @@ export class FakeBackend {
         const zeroFor = this.config.appendZeroRowsFor;
         const landed = zeroFor && range?.startsWith(zeroFor) ? 0 : rowsSent;
         return send(200, { updates: { updatedRows: landed } });
+      }
+      // batchUpdate reports `totalUpdatedCells`, as the real API does. A fake
+      // that omitted it would report every batched write as unverifiable —
+      // which is exactly what it did until 2026-08-29, silently turning
+      // pass1's compaction and pass0's resolution into no-ops under test.
+      if (action === 'batchUpdate') {
+        const data = ((body as { data?: { range: string; values: unknown[][] }[] })?.data ?? []);
+        const matches = (prefix: string | undefined): boolean =>
+          Boolean(prefix) && data.some((d) => String(d.range ?? '').startsWith(prefix!));
+        if (matches(this.config.batchUpdateNoCellsFieldFor)) {
+          return send(200, {}); // 200, nothing to verify against
+        }
+        const cells = data.reduce(
+          (n, d) => n + (d.values ?? []).reduce((m, row) => m + (row?.length ?? 0), 0),
+          0,
+        );
+        return send(200, { totalUpdatedCells: matches(this.config.batchUpdateZeroCellsFor) ? 0 : cells });
       }
       return send(200, {});
     }

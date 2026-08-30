@@ -138,12 +138,49 @@ async function runPass0Inner(opts: Pass0Options & { runId: string; startedAt: st
       const candidate = result.candidate;
       logger.info(`  EXACT: ${placeholder.activityId} <- ${candidate.threadId} (${result.reason})`);
 
+      // ONE batchUpdate for the three Activity_Log columns, then the
+      // Thread_Staging stamp GATED on its result.
+      //
+      // These were three sequential sheets.update calls followed by an
+      // unconditional PROCESSED stamp. The stamp consumes the candidate
+      // thread, so if any of the three silently no-opped the placeholder
+      // stayed unresolved while the thread that would have resolved it was
+      // taken out of every future working set. isStalePlaceholder only warns
+      // after 7 days, and names no cause.
+      //
+      // NO ORDERING DEPENDENCY between J, N and P — verified: they are three
+      // independent columns on one row, nothing reads J before N is set, and
+      // pass0's only reads are at 0a/0b above, both before this loop. So one
+      // request is equivalent, and strictly better: it removes the three
+      // points at which the old sequence could half-succeed.
+      //
+      // DECISION, recorded so the symmetry argument is not re-litigated:
+      // batchUpdate rather than widening sheets.update to return write facts.
+      // No call site in this repo needs a verified SINGLE-range write that a
+      // batch of one cannot serve, and every site needing genuine certainty
+      // (reconciler-fix/master-write.ts, contacts-triage's verifyWrite,
+      // pass4's opportunity-step) already reads back and would not consult
+      // update's return even if it had one.
       if (!dryRun) {
-        await sheets.update(`Activity_Log!J${placeholder.sheetRow}:J${placeholder.sheetRow}`, [
-          [resolveExactMatchBody(candidate)],
+        const res = await sheets.batchUpdate([
+          { range: `Activity_Log!J${placeholder.sheetRow}:J${placeholder.sheetRow}`, values: [[resolveExactMatchBody(candidate)]] },
+          { range: `Activity_Log!N${placeholder.sheetRow}:N${placeholder.sheetRow}`, values: [['Replied']] },
+          { range: `Activity_Log!P${placeholder.sheetRow}:P${placeholder.sheetRow}`, values: [['']] },
         ]);
-        await sheets.update(`Activity_Log!N${placeholder.sheetRow}:N${placeholder.sheetRow}`, [['Replied']]);
-        await sheets.update(`Activity_Log!P${placeholder.sheetRow}:P${placeholder.sheetRow}`, [['']]);
+
+        const refused = res.fieldsPresent && res.totalUpdatedCells === 0;
+        const unverifiable = !res.fieldsPresent;
+        if (refused || unverifiable) {
+          // An unnecessary re-read next run is cheap. A consumed thread whose
+          // placeholder is still open is not.
+          warnings.push(
+            `⚠ ${placeholder.activityId}: Activity_Log resolution write ${refused ? 'was REFUSED (0 cells written)' : 'is UNVERIFIABLE (response carried no totalUpdatedCells) — NOT a refusal'}. ` +
+              `Thread_Staging row ${candidate.sheetRow} was NOT stamped PROCESSED, so ${candidate.threadId} stays in the working set and the match is retried.`,
+          );
+          logger.warn(`  ${warnings[warnings.length - 1]}`);
+          continue; // not an exact match this run
+        }
+
         await sheets.update(`Thread_Staging!U${candidate.sheetRow}:V${candidate.sheetRow}`, [
           [`recon:matched ${placeholder.activityId}`, 'PROCESSED'],
         ]);
