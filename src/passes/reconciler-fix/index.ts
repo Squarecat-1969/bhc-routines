@@ -26,12 +26,41 @@ import type { AttioIdentityWritePort, Logger, MasterSheetPort } from './ports.js
 
 const REPORT_RANGE = 'Reconciler_Report!A2:N';
 /** Reconciler_Report columns, 0-based, per the live schema. */
-const COL = { runId: 0, bhcId: 2, fullName: 3, masterRow: 4, attioRecordId: 6, location: 7, code: 8, expected: 11, found: 12, notes: 13 } as const;
+const COL = { runId: 0, checkedAt: 1, bhcId: 2, fullName: 3, masterRow: 4, attioRecordId: 6, location: 7, code: 8, expected: 11, found: 12, notes: 13 } as const;
+
+/**
+ * How far Reconciler_Report's own Checked_At may precede the workflow_run
+ * trigger time and still count as fresh.
+ *
+ * FIVE MINUTES, AND DO NOT TIGHTEN THIS TO ZERO. `workflow_run.created_at` is
+ * when GitHub created the triggering run, which is BEFORE the Reconciler
+ * process started — checkout and `npm ci` sit in between, a minute or two in
+ * practice. A zero grace would therefore refuse perfectly valid chains, which
+ * is a worse failure than the one this guard exists to prevent. Five minutes
+ * is generous against that setup cost and still catches the observed
+ * ten-hour gap by three orders of magnitude.
+ */
+export const STALE_GRACE_MS = 5 * 60 * 1000;
+
+/** "10h 02m" / "3m 20s" — for a refusal an operator reads in Slack. */
+function humanizeMs(ms: number): string {
+  const s = Math.round(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m`;
+  if (m > 0) return `${m}m ${String(s % 60).padStart(2, '0')}s`;
+  return `${s}s`;
+}
 
 export interface ReconcilerFixReport {
   readonly fixRunId: string;
   readonly dryRun: boolean;
   readonly sourceRunId: string | null;
+  /**
+   * Set ONLY when the freshness guard refused. The message an operator reads;
+   * null on every normal run. The CLI exits non-zero when this is non-null.
+   */
+  readonly staleRefusal: string | null;
   readonly startedAt: string;
   readonly finishedAt: string;
   readonly candidates: Readonly<Record<'S1' | 'A1' | 'A3' | 'S4' | 'I1', number>>;
@@ -106,6 +135,14 @@ export async function runReconcilerFix(opts: {
    * throwing-port method the write paths already use.
    */
   readonly slack?: SlackPoster;
+  /**
+   * `github.event.workflow_run.created_at` from the chain arm, when Fix was
+   * triggered by a Reconciler completing. Absent for workflow_dispatch and
+   * for local runs, and when absent the guard does not run at all — a human
+   * invoking this by hand gets exactly today's behaviour and no new failure
+   * mode.
+   */
+  readonly triggeredAt?: string;
 }): Promise<ReconcilerFixReport> {
   const { logger, dryRun, fixRunId } = opts;
   const startedAt = new Date().toISOString();
@@ -128,6 +165,79 @@ export async function runReconcilerFix(opts: {
   const issues = report.filter((r) => cell(r, COL.runId) === sourceRunId);
   const of = (code: string) => issues.filter((r) => cell(r, COL.code) === code);
   logger.info(`PASS 1 - source run ${sourceRunId ?? '(none)'} · ${issues.length} row(s)`);
+
+  // ── FRESHNESS GUARD — before any repair pass, before any write. ──────────
+  //
+  // WHY THIS EXISTS. The workflow_run arm runs LIVE unconditionally, which is
+  // deliberate and documented. But it assumes the Reconciler that triggered it
+  // WROTE Reconciler_Report. A DRY Reconciler writes nothing at all — the whole
+  // writeReport call sits inside its `else` — so the tab still holds whatever
+  // the last LIVE run left. Fix then chains live, reads that older report, and
+  // repairs from it. Observed 2026-08-30: a dry Reconciler chained into a live
+  // Fix which quoted a ten-hour-old audit as current.
+  //
+  // THE SHEET CANNOT TELL DRY FROM LIVE. A dry run leaves no marker of any
+  // kind, so there is nothing to detect. What the sheet CAN say is when the
+  // last live write happened — col B, Checked_At — which makes this a
+  // STALENESS check rather than a dry-run check. That is the better test
+  // anyway: it also catches a live Reconciler that aborted before PASS 5, or
+  // one whose report write was refused.
+  //
+  // AN EMPTY REPORT PROCEEDS. Decided explicitly, not by omission. A live
+  // Reconciler with zero findings writes no rows — and writeReport blanks any
+  // prior rows over the same span, so an empty tab is positive evidence of a
+  // clean live audit, not an absence of one. Refusing here would break the
+  // healthy case permanently, which is worse than the bug being fixed, and
+  // there is nothing to repair anyway: no rows means no candidates and no
+  // writes, so proceeding is a no-op. The hazard is acting on stale FINDINGS;
+  // with no findings there is no hazard.
+  let staleRefusal: string | null = null;
+  if (opts.triggeredAt && issues.length > 0) {
+    const triggeredMs = Date.parse(opts.triggeredAt);
+    const checkedAtRaw = issues.map((r) => cell(r, COL.checkedAt)).find((v) => v !== '') ?? '';
+    const checkedMs = Date.parse(checkedAtRaw);
+
+    if (Number.isNaN(triggeredMs)) {
+      // Our own flag is malformed. Do not refuse on it — that would make a
+      // typo in the workflow disable the routine.
+      warnings.push(`--triggered-at ${JSON.stringify(opts.triggeredAt)} is not a parseable timestamp - freshness guard SKIPPED`);
+      logger.warn(`  ${warnings[warnings.length - 1]}`);
+    } else if (Number.isNaN(checkedMs)) {
+      // Rows present but no readable Checked_At. writeReport always writes one,
+      // so this is an anomaly, and it means freshness CANNOT be established on
+      // a pass that writes Attio and Master_ID unattended. Refuse.
+      staleRefusal =
+        `⚠ Reconciler Fix REFUSED - the audit it would act on cannot be dated.\n` +
+        `Reconciler_Report holds ${issues.length} row(s) for source run ${sourceRunId ?? '(none)'}, but col B (Checked_At) ` +
+        `reads ${JSON.stringify(checkedAtRaw)}, which is not a parseable timestamp. Freshness cannot be established, so no ` +
+        `repair pass ran and nothing was written.`;
+    } else if (checkedMs < triggeredMs - STALE_GRACE_MS) {
+      const age = humanizeMs(triggeredMs - checkedMs);
+      staleRefusal =
+        `⚠ Reconciler Fix REFUSED - the audit it would act on is STALE.\n` +
+        `Reconciler_Report was written ${checkedAtRaw} (source run ${sourceRunId ?? '(none)'}); this run was triggered at ` +
+        `${opts.triggeredAt}. The report predates its own trigger by ${age}, beyond the ${humanizeMs(STALE_GRACE_MS)} grace.\n` +
+        `A dry Reconciler writes nothing, so the tab still holds an older LIVE run. Repairing from it would act on a view of ` +
+        `the CRM ${age} out of date. No repair pass ran and nothing was written.`;
+    }
+  }
+
+  if (staleRefusal !== null) {
+    logger.warn(staleRefusal);
+    if (!dryRun && opts.slack) await opts.slack.post(staleRefusal);
+    else if (dryRun) logger.info('DRY RUN - Slack suppressed. Would post the refusal above.');
+    return {
+      fixRunId, dryRun, sourceRunId, staleRefusal,
+      startedAt, finishedAt: new Date().toISOString(),
+      candidates: { S1: 0, A1: 0, A3: 0, S4: 0, I1: 0 },
+      s1: { groups: [], counts: { groups: 0, orphansFlagged: 0, hardStops: 0, writeFailures: 0 } },
+      a1: { rows: [], counts: { considered: 0, fixed: 0, needsManual: 0, attioWrites: 0 } },
+      a3: { rows: [], counts: { considered: 0, repointed: 0, setGoogleOnly: 0, ambiguous: 0, lookupFailed: 0, writeFailed: 0, hardStops: 0 } },
+      s4: { groups: [], counts: { groups: 0, repaired: 0, needsManual: 0, lookupFailed: 0, orphansCleared: 0, hardStops: 0 } },
+      i1: { rows: [], counts: { considered: 0, fixed: 0, needsManual: 0, attioWrites: 0 } },
+      excludedFromA1: [], excludedFromI1: [], outOfScope: {}, wouldWrite: [], warnings,
+    };
+  }
 
   // Same frozen snapshot, no extra read: what this run's source audit raised
   // that Fix has no pass for. Reported, never acted on.
@@ -258,7 +368,7 @@ export async function runReconcilerFix(opts: {
 
   // `report` is already taken above - it is the raw Reconciler_Report rows.
   const fixReport: ReconcilerFixReport = {
-    fixRunId, dryRun, sourceRunId, startedAt, finishedAt: new Date().toISOString(),
+    fixRunId, dryRun, sourceRunId, staleRefusal: null, startedAt, finishedAt: new Date().toISOString(),
     candidates, s1, a1: a1Result, a3: a3Result, s4, i1: i1Result,
     excludedFromA1, excludedFromI1, outOfScope, wouldWrite, warnings,
   };

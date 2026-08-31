@@ -137,8 +137,15 @@ jobs:
         run: |
           EVENT="${{ github.event_name }}"
           MODE="${{ inputs.mode }}"
-          if [ "$EVENT" = "workflow_run" ] \
-            || { [ "$EVENT" = "workflow_dispatch" ] && [ "$MODE" = "live" ]; }; then
+          TRIGGERED_AT="${{ github.event.workflow_run.created_at }}"
+          if [ "$EVENT" = "workflow_run" ]; then
+            # --triggered-at ONLY on the chain arm. It is the freshness guard's
+            # floor: Fix refuses if Reconciler_Report predates the run that
+            # triggered it, which is what a DRY Reconciler leaves behind. A
+            # manual dispatch passes nothing, so the guard is inert there and a
+            # human gets unchanged behaviour.
+            npm run reconciler-fix -- --live --triggered-at "$TRIGGERED_AT" --json-out out/reconciler-fix-report.json
+          elif [ "$EVENT" = "workflow_dispatch" ] && [ "$MODE" = "live" ]; then
             npm run reconciler-fix -- --live --json-out out/reconciler-fix-report.json
           else
             npm run reconciler-fix -- --dry-run --json-out out/reconciler-fix-report.json

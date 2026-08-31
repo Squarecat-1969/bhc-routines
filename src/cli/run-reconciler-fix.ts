@@ -18,16 +18,19 @@ import { SheetsClient } from '../lib/sheets.js';
 import { createNoopSlackPoster, createSlackPoster } from '../lib/slack.js';
 import { runReconcilerFix } from '../passes/reconciler-fix/index.js';
 
-interface Args { dryRun: boolean; jsonOut: string | undefined; fixRunId: string | undefined }
+interface Args { dryRun: boolean; jsonOut: string | undefined; fixRunId: string | undefined; triggeredAt: string | undefined }
 
 function parseArgs(argv: readonly string[]): Args {
-  const args: Args = { dryRun: true, jsonOut: undefined, fixRunId: undefined };
+  const args: Args = { dryRun: true, jsonOut: undefined, fixRunId: undefined, triggeredAt: undefined };
   for (let i = 0; i < argv.length; i++) {
     switch (argv[i]) {
       case '--live': args.dryRun = false; break;
       case '--dry-run': args.dryRun = true; break;
       case '--json-out': args.jsonOut = argv[++i]; if (!args.jsonOut) throw new Error('--json-out needs a path'); break;
       case '--run-id': args.fixRunId = argv[++i]; if (!args.fixRunId) throw new Error('--run-id needs a value'); break;
+      // Fed from `github.event.workflow_run.created_at` in the chain arm only.
+      // Unset for dispatch and local runs, where the freshness guard is inert.
+      case '--triggered-at': args.triggeredAt = argv[++i]; if (!args.triggeredAt) throw new Error('--triggered-at needs a value'); break;
       default: break;
     }
   }
@@ -59,7 +62,24 @@ async function main(): Promise<void> {
           console.log(text);
         });
 
-  const report = await runReconcilerFix({ sheets, attio, logger, dryRun: args.dryRun, fixRunId, slack });
+  const report = await runReconcilerFix({
+    sheets, attio, logger, dryRun: args.dryRun, fixRunId, slack,
+    ...(args.triggeredAt !== undefined ? { triggeredAt: args.triggeredAt } : {}),
+  });
+
+  // A refusal is a real failure of the chain, not a quiet no-op: the audit was
+  // stale, nothing was repaired, and the job must go red so the chain's own
+  // conclusion reflects it.
+  if (report.staleRefusal !== null) {
+    logger.warn('');
+    logger.warn(report.staleRefusal);
+    if (args.jsonOut) {
+      mkdirSync(dirname(args.jsonOut), { recursive: true });
+      writeFileSync(args.jsonOut, JSON.stringify(report, null, 2), 'utf8');
+      logger.info(`Report written to ${args.jsonOut}`);
+    }
+    process.exit(1);
+  }
 
   logger.info('');
   logger.info(`candidates : ${JSON.stringify(report.candidates)}`);
