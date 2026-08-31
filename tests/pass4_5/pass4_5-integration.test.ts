@@ -410,3 +410,34 @@ describe('PASS 4.5 — an unconfirmed cache write never blanks the tail', () => 
     expect(report.warnings.join('\n')).not.toContain('Pipeline_Cache write to');
   });
 });
+
+/** nameConflictsEnqueued COUNTS CONFIRMED APPENDS — it used to push before the write. */
+describe('PASS 4.5 — a name conflict is only "enqueued" once it lands', () => {
+  // The SAME fixture the passing enqueue test uses — an ATTIO-only candidate
+  // with a shared significant word. A fixture that produces no candidate would
+  // make `toHaveLength(0)` pass whether or not the guard works.
+  const drifted = () => baseConfig({
+    masterId: [['BHC-00002', 'Bob Smith', 'ATTIO', '', 'rec-bob', '']],
+    entries: [],
+    people: { 'rec-bob': { name: 'Robert Smith', bhcContactId: 'BHC-00002' } },
+  });
+
+  it('the fixture really does produce a candidate — otherwise the two tests below are vacuous', async () => {
+    const { report } = await run(drifted(), { dryRun: false });
+    expect(report.nameConflictsEnqueued).toHaveLength(1);
+  });
+
+  it('REFUSED: not counted as enqueued, and named', async () => {
+    const { report } = await run({ ...drifted(), appendZeroRowsFor: 'Name_Conflicts' }, { dryRun: false });
+    expect(report.nameConflictsEnqueued).toHaveLength(0);
+    expect(report.warnings.join('\n')).toContain("will not reach Aida's review card");
+  });
+
+  it('UNVERIFIABLE: also not counted, reported as a different fact', async () => {
+    const { report } = await run({ ...drifted(), appendNoUpdatedRowsFieldFor: 'Name_Conflicts' }, { dryRun: false });
+    expect(report.nameConflictsEnqueued).toHaveLength(0);
+    const w = report.warnings.join('\n');
+    expect(w).toContain('UNVERIFIABLE');
+    expect(w).toContain('NOT a refusal');
+  });
+});

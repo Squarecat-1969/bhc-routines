@@ -385,11 +385,17 @@ async function runPass45Inner(
       ) {
         continue;
       }
-      enqueued.push(candidate);
-      if (!dryRun) {
+      // COUNT CONFIRMED, NOT INTENDED. This used to push the candidate before
+      // the append and report `enqueued.length` regardless of outcome, so a
+      // silent no-op reported a conflict queued for review that never reached
+      // Aida's card. On a dry run nothing is issued, so the plan IS the report
+      // and the candidate is recorded directly.
+      if (dryRun) {
+        enqueued.push(candidate);
+      } else {
         seq += 1;
         const conflictId = `NC-${Date.now()}-${seq}`;
-        await sheets.append(RANGES.nameConflictsAppend, [
+        const res = await sheets.append(RANGES.nameConflictsAppend, [
           [
             conflictId,
             runId,
@@ -407,6 +413,19 @@ async function runPass45Inner(
             candidate.conflictType,
           ],
         ]);
+        if (res.updatedRows > 0) {
+          enqueued.push(candidate);
+        } else if (!res.updatedRowsFieldPresent) {
+          warnings.push(
+            `⚠ Name_Conflicts append for ${candidate.bhcId} is UNVERIFIABLE — the response carried no updatedRows ` +
+              `(transport or proxy fault), NOT a refusal. The conflict may or may not have queued; re-run to confirm.`,
+          );
+        } else {
+          warnings.push(
+            `⚠ Name_Conflicts append for ${candidate.bhcId} reported 0 rows written — the name drift did NOT queue ` +
+              `and will not reach Aida's review card.`,
+          );
+        }
       }
     }
     logger.info(`  ${enqueued.length} enqueued (of ${nameConflictCandidates.length} candidate(s))`);

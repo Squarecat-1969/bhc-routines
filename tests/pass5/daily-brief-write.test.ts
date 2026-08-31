@@ -125,7 +125,11 @@ describe('writeDailyBrief — the exact write shape', () => {
     const sheets = new SheetsClient({ token: 'test', url: sheetsUrl });
     try {
       await writeDailyBrief(sheets, '2026-07-19', gamePlan());
-      const update = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Daily_Brief!A3:B3'); // row 3 = 2nd data row
+      // The in-place write is now a batchUpdate of ONE range, so it can be
+      // confirmed; the range lives in data[0], not at the body's top level.
+      const update = backend.sheetsWrites.find(
+        (w) => (w.body as { data?: { range: string }[] }).data?.[0]?.range === 'Daily_Brief!A3:B3', // row 3 = 2nd data row
+      );
       expect(update).toBeDefined();
       const append = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Daily_Brief!A2:B');
       expect(append).toBeUndefined();

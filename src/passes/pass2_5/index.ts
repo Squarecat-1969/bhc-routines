@@ -127,10 +127,29 @@ async function runPass25Inner(opts: Pass25Options & { runId: string; startedAt: 
     } else {
       const reconId = `RECON-${Date.now()}-${enqueuedCount + supersededCount + 1}`;
       const row = buildReconciliationQueueRow(runId, reconId, result);
-      if (!dryRun) {
-        await sheets.append(RANGES.reconciliationQueueAppend, [row]);
+      // COUNT CONFIRMED, NOT INTENDED. enqueuedCount used to increment beside a
+      // discarded append result, so it measured intent. PASS 3 re-reads
+      // Reconciliation_Queue for this run (loadTaskReconciliationCountsForRun)
+      // but derives its own H/S/O counts and never compares them to this
+      // number, so a lost row was invisible on both surfaces.
+      if (dryRun) {
+        enqueuedCount += 1; // nothing issued; the plan IS the report
+      } else {
+        const res = await sheets.append(RANGES.reconciliationQueueAppend, [row]);
+        if (res.updatedRows > 0) {
+          enqueuedCount += 1;
+        } else if (!res.updatedRowsFieldPresent) {
+          warnings.push(
+            `⚠ Reconciliation_Queue append for ${reconId} is UNVERIFIABLE — the response carried no updatedRows ` +
+              `(transport or proxy fault), NOT a refusal. Re-run to confirm.`,
+          );
+        } else {
+          warnings.push(
+            `⚠ Reconciliation_Queue append for ${reconId} reported 0 rows written — the task reconciliation did NOT ` +
+              `queue and will not reach Aida.`,
+          );
+        }
       }
-      enqueuedCount += 1;
     }
   }
 

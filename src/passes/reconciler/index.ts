@@ -105,6 +105,8 @@ export async function runReconciler(opts: ReconcilerOptions): Promise<Reconciler
 
   const decisions = applySuppression(nameConflictCandidates, existingConflicts);
   const toEnqueue = decisions.filter(shouldWrite);
+  /** Confirmed by the append's own updatedRows. Stays the PLAN on a dry run, where nothing is issued. */
+  let ncEnqueuedConfirmed = toEnqueue.length;
   const nameConflicts = {
     candidates: decisions.length,
     enqueued: toEnqueue.length,
@@ -137,8 +139,27 @@ export async function runReconciler(opts: ReconcilerOptions): Promise<Reconciler
       const rows = toEnqueue.map((d, i) =>
         toNameConflictRow(d.candidate, { runId, conflictId: `NC-${Date.now()}-${i}`, detectedAt: checkedAt }),
       );
-      await sheets.append(RANGES.nameConflictsAppend, rows as unknown[][]);
-      logger.info(`PASS 5 - enqueued ${rows.length} Name_Conflicts row(s)`);
+      // COUNT CONFIRMED, NOT INTENDED. `nameConflicts.enqueued` above is the
+      // PLAN — computed from the suppression decisions before anything is
+      // written — and it is what the Slack post used to quote as "N name
+      // conflict(s) queued for review in Aida". A silent no-op therefore
+      // announced a review queue that did not exist, on the one surface Bobby
+      // actually reads. The append already returns updatedRows; it was simply
+      // discarded.
+      const res = await sheets.append(RANGES.nameConflictsAppend, rows as unknown[][]);
+      ncEnqueuedConfirmed = Math.min(res.updatedRows, rows.length);
+      if (!res.updatedRowsFieldPresent) {
+        warnings.push(
+          `⚠ Name_Conflicts append is UNVERIFIABLE — the response carried no updatedRows (transport or proxy fault), ` +
+            `NOT a refusal. ${rows.length} conflict(s) may or may not have queued; re-run to confirm.`,
+        );
+      } else if (ncEnqueuedConfirmed < rows.length) {
+        warnings.push(
+          `⚠ Name_Conflicts: ${ncEnqueuedConfirmed} of ${rows.length} conflict row(s) confirmed written — ` +
+            `${rows.length - ncEnqueuedConfirmed} did NOT queue and will not reach Aida's review card.`,
+        );
+      }
+      logger.info(`PASS 5 - enqueued ${ncEnqueuedConfirmed} of ${rows.length} Name_Conflicts row(s) (confirmed)`);
     }
   }
 
@@ -147,7 +168,7 @@ export async function runReconciler(opts: ReconcilerOptions): Promise<Reconciler
     runId, counts,
     a5Count: byCode['A5'] ?? 0,
     i1Count: byCode['I1'] ?? 0,
-    ncCount: nameConflicts.enqueued,
+    ncCount: ncEnqueuedConfirmed, // confirmed, not planned — see PASS 5
     foreignRunIds: priorRunIds.filter((r) => r !== runId),
   });
   if (dryRun) {

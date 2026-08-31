@@ -429,12 +429,28 @@ async function runInner(
     await writeQueue(sheets, rowsToWrite, existingRaw.length, logger);
 
     if (newExclusions.length > 0) {
-      await sheets.append(
+      // COUNT CONFIRMED, NOT INTENDED. verifyWrite below covers the QUEUE only
+      // — it re-reads Contacts_Triage_Queue and compares those IDs — so the
+      // exclusions append had no verification of any kind and reported its
+      // intended length. A lost exclusion silently returns that contact to the
+      // next run's candidate set, undoing a human's "never show me this again".
+      const res = await sheets.append(
         TRIAGE_RANGES.exclusionsAppend,
         newExclusions.map((e) => serializeExclusion(e, today)),
       );
-      exclusionsAppended = newExclusions.length;
-      logger.info(`  appended ${exclusionsAppended} exclusion row(s)`);
+      exclusionsAppended = Math.min(res.updatedRows, newExclusions.length);
+      if (!res.updatedRowsFieldPresent) {
+        warnings.push(
+          `⚠ Contact_Exclusions append is UNVERIFIABLE — the response carried no updatedRows (transport or proxy ` +
+            `fault), NOT a refusal. ${newExclusions.length} exclusion(s) may or may not have landed; re-run to confirm.`,
+        );
+      } else if (exclusionsAppended < newExclusions.length) {
+        warnings.push(
+          `⚠ Contact_Exclusions: ${exclusionsAppended} of ${newExclusions.length} exclusion(s) confirmed written — ` +
+            `${newExclusions.length - exclusionsAppended} did NOT land and those contacts will reappear next run.`,
+        );
+      }
+      logger.info(`  appended ${exclusionsAppended} of ${newExclusions.length} exclusion row(s) (confirmed)`);
     }
 
     const verification = await verifyWrite(sheets, rowsToWrite);

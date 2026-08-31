@@ -217,3 +217,50 @@ describe('PASS 2.5 orchestration — fail-soft', () => {
     }
   }, 15_000);
 });
+
+/**
+ * enqueuedCount COUNTS CONFIRMED APPENDS.
+ *
+ * It used to increment beside a discarded append result, so it measured intent.
+ * PASS 3 re-reads Reconciliation_Queue for the run
+ * (loadTaskReconciliationCountsForRun) but derives its own H/S/O counts and
+ * never compares them to this number, so a lost row was invisible on both.
+ */
+describe('PASS 2.5 — enqueuedCount is outcome, not intent', () => {
+  const oneCluster = { tasksOpen: [taskRow({ taskId: 'T1', dueDate: '2026-07-01' })] };
+
+  it('REFUSED: does not count the enqueue, and names it', async () => {
+    const { report } = await run(
+      { ...oneCluster, appendZeroRowsFor: 'Reconciliation_Queue' },
+      NO_EVIDENCE,
+      false,
+    );
+    expect(report.enqueuedCount).toBe(0);
+    const w = report.warnings.join('\n');
+    expect(w).toContain('reported 0 rows written');
+    expect(w).toContain('did NOT');
+  });
+
+  it('UNVERIFIABLE: also does not count it, reported as a different fact', async () => {
+    const { report } = await run(
+      { ...oneCluster, appendNoUpdatedRowsFieldFor: 'Reconciliation_Queue' },
+      NO_EVIDENCE,
+      false,
+    );
+    expect(report.enqueuedCount).toBe(0);
+    const w = report.warnings.join('\n');
+    expect(w).toContain('UNVERIFIABLE');
+    expect(w).toContain('NOT a refusal');
+  });
+
+  it('CONFIRMED: counts it, with no warning', async () => {
+    const { report } = await run(oneCluster, NO_EVIDENCE, false);
+    expect(report.enqueuedCount).toBe(1);
+    expect(report.warnings.join('\n')).not.toContain('Reconciliation_Queue append');
+  });
+
+  it('a DRY run still counts the plan — nothing is issued, so the plan is the report', async () => {
+    const { report } = await run(oneCluster, NO_EVIDENCE, true);
+    expect(report.enqueuedCount).toBe(1);
+  });
+});

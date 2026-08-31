@@ -64,11 +64,48 @@ export async function writeDailyBrief(sheets: SheetsClient, runDate: string, gam
 
   const oneRow: readonly unknown[] = [runDate, briefJson]; // the ONLY valid write shape: one row, two values
 
+  // `written: true` USED TO BE UNCONDITIONAL — it meant "no exception was
+  // thrown", not "the row landed". On a silent no-op the run report said the
+  // brief was written while Bobby's brief page showed yesterday's, which is a
+  // worse signal than saying nothing.
+  //
+  // BOTH PATHS GO THROUGH batchUpdate SO CONFIRMATION IS UNIFORM. The append
+  // path could have been confirmed on its own (append returns updatedRows) but
+  // the update path could not — sheets.update returns void, and widening it was
+  // considered and rejected (Developer's Plan, Chapter 11). Confirming only one
+  // path would make `written` mean different things depending on whether
+  // today's row already existed, which is a worse contract than either honest
+  // alternative. A batch of ONE range is a verified single-range write and its
+  // totalUpdatedCells is unambiguous.
+  //
+  // This is the lowest-stakes of the counter fixes: Daily_Brief is rewritten
+  // every run, so a lost brief self-heals overnight, and its absence is
+  // immediately visible to the one person who reads it. It is fixed anyway
+  // because an unconditional `true` is affirmatively wrong on a no-op rather
+  // than merely uninformative.
   const existingRow = await findExistingRowForDate(sheets, runDate);
-  if (existingRow !== null) {
-    await sheets.update(`Daily_Brief!A${existingRow}:B${existingRow}`, [oneRow]);
-  } else {
-    await sheets.append('Daily_Brief!A2:B', [oneRow]);
+  const range = existingRow !== null ? `Daily_Brief!A${existingRow}:B${existingRow}` : `Daily_Brief!A2:B2`;
+  const res =
+    existingRow !== null
+      ? await sheets.batchUpdate([{ range, values: [oneRow] }])
+      : await sheets.append('Daily_Brief!A2:B', [oneRow]).then((r) => ({
+          totalUpdatedCells: r.updatedRows,
+          fieldsPresent: r.updatedRowsFieldPresent,
+        }));
+
+  if (!res.fieldsPresent) {
+    return {
+      written: false,
+      reason:
+        `Daily_Brief write to ${range} is UNVERIFIABLE — the response carried no update facts (transport or proxy ` +
+        `fault), NOT a refusal. The brief may or may not have landed; the next run rewrites it either way.`,
+    };
+  }
+  if (res.totalUpdatedCells === 0) {
+    return {
+      written: false,
+      reason: `Daily_Brief write to ${range} reported 0 written — Sheets declined it. The brief did NOT land.`,
+    };
   }
   return { written: true };
 }
