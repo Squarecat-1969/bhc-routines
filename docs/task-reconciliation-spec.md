@@ -95,9 +95,23 @@ The M365 MCP connector cannot serve this: it authenticates as Bobby interactivel
 
 ⚠ **A watermark is mandatory, not an optimisation.** Without it the engine re-judges 34 tasks against the same evidence 48 times a day — real Anthropic spend for no new information. **Evaluate only where the contact has new interaction since that task's last check.** Most runs will find nothing and cost one read with zero LLM calls.
 
-⚠ **AND THE CONSTRAINT THAT DECIDES WHETHER FREQUENCY HELPS AT ALL:** `Activity_Log` is populated by Late Edition, which runs **nightly**. A 30-minute pass reading only `Activity_Log` spends most of the day re-reading the same overnight snapshot. Frequency without fresher evidence buys nothing.
+⚠ **THE CONSTRAINT THAT DECIDES WHAT FREQUENCY ACTUALLY BUYS — measured 2026-08-31.** `GET /v2/emails` returns **403 with the `ATTIO_API_KEY` `bhc-routines` uses**. Verified directly, one curl. It is a product boundary, not a scope misconfiguration, and it does not change with configuration. Attio's own email search *does* work over MCP — but MCP authenticates as **Bobby, via OAuth**, and an unattended routine cannot.
 
-So the run needs at least one continuously-fresh source — calendar, Attio's `last_email_interaction` / `last_calendar_interaction` timestamps, or Fathom directly. **Establish which before setting the cadence**, or the schedule is theatre.
+**So email CONTENT reaches this engine only through `Activity_Log`, which Late Edition populates NIGHTLY. There is no path to fresher email content for an unattended routine.** A 30-minute pass does not get fresh email, and any design that assumes otherwise is wrong at the foundation.
+
+That does not make `*/30` theatre — it makes it justified by **calendar** and by Attio's interaction **timestamps**, and by nothing else. Stated plainly because the natural reading of "every 30 minutes" is "sees everything every 30 minutes", and that reading is false here.
+
+### Three layers, three different clocks
+
+| Layer | Clock | What it gives | What it does NOT give |
+|---|---|---|---|
+| **Calendar** | continuous | Closes scheduling tasks in near-real-time — a meeting appearing **is** the completion for *"schedule a call with X"* | anything about what was said |
+| **`last_email_interaction`** | continuous | A **timestamp only**: marks a contact as worth re-checking within minutes | any content — it never reveals what was said |
+| **`Activity_Log`** | **nightly** | The actual content — email bodies, Zoom, DMs, manual logs | freshness; it is an overnight snapshot all day |
+
+**`last_email_interaction` is the watermark trigger, not evidence in itself.** It answers *"has something happened here?"* — never *"what happened?"* Treating a timestamp change as evidence would close tasks on the fact that an email exists, which is exactly the unverified-inference failure this spec is built to avoid. It moves a contact into the next run's candidate set; the verdict still waits for content.
+
+The practical consequence: a scheduling task can close within half an hour of the meeting appearing, and an email-resolved task cannot close before the next Late Edition run. Those are different latencies for different task types, and the surface should not imply otherwise.
 
 **Page load does a cheap staleness check, cron does the expensive evaluation.** §4.11 says nothing reconciles live while Bobby works, and that stands. On load: compare open tasks' contacts against `last_interaction` — one read, no AI — and flag "may have moved" for the next scheduled pass. **The page displays state; it does not compute it.**
 
@@ -161,27 +175,62 @@ Rejected: option 1 (same verdicts, accept the weaker signal) — it is the alert
 
 These warrant different actions and must not share a label. `UNEVALUABLE` is not a soft `NO_EVIDENCE` — it is a statement that the question could not be asked, which is why it does not belong in a review queue at the same priority.
 
-### Before implementation: define "coverage" concretely
+### Coverage — SETTLED 2026-08-31
 
-**Write the definition down before building it.** The likely shape is *any `Activity_Log` entry for this contact between the task's creation and now* — but that is a starting proposal, not the decision.
+> **Coverage** = at least one `Activity_Log` entry for this contact, dated at or after the task's creation, that is **not** an unresolved reply placeholder.
 
-A vague definition collapses the distinction back into a single verdict, which is the failure this refinement exists to prevent: if "coverage" is generous enough, everything is `NO_EVIDENCE` and the split has bought nothing; if it is strict enough, everything is `UNEVALUABLE` and the review queue empties for the wrong reason. Questions the definition has to answer explicitly: does an outbound-only entry count as coverage, does a placeholder row count, and does the window start at task creation or at some fixed lookback.
+| Condition | Verdict | Means |
+|---|---|---|
+| coverage present, no match | `NO_EVIDENCE` | the log was watching and found nothing — genuinely stale, worth reviewing |
+| no coverage | `UNEVALUABLE` | nothing was ever going to speak to it — not stale, waiting for evidence to exist |
+
+The definition is written down here, before implementation, because a vague one collapses the distinction back into a single verdict: generous enough and everything is `NO_EVIDENCE` so the split has bought nothing; strict enough and everything is `UNEVALUABLE` so the review queue empties for the wrong reason.
+
+**Outbound-only counts.** Coverage asks whether the sources *could* have seen the resolution, not whether the contact replied. If Bobby emailed someone about the task, the log had every chance to capture what came back. A silent contact after an outbound is exactly the state worth surfacing — excluding outbound would misfile the most-chased tasks as unevaluable, which is precisely backwards.
+
+**A placeholder does not count.** A reply placeholder records that something was sent and a reply is awaited — `pass0` exists because they sit unresolved. It marks a pending question, not an interaction. Counting it would assert the log had coverage while the log is itself still waiting. The nuance matters and is easy to lose: **an outbound entry with real content counts; an outbound *placeholder* does not.** Same direction, different substance.
+
+**The window starts at task creation.** A fixed lookback answers a question nobody asked — whether Bobby has spoken to this contact lately. The relevant question is whether anything happened *since the task existed*, because only that could have resolved it. A task created yesterday against a contact emailed last month is `UNEVALUABLE`; a fixed 90-day window would wrongly call it `NO_EVIDENCE`.
+
+### How `UNEVALUABLE` surfaces — a count, not proposals
+
+**`UNEVALUABLE` appears as a count. It does not generate individual review cards.**
+
+"12 tasks have no evidence either way" is useful. Twelve cards each demanding a verdict on a question that cannot be answered is **the Reconciler's twenty findings again** — the alert-fatigue shape removed on 2026-08-30, rebuilt somewhere new. This is the difference between the split being an improvement and it being the same problem under a better label.
+
+A count invites the right action, which is usually none: an `UNEVALUABLE` task is not waiting on a decision, it is waiting on evidence to exist. When evidence appears, the next run reclassifies it and it surfaces then, on its own merits.
 
 ---
 
-## 9. Open questions, before code
+## 9. Probe results
 
 Probe results below measured **2026-08-31** unless stated.
 
 ### Still open
 
-1. **Is the Attio WORKSPACE token still 403 on `GET /v2/emails`?** ⚠ **Still open, and the whole email-evidence path depends on it.** What was verified 2026-08-31 is the **MCP path**, which authenticates as *Bobby*, not as the workspace token `bhc-routines` uses: email search works there, and returns **AI-generated summaries per email**, which is a materially better evidence source than metadata alone. That result does **not** transfer. The recorded 403 applies to the workspace token and **has not been re-checked**, so treat the token as unproven. If it holds, `pass2_5` learns *that* and *when* from Attio, never *what* — and the AI summaries are unreachable from a routine.
-
-2. **`Reconciliation_Queue` column O.** No header, empty on all 364 rows, and three code paths write or read it — `pass2_5:124` supersedes over `A:O`, `pass0:162` appends 15 values, `bhc-aida`'s commit route reads `A:O`. `pass0`'s INFERRED path has never landed a row live, which is why nobody noticed. **Resolve before adding columns** — now step 1 of the build order.
-
-3. **The concrete definition of "coverage"** for §8's `NO_EVIDENCE` / `UNEVALUABLE` split. Named here as well as in §8 because it gates implementation, not design.
+**None.** Every question in this section is answered or explicitly conditional on a rejected option.
 
 ### Answered
+
+1. **Is the Attio workspace token still 403 on `GET /v2/emails`? — YES. ANSWERED 2026-08-31, and it constrains the design.**
+
+   Measured directly with one curl against the `ATTIO_API_KEY` `bhc-routines` uses: **403**. The recorded finding holds — **a product boundary, not a scope issue**, so no amount of configuration changes it.
+
+   Last night's successful Attio email search **does not transfer**: MCP authenticates as **Bobby via OAuth**, and an unattended routine cannot. The AI-generated per-email summaries seen over that path are real, and they are unreachable from a routine. Worth stating precisely, because "Attio email search works" and "the engine can read email" are two different claims and only the first is true.
+
+   **Consequence, recorded in §5 where the cadence is set rather than here:** email content reaches this engine only through `Activity_Log`, which Late Edition populates nightly. There is no path to fresher email content for an unattended routine, so `*/30` is justified by calendar and by interaction timestamps — not by email.
+
+2. **`Reconciliation_Queue` column O — RESOLVED 2026-08-31. It was never a schema conflict.**
+
+   **All FOUR paths agree on 15 columns.** `pass2_5`'s `buildReconciliationQueueRow` returns **15**, not 14, with a trailing blank commented *"O Placeholder_Activity_ID — PASS 0's field only"*. An earlier investigation reported the row as 14 wide and **that was wrong** — recorded here because the wrong number was used to argue a conflict that did not exist.
+
+   **Column O is `Placeholder_Activity_ID`, added deliberately 2026-07-19.** `pass0` documents why: a `placeholder_reconciliation` row has a blank `Source_Task_ID` because it has no task to close, so the correlation ID its Accept action needs lives in col O — added specifically so `bhc-aida`'s commit route has a real field to read rather than parsing it back out of `Item_Description`'s prose.
+
+   **It is empty on all 364 rows because every row is `item_type: "task"`** — `pass0`'s INFERRED path has never produced one live. Emptiness was evidence of an unexercised path, not of a broken one.
+
+   **The only actual defect was a missing header**, written to `O1` and verified 2026-08-31.
+
+3. **The concrete definition of "coverage"** — settled 2026-08-31. See §8.
 
 4. **Does `POST /v2/tasks/query` honour its `linked_records` filter?** **Yes — verified.** Filtering to a single person record returned **4 tasks rather than all 134**. It also **validates the record ID**, rejecting a nonexistent one rather than silently ignoring the filter — so a typo fails loudly instead of quietly returning everything.
 
@@ -201,15 +250,13 @@ Probe results below measured **2026-08-31** unless stated.
 
 ## 10. Build order
 
-§8's verdict semantics are **settled** (2026-08-31) and no longer a build step. What remains from it is the concrete definition of "coverage", which belongs with step 2 rather than ahead of it.
+Everything that was a judgement call is now settled. **Done, 2026-08-31:** §8's verdict semantics, the concrete definition of "coverage" (§8), and **column O** — which turned out to need only a header, not a schema decision (§9). The build order now starts at code.
 
-1. Resolve **column O** — do not build on an ambiguous schema.
-2. **Define "coverage"** concretely and write it down (§8) — it gates the `NO_EVIDENCE` / `UNEVALUABLE` split and cannot be settled while implementing.
-3. **Google Calendar** read + the matcher, including the noise filter and subject-line matching. Prove the hard part on the cheap source.
-4. **`pass2_5` extension** — `listTasks` on `AttioClient`, identity via `linked_records` → `Master_ID`, watermark.
-5. **Part D closes through `bhc-aida`'s endpoint** — extract `syncAttioTaskClose`, make the fuzzy match optional.
-6. **The surface** — all tasks, greyed closed rows, evidence twirl-down, Reopen, the once-loud notice.
-7. **Outlook**, if calendar has earned its place by then.
+1. **Google Calendar** read + the matcher, including the noise filter and subject-line matching. Prove the hard part on the cheap source.
+2. **`pass2_5` extension** — `listTasks` on `AttioClient`, identity via `linked_records` → `Master_ID`, watermark.
+3. **Part D closes through `bhc-aida`'s endpoint** — extract `syncAttioTaskClose`, make the fuzzy match optional.
+4. **The surface** — all tasks, greyed closed rows, evidence twirl-down, Reopen, the once-loud notice.
+5. **Outlook**, if calendar has earned its place by then.
 
 ---
 
