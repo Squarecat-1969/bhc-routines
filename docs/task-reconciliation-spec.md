@@ -136,36 +136,75 @@ Two caveats: `syncAttioTaskClose` lives inside the commit route's handler and ne
 
 ---
 
-## 8. Verdict semantics — the judgement call to settle first
+## 8. Verdict semantics — SETTLED 2026-08-31
 
-Reconciliation asks *"does the evidence show this was handled?"* For a Google task that is fair: task and log are both Bobby's system of record. **An Attio task may have been completed by something that never touched `Activity_Log`**, so the same absence means less.
+Reconciliation asks *"does the evidence show this was handled?"* For a Google task that is fair: task and log are both Bobby's system of record, so silence is informative. **An Attio task may have been completed by something that never touched `Activity_Log`**, so the same silence often just means Attio knows something the log does not.
+
+Folding both into one label produces a true statement that reads as a different claim than it is — same words, two confidence levels, and nothing at triage to tell them apart.
 
 `LIKELY_STALE_NO_EVIDENCE` is already the most common verdict at **138 of 364**. Adding 34 Attio tasks — precisely the ones nothing has been logging against — could land most of them there at once. **That is the alert-fatigue shape removed from the Reconciler on 2026-08-30, reintroduced.**
 
-Three options, and this is Bobby's call before any schema work:
+### The decision
 
-1. **Same verdicts, accept the weaker signal.** Everything is gated, nothing closes wrongly — but 34 proposals arrive together.
-2. **A distinct verdict for Attio-native tasks with no evidence**, surfaced separately so the two are not conflated.
-3. **Do not reconcile Attio-native tasks for staleness at all** — surface them as open, let the Queue handle them, reserve reconciliation for tasks the log can speak to.
+**Option 2: a distinct verdict for tasks whose evidence is thin, surfaced separately rather than folded into `LIKELY_STALE_NO_EVIDENCE`.**
 
-Option 2 is the current lean, unargued.
+Rejected: option 1 (same verdicts, accept the weaker signal) — it is the alert-fatigue shape, and it makes a strong claim on weak grounds. Rejected: option 3 (do not reconcile Attio-native tasks at all) — it leaves 34 tasks permanently outside the analysis §4.11 exists to provide.
+
+### The refinement — and it is what stops the new verdict becoming a dumping ground
+
+**The real distinction is not Attio-native versus Google. It is whether the evidence sources could reasonably have seen it.** An Attio task for a contact Bobby emails weekly is *not* unevaluable; a Google task for a contact with no logged interaction in a year is not meaningfully stale. Splitting on task origin would put both in the wrong bucket.
+
+| Verdict | Means | Action it implies |
+|---|---|---|
+| `NO_EVIDENCE` | the log had **coverage** of this contact in the relevant window and found nothing | genuinely stale — worth reviewing |
+| `UNEVALUABLE` | **no logged interaction with this contact at all**; nothing was ever going to speak to it | not stale, waiting for evidence to exist |
+
+These warrant different actions and must not share a label. `UNEVALUABLE` is not a soft `NO_EVIDENCE` — it is a statement that the question could not be asked, which is why it does not belong in a review queue at the same priority.
+
+### Before implementation: define "coverage" concretely
+
+**Write the definition down before building it.** The likely shape is *any `Activity_Log` entry for this contact between the task's creation and now* — but that is a starting proposal, not the decision.
+
+A vague definition collapses the distinction back into a single verdict, which is the failure this refinement exists to prevent: if "coverage" is generous enough, everything is `NO_EVIDENCE` and the split has bought nothing; if it is strict enough, everything is `UNEVALUABLE` and the review queue empties for the wrong reason. Questions the definition has to answer explicitly: does an outbound-only entry count as coverage, does a placeholder row count, and does the window start at task creation or at some fixed lookback.
 
 ---
 
 ## 9. Open questions, before code
 
-1. **Does `last_email_interaction` fire Attio's Attribute-value-changed trigger?** Decides event-driven versus schedule-driven change detection.
-2. **Is the Attio workspace token still 403 on `GET /v2/emails`?** Recorded from memory, unverified. If it holds, `pass2_5` learns *that* and *when* from Attio, never *what*.
-3. **Does `POST /v2/tasks/query` honour its `linked_records` filter?** It returns `[]` on any non-OK response, so a silently-ignored filter is invisible. ⚠ Measured 2026-08-31: `GET /v2/tasks` honours **only** `is_completed` and `limit`/`offset` — `deadline_at_lte`, assignee and sort are all silently discarded. The query endpoint is different and unmeasured.
-4. **What Attio charges for AI blocks at current pricing.** The numbers found — Free 100/month, Plus 1000/month, most blocks 1 credit — are from March 2025 and predate the engine rebuild. Only relevant if the Attio-workflow option is revisited.
-5. **`Reconciliation_Queue` column O.** No header, empty on all 364 rows, and three code paths write or read it — `pass2_5:124` supersedes over `A:O`, `pass0:162` appends 15 values, `bhc-aida`'s commit route reads `A:O`. `pass0`'s INFERRED path has never landed a row live, which is why nobody noticed. **Resolve before adding columns.**
+Probe results below measured **2026-08-31** unless stated.
+
+### Still open
+
+1. **Is the Attio WORKSPACE token still 403 on `GET /v2/emails`?** ⚠ **Still open, and the whole email-evidence path depends on it.** What was verified 2026-08-31 is the **MCP path**, which authenticates as *Bobby*, not as the workspace token `bhc-routines` uses: email search works there, and returns **AI-generated summaries per email**, which is a materially better evidence source than metadata alone. That result does **not** transfer. The recorded 403 applies to the workspace token and **has not been re-checked**, so treat the token as unproven. If it holds, `pass2_5` learns *that* and *when* from Attio, never *what* — and the AI summaries are unreachable from a routine.
+
+2. **`Reconciliation_Queue` column O.** No header, empty on all 364 rows, and three code paths write or read it — `pass2_5:124` supersedes over `A:O`, `pass0:162` appends 15 values, `bhc-aida`'s commit route reads `A:O`. `pass0`'s INFERRED path has never landed a row live, which is why nobody noticed. **Resolve before adding columns** — now step 1 of the build order.
+
+3. **The concrete definition of "coverage"** for §8's `NO_EVIDENCE` / `UNEVALUABLE` split. Named here as well as in §8 because it gates implementation, not design.
+
+### Answered
+
+4. **Does `POST /v2/tasks/query` honour its `linked_records` filter?** **Yes — verified.** Filtering to a single person record returned **4 tasks rather than all 134**. It also **validates the record ID**, rejecting a nonexistent one rather than silently ignoring the filter — so a typo fails loudly instead of quietly returning everything.
+
+   This is **the opposite of `GET /v2/tasks`**, which discards every parameter except `is_completed` and `limit`/`offset` (`deadline_at_lte`, assignee and sort all silently ignored). Two endpoints on the same resource with opposite parameter discipline: use `POST /query` for anything filtered, and never assume a `GET` parameter was applied.
+
+   ⚠ The caller still matters: `attioListOpenTasksForRecord` returns `[]` on any non-OK response, so a failure there is silent regardless of whether the filter works.
+
+5. **⚠ Connected mailboxes are excluded from Attio's email search scope.** Filtering by a workspace member's own address, or by the company's own domain, returns **no results**. Filters are for **EXTERNAL participants only**. Worth stating loudly: a filter built the intuitive way — "find emails involving Bobby" — returns nothing and looks like a broken query or an empty dataset rather than a scope rule.
+
+### Not open — conditional on a rejected option
+
+6. **Does `last_email_interaction` fire Attio's Attribute-value-changed trigger?** **Unanswerable without building a test workflow inside Attio**, and it only matters if the Attio-native-workflow option — rejected in §11 — is revisited. Not an open question for this build; a prerequisite for a different one.
+
+7. **What Attio charges for AI blocks at current pricing.** The numbers found — Free 100/month, Plus 1000/month, most blocks 1 credit — are from March 2025 and predate the engine rebuild. Same condition as above: only relevant if the Attio-workflow option is revisited.
 
 ---
 
 ## 10. Build order
 
-1. Settle **§8's verdict semantics** — a judgement call, not code.
-2. Resolve **column O** — do not build on an ambiguous schema.
+§8's verdict semantics are **settled** (2026-08-31) and no longer a build step. What remains from it is the concrete definition of "coverage", which belongs with step 2 rather than ahead of it.
+
+1. Resolve **column O** — do not build on an ambiguous schema.
+2. **Define "coverage"** concretely and write it down (§8) — it gates the `NO_EVIDENCE` / `UNEVALUABLE` split and cannot be settled while implementing.
 3. **Google Calendar** read + the matcher, including the noise filter and subject-line matching. Prove the hard part on the cheap source.
 4. **`pass2_5` extension** — `listTasks` on `AttioClient`, identity via `linked_records` → `Master_ID`, watermark.
 5. **Part D closes through `bhc-aida`'s endpoint** — extract `syncAttioTaskClose`, make the fuzzy match optional.
