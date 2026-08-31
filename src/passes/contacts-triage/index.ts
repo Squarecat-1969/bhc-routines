@@ -635,6 +635,43 @@ async function writeQueue(
     );
   }
 
+  // WRITE-THEN-BLANK, DELIBERATELY UN-GATED. Reviewed 2026-08-30 during the
+  // sweep that added freshness/confirmation gates to pass1's Brain_Complete
+  // compaction and pass4_5's Pipeline_Cache, and deliberately NOT given the
+  // same treatment. Recorded here because this is where a reader comparing the
+  // three will be standing, and because the thing that justifies the omission
+  // is ~200 lines away in the caller and invisible from this spot.
+  //
+  // THE SHAPE IS THE SAME. Write the survivors at the top, then blank the tail
+  // they used to occupy. If the survivor write silently no-ops and the blank
+  // proceeds, rows 2..newLastRow keep the OLD content while the tail, which
+  // still held the real rows, is erased.
+  //
+  // WHAT STANDS IN FOR THE GATE. The caller runs verifyWrite immediately after
+  // this function returns (see the `readBackVerified` block in the live branch
+  // of the main run): it re-reads Contacts_Triage_Queue, compares the written
+  // IDs against what came back IN ORDER, and pushes a warning on any mismatch.
+  //
+  // THAT IS DETECTION AFTER THE BLANK, NOT PREVENTION — genuinely weaker than
+  // the gate pass1 and pass4_5 now have. By the time verifyWrite disagrees,
+  // the tail is already gone. This is a real difference, not a wash.
+  //
+  // WHY IT IS ACCEPTED ANYWAY. Two reasons, and both are load-bearing:
+  //   1. Contacts_Triage_Queue is rebuilt from scratch every run, so a
+  //      corrupted queue self-repairs on the next pass with no human input.
+  //   2. The failure is SURFACED rather than silent — it reaches `warnings`
+  //      and the log — so it cannot sit unnoticed the way Part D's withheld
+  //      writes did for a month.
+  //
+  // ⚠ THE CONDITION UNDER WHICH THIS DECISION EXPIRES. If EITHER of those
+  // stops being true, this needs the gate:
+  //   · the queue stops being rebuilt from scratch each run (a merge-in-place,
+  //     an incremental update, or anything that makes a row's only copy live
+  //     here), or
+  //   · verifyWrite's result stops reaching a human — dropped from `warnings`,
+  //     demoted to a log line nobody reads, or removed.
+  // Named explicitly so a future change to the rebuild behaviour cannot
+  // silently leave this justification standing after it has stopped holding.
   if (rows.length > 0) {
     await sheets.update(`Contacts_Triage_Queue!A2:${QUEUE_LAST_COLUMN}${newLastRow}`, rows);
   }
