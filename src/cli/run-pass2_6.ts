@@ -18,6 +18,7 @@ import { dirname } from 'node:path';
 
 import { loadEnv } from '../config/env.js';
 import { createLogger } from '../lib/logger.js';
+import { AttioClient } from '../lib/attio.js';
 import { CalendarClient } from '../lib/calendar.js';
 import { SheetsClient } from '../lib/sheets.js';
 import { runPass26 } from '../passes/pass2_6/index.js';
@@ -68,8 +69,13 @@ async function main(): Promise<void> {
     onRetry: ({ attempt, delayMs }) => logger.warn(`  calendar retry ${attempt} in ${delayMs}ms`),
   });
 
+  const attio = new AttioClient({
+    apiKey: env.ATTIO_API_KEY, baseUrl: env.ATTIO_API_BASE,
+    onRetry: ({ attempt, delayMs }) => logger.warn(`  attio retry ${attempt} in ${delayMs}ms`),
+  });
+
   const report = await runPass26({
-    sheets, calendar, logger, dryRun: args.dryRun, runId,
+    sheets, calendar, attio, logger, dryRun: args.dryRun, runId,
     skipQueueWrite: args.skipQueueWrite,
     ...(args.lookbackDays !== undefined ? { lookbackDays: args.lookbackDays } : {}),
   });
@@ -80,6 +86,8 @@ async function main(): Promise<void> {
   logger.info(`extraction      : path1=${report.extractionPaths.path1} path2=${report.extractionPaths.path2} path3=${report.extractionPaths.path3}`);
   logger.info(`filter survivors: ${report.filterSurvivors} · dropped ${JSON.stringify(report.filterDrops)}`);
   logger.info(`contacts resolved: ${report.participantsResolved}`);
+  logger.info(`resolution paths : ${JSON.stringify(report.resolutionByPath)}`);
+  logger.info(`Attio w/o BHC_ID : ${report.attioRecordsMissingBhcId}`);
   logger.info(`tasks           : ${report.openTaskCount} open · ${report.tasksEvaluated} evaluated · ${report.tasksSkippedByWatermark} skipped by watermark`);
   logger.info(`verdicts        : ${JSON.stringify(report.verdictCounts)}`);
   logger.info(`UNEVALUABLE     : ${report.unevaluableCount} (a COUNT — never individual review cards)`);

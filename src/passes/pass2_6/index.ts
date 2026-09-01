@@ -17,10 +17,11 @@
 import { RANGES } from '../../config/constants.js';
 import type { SheetsClient } from '../../lib/sheets.js';
 import { toSafeEvent, type CalendarClient } from '../../lib/calendar.js';
+import type { AttioClient } from '../../lib/attio.js';
 import { loadOpenTasks } from '../pass2_5/tasks.js';
 import { attributePath, extractParticipants } from './attendees.js';
 import { applyNoiseFilter, isExternalAddress } from './filter.js';
-import { buildContactDirectory, resolveByAddress, resolveBySubject } from './identity.js';
+import { buildContactDirectory, resolveAllAddresses, resolveBySubject } from './identity.js';
 import { reconcileTask } from './match.js';
 import {
   QUEUE_APPEND_RANGE, buildQueueRow, isEnqueueable,
@@ -37,6 +38,7 @@ export interface Logger { info(m: string): void; warn(m: string): void }
 export interface Pass26Options {
   readonly sheets: SheetsClient;
   readonly calendar: CalendarClient;
+  readonly attio: AttioClient;
   readonly logger: Logger;
   readonly dryRun: boolean;
   readonly runId: string;
@@ -55,7 +57,7 @@ function emptyReport(p: Partial<Pass26Report> & { runId: string; dryRun: boolean
     finishedAt: new Date().toISOString(), aborted: false, abortReason: null,
     windowStart: '', windowEnd: '', eventsFetched: 0, windowComplete: false,
     extractionPaths: { path1: 0, path2: 0, path3: 0 }, filterSurvivors: 0, filterDrops: {},
-    participantsResolved: 0, openTaskCount: 0, tasksEvaluated: 0, tasksSkippedByWatermark: 0,
+    participantsResolved: 0, resolutionByPath: { attio: 0, attio_via_masterid: 0, contacts: 0, unresolved: 0 }, attioRecordsMissingBhcId: 0, openTaskCount: 0, tasksEvaluated: 0, tasksSkippedByWatermark: 0,
     verdictCounts: {}, unevaluableCount: 0, enqueuedCount: 0, supersededCount: 0,
     watermarkRowsWritten: 0, results: [], wouldWrite: [], warnings: [], ...p,
   };
@@ -124,15 +126,33 @@ async function inner(opts: Pass26Options, startedAt: string): Promise<Pass26Repo
   ]);
   const dir = buildContactDirectory(contactsHeader, contactsData);
 
+  // ⚠ ATTIO FIRST. Google Contacts is the LinkedIn reach engine — ~400 rows,
+  // all LinkedIn-sourced — so ordering it first resolves almost nothing and
+  // looks like a broken matcher rather than a directory pointed at the wrong
+  // CRM. One query per DISTINCT external address, deduped across events.
+  const externalAddresses = surviving.flatMap((s2) => s2.participants.addresses.filter(isExternalAddress));
+  const resolution = await resolveAllAddresses(externalAddresses, { attio: opts.attio, sheets, contacts: dir, logger });
+
   const candidates: CandidateEvent[] = surviving.map(({ safe, participants }) => ({
     event: safe,
     participants,
-    byAddress: resolveByAddress(participants.addresses, dir),
+    byAddress: [...new Set(
+      participants.addresses
+        .map((a) => resolution.byAddress.get(a.trim().toLowerCase())?.bhcId ?? '')
+        .filter((id) => id !== ''),
+    )],
     bySubject: resolveBySubject(participants.subject, dir),
   }));
   const participantsResolved = new Set(candidates.flatMap((c) => [...c.byAddress, ...c.bySubject])).size;
-  const externalSeen = candidates.reduce((n, c) => n + c.participants.addresses.filter(isExternalAddress).length, 0);
-  logger.info(`  identity: ${participantsResolved} distinct contact(s) resolved · ${externalSeen} external address(es) seen`);
+  const externalSeen = externalAddresses.length;
+  const distinctExternal = new Set(externalAddresses.map((a) => a.toLowerCase())).size;
+  logger.info(`  identity: ${participantsResolved} distinct contact(s) resolved · ${distinctExternal} distinct external address(es) of ${externalSeen} seen`);
+  logger.info(`  resolution by path: ${JSON.stringify(resolution.counts)}`);
+  if (resolution.attioMissingBhcId.length > 0) {
+    const w = `⚠ ${resolution.attioMissingBhcId.length} Attio person record(s) matched by email carry NO bhc_contact_id — Non-negotiable #15 says every Attio person should have one before leaving PASS 1. Resolution fell back to Master_ID by record_id.`;
+    warnings.push(w);
+    logger.warn(`  ${w}`);
+  }
 
   // ── 4. Open tasks + watermark. ──────────────────────────────────────────
   const openTasks = await loadOpenTasks(sheets);
@@ -220,6 +240,7 @@ async function inner(opts: Pass26Options, startedAt: string): Promise<Pass26Repo
     runId, dryRun, startedAt, finishedAt: new Date().toISOString(), aborted: false, abortReason: null,
     windowStart, windowEnd, eventsFetched: fetched.eventCount, windowComplete: true,
     extractionPaths, filterSurvivors: surviving.length, filterDrops, participantsResolved,
+    resolutionByPath: resolution.counts, attioRecordsMissingBhcId: resolution.attioMissingBhcId.length,
     openTaskCount: openTasks.length, tasksEvaluated: results.length, tasksSkippedByWatermark: skipped,
     verdictCounts, unevaluableCount, enqueuedCount, supersededCount: 0,
     watermarkRowsWritten, results, wouldWrite, warnings,

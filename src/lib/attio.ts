@@ -453,9 +453,20 @@ export class AttioClient {
    * DEVIATION FROM SPEC: the spec's filter syntax is written for the Attio MCP
    * connector's query tool. This uses the same shape against Attio's REST
    * `records/query` endpoint (same reasoning as `listEntries` — no MCP host in
-   * GitHub Actions). NOT yet verified against a live query — unlike the
-   * per-record GET shapes (confirmed via --dump-shapes), a query-with-filter
-   * call hasn't been checked. See docs/pass2-notes.md.
+   * GitHub Actions).
+   *
+   * ✅ VERIFIED LIVE 2026-09-01, and verified the way that actually proves it:
+   * a known address returns 1 record, and a NONEXISTENT address returns 0 —
+   * not all 2506 people. A silently-ignored filter would have returned the
+   * whole object, so zero-on-a-miss is the discriminating result. The returned
+   * record also carries `bhc_contact_id` directly, making resolution ONE hop.
+   *
+   * This matters because parameter discipline is not uniform across Attio:
+   * `GET /v2/tasks` was measured 2026-08-31 to silently ignore every parameter
+   * except `is_completed` and `limit`/`offset`, while `POST /v2/tasks/query`
+   * honours its `linked_records` filter and validates the record ID. Two
+   * endpoints on one resource, opposite behaviour — so a filter is unproven
+   * until a miss returns nothing.
    *
    * Returns [] on zero matches (a miss, not an error) or if the response shape
    * doesn't parse as expected — never throws for "no results," so callers can

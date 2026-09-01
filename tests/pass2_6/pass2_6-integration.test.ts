@@ -40,6 +40,17 @@ interface FakeOpts {
   batchZeroCells?: boolean;
 }
 
+/**
+ * A fake Attio directory. ⚠ ATTIO IS THE PRIMARY PATH now, so the fake must
+ * actually resolve — a fake returning nothing would let every test pass while
+ * proving only that unresolved participants produce no verdict.
+ */
+const ATTIO_PEOPLE: Record<string, { recordId: string; bhcId: string | null; name: string }> = {
+  'sholmes@hmlglaw.com': { recordId: 'rec-sarah', bhcId: 'BHC-00001', name: 'Sarah Holmes' },
+  'nicklamb@insnw.com': { recordId: 'rec-nick', bhcId: null, name: 'Nick Lamb' }, // NN#15 violation
+  'service@greenwoodheating.com': { recordId: 'rec-gw', bhcId: 'BHC-00009', name: 'Greenwood' },
+};
+
 function fakes(o: FakeOpts) {
   const appends: { range: string; values: unknown[][] }[] = [];
   const batches: { range: string; values: readonly unknown[][] }[] = [];
@@ -49,6 +60,7 @@ function fakes(o: FakeOpts) {
       if (range.startsWith('Contacts!A1') || /Contacts!.*1$/.test(range)) return CONTACTS_HEADER;
       if (range.startsWith('Contacts!')) return CONTACTS_DATA;
       if (range.startsWith('Tasks_Open')) return o.tasks ?? [];
+      if (range.startsWith('Master_ID')) return [['BHC-00003', 'Nick Lamb', 'ATTIO', '', 'rec-nick', '']];
       if (range.startsWith('Pass26_Watermark!A1')) return o.watermarkHeader === false ? [] : [[...WATERMARK_COLUMNS]];
       if (range.startsWith('Pass26_Watermark')) return o.watermark ?? [];
       return [];
@@ -73,8 +85,17 @@ function fakes(o: FakeOpts) {
       };
     },
   };
+  const attio = {
+    async searchPeopleByEmail(email: string) {
+      const p = ATTIO_PEOPLE[email.toLowerCase()];
+      if (!p) return [];
+      const values: Record<string, unknown> = { name: [{ value: p.name }] };
+      if (p.bhcId) values['bhc_contact_id'] = [{ value: p.bhcId }];
+      return [{ recordId: p.recordId, values }];
+    },
+  };
   const logger: Logger = { info: (m) => logLines.push(m), warn: (m) => logLines.push(m) };
-  return { sheets, calendar, logger, appends, batches, logLines };
+  return { sheets, calendar, attio, logger, appends, batches, logLines };
 }
 
 const NOW = new Date('2026-08-15T12:00:00Z');
@@ -82,7 +103,7 @@ const NOW = new Date('2026-08-15T12:00:00Z');
 async function run(o: FakeOpts, extra: Partial<Parameters<typeof runPass26>[0]> = {}) {
   const f = fakes(o);
   const report = await runPass26({
-    sheets: f.sheets as never, calendar: f.calendar as never, logger: f.logger,
+    sheets: f.sheets as never, calendar: f.calendar as never, attio: f.attio as never, logger: f.logger,
     dryRun: false, runId: 'PASS26-TEST', now: NOW, lookbackDays: 30, ...extra,
   });
   return { report, ...f };
@@ -124,7 +145,7 @@ describe('⚠ THE PRIVILEGED BODY REACHES NOTHING — the one unrecoverable rule
     const f = fakes(everyPath);
     const exploding = { ...f.sheets, async read() { throw new Error(`boom while reading ${PRIVILEGED_MARKER}`); } };
     const report = await runPass26({
-      sheets: exploding as never, calendar: f.calendar as never, logger: f.logger,
+      sheets: exploding as never, calendar: f.calendar as never, attio: f.attio as never, logger: f.logger,
       dryRun: false, runId: 'PASS26-TEST', now: NOW,
     });
     // The pass aborts fail-soft. What matters is that OUR code never put a body
@@ -156,7 +177,7 @@ describe('a partial window is an UNKNOWN window — the run skips', () => {
   it('treats an ABSENT complete flag as not-complete, never as known-empty', async () => {
     const f = fakes({});
     const calendar = { async listEvents() { return { events: [], eventCount: 0, complete: undefined as never, partialReason: null, subjectlessCount: 0, pagesFetched: 1, preReadMs: 1 }; } };
-    const report = await runPass26({ sheets: f.sheets as never, calendar: calendar as never, logger: f.logger, dryRun: false, runId: 'X', now: NOW });
+    const report = await runPass26({ sheets: f.sheets as never, calendar: calendar as never, attio: f.attio as never, logger: f.logger, dryRun: false, runId: 'X', now: NOW });
     expect(report.windowComplete).toBe(false);
   });
 });
@@ -289,5 +310,93 @@ describe('dry run writes nothing', () => {
     }, { skipQueueWrite: true });
     expect(appends).toHaveLength(0);
     expect(batches.length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * ⚠ ATTIO IS THE PRIMARY DIRECTORY, Contacts the edge case.
+ *
+ * Google Contacts is the LINKEDIN REACH ENGINE — ~400 rows, all
+ * LinkedIn-sourced, 132 with an email. Attio holds 2506 people. Ordering
+ * Contacts first resolves almost nothing and reads as a broken matcher rather
+ * than a directory pointed at the wrong CRM.
+ */
+describe('identity resolution — Attio first, Contacts as the edge case', () => {
+  const eventWith = (addr: string, id = 'ev-x'): RawCalendarEvent => ({
+    id, subject: 'External sync',
+    body: { contentType: 'html', content: '' }, bodyPreview: '',
+    start: { dateTime: '2026-08-10T15:00:00.0000000', timeZone: 'UTC' },
+    end: { dateTime: '2026-08-10T16:00:00.0000000', timeZone: 'UTC' },
+    attendees: [{ emailAddress: { name: 'X', address: addr } }],
+    organizer: { emailAddress: { address: 'bobbyhougham@gmail.com' } },
+    isCancelled: false, type: 'singleInstance', seriesMasterId: null, showAs: 'busy', sensitivity: 'normal',
+  });
+
+  it('resolves ONE HOP via Attio — bhc_contact_id is on the record, no Master_ID needed', async () => {
+    const { report } = await run({
+      events: [eventWith('sholmes@hmlglaw.com')],
+      tasks: [taskRow({ id: 'T1', bhcId: 'BHC-00001', name: 'Sarah Holmes', desc: 'Schedule a call', createdAt: '2026-08-01T00:00:00Z' })],
+    });
+    expect(report.resolutionByPath.attio).toBe(1);
+    expect(report.resolutionByPath.attio_via_masterid).toBe(0);
+    expect(report.resolutionByPath.contacts).toBe(0);
+    expect(report.results[0]!.verdict).toBe('LIKELY_HANDLED_EVIDENCE');
+  });
+
+  it('falls back to Master_ID only when the Attio record lacks bhc_contact_id — and COUNTS it', async () => {
+    // Non-negotiable #15 says every Attio person should carry one before
+    // leaving PASS 1. 251 of 2506 do not, so this is a real finding, not a
+    // theoretical branch.
+    const { report } = await run({
+      events: [eventWith('nicklamb@insnw.com')],
+      tasks: [taskRow({ id: 'T1', bhcId: 'BHC-00003', name: 'Nick Lamb', desc: 'Schedule a call', createdAt: '2026-08-01T00:00:00Z' })],
+    });
+    expect(report.resolutionByPath.attio_via_masterid).toBe(1);
+    expect(report.resolutionByPath.attio).toBe(0);
+    expect(report.attioRecordsMissingBhcId).toBe(1);
+    expect(report.warnings.join(' ')).toContain('Non-negotiable #15');
+  });
+
+  it('falls back to Contacts for a LinkedIn contact Attio does not hold — rare, but real', async () => {
+    const { report } = await run({
+      events: [eventWith('brian@deru.example')],
+      tasks: [taskRow({ id: 'T1', bhcId: 'BHC-00002', name: 'Brian Johnson', desc: 'Schedule lunch', createdAt: '2026-08-01T00:00:00Z' })],
+    });
+    expect(report.resolutionByPath.contacts).toBe(1);
+    expect(report.resolutionByPath.attio).toBe(0);
+    expect(report.results[0]!.verdict).toBe('LIKELY_HANDLED_EVIDENCE');
+  });
+
+  it('counts an address neither directory holds as unresolved — and produces NO verdict from it', async () => {
+    const { report } = await run({
+      events: [eventWith('stranger@nowhere.example')],
+      tasks: [taskRow({ id: 'T1', bhcId: 'BHC-00001', name: 'Sarah Holmes', desc: 'Schedule a call', createdAt: '2026-08-01T00:00:00Z' })],
+    });
+    expect(report.resolutionByPath.unresolved).toBe(1);
+    // Never mint, never guess — the task simply gets no calendar evidence.
+    expect(report.results[0]!.verdict).toBe('NO_EVIDENCE');
+  });
+
+  it('reports the paths SEPARATELY and never as one total', async () => {
+    const { report } = await run({
+      events: [eventWith('sholmes@hmlglaw.com', 'a'), eventWith('brian@deru.example', 'b'), eventWith('nicklamb@insnw.com', 'c')],
+      tasks: [taskRow({ id: 'T1', bhcId: 'BHC-00001', name: 'Sarah Holmes', desc: 'Schedule a call', createdAt: '2026-08-01T00:00:00Z' })],
+    });
+    // "3 resolved" would hide which CRM is carrying the pass.
+    expect(report.resolutionByPath).toEqual({ attio: 1, attio_via_masterid: 1, contacts: 1, unresolved: 0 });
+  });
+
+  it('queries Attio once per DISTINCT address, not once per event', async () => {
+    const f = fakes({
+      events: [eventWith('sholmes@hmlglaw.com', 'a'), eventWith('sholmes@hmlglaw.com', 'b'), eventWith('sholmes@hmlglaw.com', 'c')],
+      tasks: [],
+    });
+    let calls = 0;
+    const counting = { async searchPeopleByEmail(e: string) { calls++; return f.attio.searchPeopleByEmail(e); } };
+    await runPass26({
+      sheets: f.sheets as never, calendar: f.calendar as never, attio: counting as never,
+      logger: f.logger, dryRun: true, runId: 'X', now: NOW, lookbackDays: 30,
+    });
+    expect(calls).toBe(1);
   });
 });

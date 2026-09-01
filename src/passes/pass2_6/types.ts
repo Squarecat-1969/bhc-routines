@@ -1,5 +1,6 @@
 import type { SafeCalendarEvent } from '../../lib/calendar.js';
 import type { ExtractedParticipants } from './attendees.js';
+import type { ResolutionPath } from './identity.js';
 
 /**
  * Verdicts, per the governing spec's §8 as settled 2026-08-31.
@@ -68,6 +69,14 @@ export interface Pass26Report {
   readonly filterSurvivors: number;
   readonly filterDrops: Readonly<Record<string, number>>;
   readonly participantsResolved: number;
+  /**
+   * Which directory produced each BHC_ID. Reported per path and NEVER summed:
+   * "12 resolved" hides whether Attio is carrying the pass or Contacts is,
+   * and those are different systems with different coverage.
+   */
+  readonly resolutionByPath: Readonly<Record<ResolutionPath, number>>;
+  /** Attio people matched by email but carrying no bhc_contact_id — an NN#15 violation. */
+  readonly attioRecordsMissingBhcId: number;
 
   readonly openTaskCount: number;
   readonly tasksEvaluated: number;
