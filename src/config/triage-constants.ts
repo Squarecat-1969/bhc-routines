@@ -57,6 +57,25 @@ export const TRIAGE_RANGES = {
   exclusionsHeader: 'Contact_Exclusions!A1:G1',
   exclusionsData: 'Contact_Exclusions!A2:G',
   exclusionsAppend: 'Contact_Exclusions!A2:G',
+  /**
+   * STEP 1b reads Master_ID to find retired identities. Read-only — this
+   * routine never writes to the identity registry.
+   */
+  masterId: 'Master_ID!A2:F',
+} as const;
+
+/**
+ * Master_ID column order: A BHC_ID · B Full_Name · C Location · D Google_Row ·
+ * E Attio_Record_ID · F Notes. Declared here rather than reaching into pass4's
+ * loader, which skips blank-BHC_ID rows — exactly the rows STEP 1b needs.
+ */
+export const MASTER_ID_COLS = {
+  bhcId: 0,
+  fullName: 1,
+  location: 2,
+  googleRow: 3,
+  attioRecordId: 4,
+  notes: 5,
 } as const;
 
 /**

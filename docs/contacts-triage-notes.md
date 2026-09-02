@@ -410,6 +410,125 @@ writes are scoped to A:V and A:G and never reach them.
 **`Contact_Exclusions` still needs its two columns added** (or the next live
 run will add them): `recoverable` in F, `source` in G.
 
+## 15. STEP 1b — suppression against prior human decisions (2026-09-02)
+
+Built per `docs/attio-bridging-spec.md` §7 step 1 and §10 item 1. Suppression
+runs **before** scoring and before duplicate detection, reading the two places a
+human decision is durably recorded: `Master_ID` rows set to `Location:
+SUPERSEDED`, and `Contact_Exclusions`.
+
+**Live result, 2026-09-02:** 251 unbridged → **231 suppressed, 20 survive.**
+
+| Signal | Suppressed |
+|---|---|
+| `Contact_Exclusions` (record id 228, email 1) | 229 |
+| `Master_ID` SUPERSEDED | **2** |
+| both | 0 |
+
+The two signals are **disjoint**. `Contact_Exclusions` matching already existed
+before this change, so the honest attribution is that **the new half caught 2
+records — and they are both Raymond Yang**, exactly the case the spec was
+written around:
+
+```
+SUPPRESSED Raymond Yang <raymond.yang@xa.epicgames.com>
+  retired identity — Master_ID row(s) 456, 1585 set to Location: SUPERSEDED.
+  Original annotation: "SCRAPPED 2026-08-05: Raymond Yang is TNB staff, not an
+  external contact" | "SCRAPPED 2026-08-05: duplicate of BHC-01889 (Raymond
+  Yang), TNB staff"
+SUPPRESSED Raymond Yang <raymondy@thenewblank.com>   (same two rows)
+```
+
+Two records is a small number and it is the right number to report. The other 17
+retired identities have no re-created Attio record today; the value is that they
+are now covered before they come back, and that Raymond stops costing a decision
+every time Attio's sync notices him.
+
+### ⚠ Not every SUPERSEDED row is a retired identity
+
+Measured live: the 31 SUPERSEDED rows are **three different things**, and only
+one is a suppression source.
+
+| Shape | Count | Used? |
+|---|---|---|
+| blank BHC_ID + name in column B | 19 | **yes — the signal** |
+| BHC_ID in column A, column B blank (`Merged into BHC-01195 · was Jenny Kim`) | 11 | no — that person still exists under another BHC_ID |
+| both populated — row 962, BHC-00920 Rachel Marantz, `A3-FIXED` | 1 | no — an **active** contact whose Location was set to SUPERSEDED in the 2026-08-30 cleanup |
+
+The gate is therefore `blank column A AND non-blank column B`, which yields
+exactly the 19 the spec §2 counts. Suppressing on row 962 would have hidden a
+live bridged contact; suppressing on the 11 merge tombstones would have hidden
+people who were renumbered, not retired.
+
+**Names are read from column B only, never parsed out of the annotation.** The
+merge tombstones carry their name *only* inside the note (`· was Jenny Kim`), so
+harvesting names from note prose readmits all 11 through the door the column-B
+rule closes. There is a mutation-checked test for this.
+
+### ⚠ Why this does NOT use `verifyName`
+
+`name-verify.ts` passes on **one** significant word in common. That is correct
+for its job — verifying a pair a human already proposed, before writing through
+a pointer — and wrong for generating matches. Live proof: "Raymond Yang"
+(scrapped) and "Raymond Worsdale" (BHC-00679, active at NBCUniversal) share
+`raymond`, so the loose gate would suppress a live bridged contact.
+
+Suppression uses **exact set equality over significant words**, built from
+`significantWords` + `stripDiacritics` so there is still only one normaliser in
+`src/` — only the comparison differs. Diacritics are stripped because "Björn
+Ahlstedt" is one of the 19 and Attio's enrichment is the documented source of
+accent drift; the key is order- and case-insensitive because Master_ID holds
+"JEREMY HODERS" in caps.
+
+`Contact_Exclusions` is checked **first**, because it matches on record id or
+exact address and has no false-positive surface. The name match is strictly
+looser, so it is the fallback rather than the first word.
+
+### The annotation is quoted, not summarised
+
+Column F accretes — the 2026-08-30 Location cleanup appended a second clause to
+all 19 after a ` · `. The quote stops at the first appended clause and then at
+the first sentence end, which yields the original decision and not the
+housekeeping. Both rules are separately mutation-checked; each is load-bearing
+(some notes have no sentence period at all).
+
+### Decisions taken, and their reasons
+
+- **Suppressions are reported and logged, NOT written to `Contact_Exclusions`.**
+  Master_ID SUPERSEDED already *is* the durable record; re-deriving it each run
+  costs one sheet read and stops a name-match verdict ossifying into a permanent
+  exclusion row. A wrongly-suppressed contact disappears silently, so the
+  reversible option wins.
+- **A suppressed record's id joins `priorExcludedIds`**, so a card queued by an
+  earlier run — before the suppression existed — is dropped rather than left
+  standing.
+- **An empty index warns loudly.** Zero retired identities is possible in
+  principle, but it is also the exact shape of a Master_ID column-order change
+  or a failed read, and it would silently disable the highest-value gate here.
+
+### Pre-existing warning, now more visible
+
+The run reports `COMPROMISE COHORT DRIFT — matched 0 record(s), expected ~170`.
+This is **not** caused by STEP 1b: all 170 compromise-blast records are already
+in `Contact_Exclusions`, and the previous code also matched exclusions before
+`classifyHardExclude`, so the cohort counter has been reading 0 since those rows
+were first written. The check counts *newly classified* cohort members and is
+satisfied by nothing once the cohort is durably excluded. Worth re-basing or
+re-scoping, separately from this build.
+
+### Correction to the spec's §1
+
+`attio-bridging-spec.md` §1 states PASS 4's candidate set is
+`master.rows.map(r => r.attioRecordId).filter(id => id !== '')`. The mechanism is
+actually narrower: [pass4/index.ts](../src/passes/pass4/index.ts) iterates
+`attio.listEntries(ATTIO_PIPELINE_LIST)` — the ~44 **pipeline list entries** —
+and uses Master_ID only as a lookup index. The conclusion is unchanged and in
+fact stronger: PASS 4 examines 44 of 2506 people, so an unbridged record is
+invisible because it is not on the pipeline list, not because of a Master_ID
+filter. (Separately, [pass4/load.ts](../src/passes/pass4/load.ts) skips rows with
+a blank BHC_ID — which is every one of the 19 retired identities — so STEP 1b
+reads Master_ID directly rather than reusing that loader.)
+
 ## Open questions for Bobby
 
 1. **BLOCKING — grant the Emails scope** to the bhc-routines Attio API key

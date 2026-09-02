@@ -65,6 +65,39 @@ export function renderReport(report: TriageReport): string {
   out.push(`  unbridged (candidates)   : ${report.unbridgedCount}  (build spec expected ~${EXPECTED_UNBRIDGED})`);
   out.push(`  cross-check              : ${report.enumerationCrossCheck.toUpperCase()} — ${report.enumerationCrossCheckDetail}`);
 
+  // --- STEP 1b
+  out.push('');
+  out.push('STEP 1b — SUPPRESSION (a human already ruled on these)');
+  out.push(
+    `  Master_ID SUPERSEDED rows seen : ${report.supersededRowsSeen}` +
+      `  (${report.retiredIdentitiesIndexed} retired identities indexed, ` +
+      `${report.mergeTombstonesIgnored} merge tombstones ignored)`,
+  );
+  if (report.activeSupersededRows.length > 0) {
+    out.push(
+      `  SUPERSEDED but still active    : row(s) ${report.activeSupersededRows.join(', ')} carry a BHC_ID ` +
+        'AND a name — not used as suppression sources',
+    );
+  }
+  if (report.retiredIdentitiesIndexed === 0) {
+    out.push('  ⚠ THE SUPPRESSION INDEX IS EMPTY — this gate did not fire. Verify Master_ID column order.');
+  }
+  out.push(`  suppressed this run            : ${report.suppressed.length}`);
+  for (const [kind, count] of Object.entries(report.suppressedByKind).sort((a, b) => b[1] - a[1])) {
+    out.push(`  ${String(count).padStart(4, ' ')}  ${kind}`);
+  }
+  // ⚠ The quoted annotation is the whole point. A suppressed record that
+  // cannot be audited from the report is indistinguishable from a dropped one.
+  const fromMaster = report.suppressed.filter((s) => s.source === 'master-id-superseded');
+  if (fromMaster.length > 0) {
+    out.push('');
+    out.push('  retired identities re-created by Attio and suppressed:');
+    for (const s of fromMaster) {
+      out.push(`    ${s.name} <${s.email}>`);
+      out.push(`      ${s.reason}`);
+    }
+  }
+
   // --- STEP 2
   out.push('');
   out.push('STEP 2 — HARD EXCLUDES (logged, never shown as cards)');

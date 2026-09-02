@@ -1,4 +1,5 @@
 import type { CivilDate } from '../../lib/dates.js';
+import type { Suppression } from './suppression.js';
 import type { StrengthBand } from '../../config/triage-constants.js';
 
 /** A person record with no bhc_contact_id — the raw material of every card. */
@@ -255,6 +256,14 @@ export interface TriageReport {
   readonly unbridgedCount: number;
   readonly enumerationCrossCheck: 'passed' | 'failed' | 'unavailable';
   readonly enumerationCrossCheckDetail: string;
+
+  // STEP 1b — suppression against prior human decisions
+  readonly suppressed: readonly Suppression[];
+  readonly suppressedByKind: Readonly<Record<string, number>>;
+  readonly supersededRowsSeen: number;
+  readonly retiredIdentitiesIndexed: number;
+  readonly mergeTombstonesIgnored: number;
+  readonly activeSupersededRows: readonly number[];
 
   // STEP 2
   readonly excludedByReason: Readonly<Record<string, number>>;

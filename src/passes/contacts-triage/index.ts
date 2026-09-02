@@ -47,7 +47,8 @@ import type { Logger } from '../../lib/logger.js';
 import { cell, type SheetsClient, type SheetRow } from '../../lib/sheets.js';
 import { enumerateUnbridged } from './enumerate.js';
 import { classifyHardExclude } from './excludes.js';
-import { countByReason, matchExclusion, readExclusionIndex, serializeExclusion } from './exclusions.js';
+import { countByReason, readExclusionIndex, serializeExclusion } from './exclusions.js';
+import { classifySuppression, readSuppressionIndex, type Suppression } from './suppression.js';
 import { isInLlmScoreRange, shouldCallLlm, scoreWithLlm } from './llm.js';
 import { distributionOf, mergeQueue, parseExistingQueueRow } from './queue.js';
 import { bandFor, scoreContact } from './score.js';
@@ -111,6 +112,12 @@ function abortedReport(
     unbridgedCount: 0,
     enumerationCrossCheck: 'unavailable',
     enumerationCrossCheckDetail: 'run aborted before or during enumeration',
+    suppressed: [],
+    suppressedByKind: {},
+    supersededRowsSeen: 0,
+    retiredIdentitiesIndexed: 0,
+    mergeTombstonesIgnored: 0,
+    activeSupersededRows: [],
     excludedByReason: {},
     exclusions: [],
     alreadyExcludedSkipped: 0,
@@ -203,36 +210,93 @@ async function runInner(
     warnings.push(msg);
   }
 
+  // --- STEP 1b — SUPPRESSION against prior human decisions --------------------
+  //
+  // Before scoring, before duplicate detection, before anything. Everything
+  // downstream is wasted work on a record a human already ruled on, and the
+  // cost of skipping this is measured: Raymond Yang, scrapped 2026-08-05,
+  // re-created by Attio's sync on 2026-08-30 and again 2026-09-01.
+  logger.info('STEP 1b — suppression (Master_ID SUPERSEDED + Contact_Exclusions)');
+  const masterRows = await sheets.read(TRIAGE_RANGES.masterId);
+  const suppressionIndex = readSuppressionIndex(masterRows);
+  logger.info(
+    `  Master_ID: ${masterRows.length} row(s), ${suppressionIndex.supersededTotal} SUPERSEDED — ` +
+      `${suppressionIndex.retiredCount} retired identities indexed, ` +
+      `${suppressionIndex.mergeTombstoneCount} merge tombstone(s) ignored`,
+  );
+  if (suppressionIndex.retiredCount === 0) {
+    // Not an abort: a genuinely empty registry of retired identities is
+    // possible. But it is also the exact shape of a column-order change or a
+    // failed read, and it would silently disable the highest-value gate here.
+    const msg =
+      'SUPPRESSION INDEX IS EMPTY — no Master_ID row matched the retired-identity shape ' +
+      '(blank BHC_ID + a name in column B). Suppression cannot fire this run. Verify Master_ID ' +
+      'column order before trusting the candidate count.';
+    logger.warn(`  ${msg}`);
+    warnings.push(msg);
+  }
+  if (suppressionIndex.activeSupersededRows.length > 0) {
+    logger.info(
+      `  ${suppressionIndex.activeSupersededRows.length} SUPERSEDED row(s) still carry a BHC_ID AND a name ` +
+        `(row(s) ${suppressionIndex.activeSupersededRows.join(', ')}) — active contacts, not used as sources`,
+    );
+  }
+  if (suppressionIndex.unusableRows.length > 0) {
+    const msg =
+      `${suppressionIndex.unusableRows.length} retired Master_ID row(s) have no usable name ` +
+      `(row(s) ${suppressionIndex.unusableRows.join(', ')}) — they can never suppress anything.`;
+    logger.warn(`  ${msg}`);
+    warnings.push(msg);
+  }
+
+  const suppressed: Suppression[] = [];
+  let survivedSuppression: UnbridgedContact[] = [];
+
+  // Record ids of contacts already ruled on, including those matched only by
+  // email — the merge needs ids to drop their existing queue rows. A record
+  // suppressed on either source belongs here too: a prior run may have queued
+  // it before the suppression existed, and that stale card must go.
+  const priorExcludedIds = new Set<string>(exclusionIndex.recordIds);
+
+  for (const contact of enumeration.unbridged) {
+    const s = classifySuppression(contact, suppressionIndex, exclusionIndex);
+    if (s === null) {
+      survivedSuppression.push(contact);
+      continue;
+    }
+    suppressed.push(s);
+    priorExcludedIds.add(contact.attioRecordId);
+  }
+
+  const suppressedByKind: Record<string, number> = {};
+  for (const s of suppressed) {
+    const key = s.source === 'contact-exclusions' ? `contact-exclusions (${s.matchedOn})` : `master-id ${s.kind}`;
+    suppressedByKind[key] = (suppressedByKind[key] ?? 0) + 1;
+  }
+  for (const [k, n] of Object.entries(suppressedByKind).sort((a, b) => b[1] - a[1])) {
+    logger.info(`  ${String(n).padStart(4, ' ')}  ${k}`);
+  }
+  // ⚠ Every suppression is logged WITH ITS REASON, not just counted. A
+  // suppressed record that cannot be audited is indistinguishable from a bug
+  // that drops records.
+  for (const s of suppressed.filter((x) => x.source === 'master-id-superseded')) {
+    logger.info(`    SUPPRESSED ${s.name} <${s.email}> — ${s.reason}`);
+  }
+  logger.info(
+    `  ${suppressed.length} suppressed, ${survivedSuppression.length} of ${enumeration.unbridged.length} survive to STEP 2`,
+  );
+
+  const alreadyExcludedSkipped = suppressed.filter((s) => s.source === 'contact-exclusions').length;
+
   // --- STEP 2a-d — hard excludes that need only the record ---------------------
   logger.info('STEP 2 — hard excludes');
   const exclusions: Exclusion[] = [];
-  let alreadyExcludedSkipped = 0;
   let candidates: UnbridgedContact[] = [];
 
-  // Record ids of contacts already ruled on, including those matched only by
-  // email — the merge needs ids to drop their existing queue rows.
-  const priorExcludedIds = new Set<string>(exclusionIndex.recordIds);
-  let skippedByEmail = 0;
-
-  for (const contact of enumeration.unbridged) {
-    const match = matchExclusion(contact, exclusionIndex);
-    if (match !== null) {
-      alreadyExcludedSkipped += 1;
-      if (match === 'email') {
-        skippedByEmail += 1;
-        priorExcludedIds.add(contact.attioRecordId);
-      }
-      continue;
-    }
+  for (const contact of survivedSuppression) {
     const exclusion = classifyHardExclude(contact);
     if (exclusion) exclusions.push(exclusion);
     else candidates.push(contact);
-  }
-  if (alreadyExcludedSkipped > 0) {
-    logger.info(
-      `  ${alreadyExcludedSkipped} already ruled on and skipped (${skippedByEmail} matched by email, ` +
-        `${alreadyExcludedSkipped - skippedByEmail} by record id)`,
-    );
   }
 
   const compromiseCohortCount = exclusions.filter((e) => e.reason === COMPROMISE_REASON).length;
@@ -499,6 +563,12 @@ async function runInner(
     enumerationCrossCheckDetail: enumeration.crossCheckDetail,
     excludedByReason,
     exclusions,
+    suppressed,
+    suppressedByKind,
+    supersededRowsSeen: suppressionIndex.supersededTotal,
+    retiredIdentitiesIndexed: suppressionIndex.retiredCount,
+    mergeTombstonesIgnored: suppressionIndex.mergeTombstoneCount,
+    activeSupersededRows: suppressionIndex.activeSupersededRows,
     alreadyExcludedSkipped,
     compromiseCohortCount,
     compromiseCohortInRange,

@@ -426,7 +426,10 @@ describe('STEP 5 — the live write', () => {
     expect(QUEUE_HEADER).toHaveLength(QUEUE_COLUMNS);
   });
 
-  it('touches ONLY its two tabs — never Contacts, Master_ID, Activity_Log or Attio', async () => {
+  it('WRITES to ONLY its two tabs — never Contacts, Master_ID, Activity_Log or Attio', async () => {
+    // Renamed from "touches": STEP 1b READS Master_ID to find retired
+    // identities. That read is the point of the step, so the guarantee this
+    // test defends is about writes — which is what it always asserted.
     const { backend, attio, sheets } = await setup({
       people: { 'rec-keep': keeperPerson('jane@dcsg.com', 'Jane Doe') },
     });
@@ -658,4 +661,98 @@ describe('coverage of Attio\'s computed signals', () => {
     expect(report.scored[0]!.contact.company).toBeNull();
     expect(report.warnings.join(' ')).toContain('company names could not be resolved');
   }, 20_000);
+});
+
+describe('STEP 1b — suppression against prior human decisions', () => {
+  /**
+   * The two Master_ID rows, real, read live 2026-09-01. Index 0 is sheet row 2,
+   * so Raymond lands at 456 and 1585 exactly as he does in production.
+   */
+  function supersededMaster(): unknown[][] {
+    const rows: unknown[][] = [];
+    const put = (sheetRow: number, r: unknown[]) => {
+      while (rows.length < sheetRow - 2) rows.push(['', '', 'ATTIO', '', '', '']);
+      rows[sheetRow - 2] = r;
+    };
+    put(456, ['', 'Raymond Yang', 'SUPERSEDED', '', '',
+      'SCRAPPED 2026-08-05: Raymond Yang is TNB staff, not an external contact. Attio record 9878628f ' +
+      'deleted by Bobby. · Location set to SUPERSEDED 2026-08-30: identity fields were cleared.']);
+    put(582, ['BHC-00537', '', 'SUPERSEDED', '', '', 'Merged into BHC-01195 · 2026-08-10 · was Jenny Kim']);
+    put(962, ['BHC-00920', 'Rachel Marantz', 'SUPERSEDED', '', '', 'A3-FIXED: record_id updated.']);
+    put(1585, ['', 'Raymond Yang', 'SUPERSEDED', '', '',
+      'SCRAPPED 2026-08-05: duplicate of BHC-01889 (Raymond Yang), TNB staff. · Location set to SUPERSEDED']);
+    return rows;
+  }
+
+  /** Both of Raymond's re-created records, plus the controls. */
+  const PEOPLE = {
+    'rec-raymond-epic': { name: 'Raymond Yang', emailAddresses: ['raymond.yang@xa.epicgames.com'], createdAt: '2026-08-30T00:00:00Z', strengthLabel: 'Weak' as const },
+    'rec-raymond-tnb': { name: 'Raymond Yang', emailAddresses: ['raymondy@thenewblank.example'], createdAt: '2026-09-01T00:00:00Z', strengthLabel: 'Good' as const },
+    'rec-jenny': { name: 'Jenny Kim', emailAddresses: ['jenny@dcsg.com'], createdAt: '2026-01-01T00:00:00Z' },
+    'rec-rachel': { name: 'Rachel Marantz', emailAddresses: ['rachel@dcsg.com'], createdAt: '2026-01-01T00:00:00Z' },
+    'rec-keep': keeperPerson('jane@dcsg.com', 'Jane Doe'),
+  };
+
+  it('⚠ suppresses BOTH re-created Raymond Yang records and never scores them', async () => {
+    const { attio, sheets } = await setup({ people: PEOPLE, masterId: supersededMaster() });
+    const report = await runContactsTriage({ dryRun: true, attio, sheets, logger: silentLogger, today: TODAY });
+
+    expect(report.aborted).toBe(false);
+    const ids = report.suppressed.map((s) => s.attioRecordId).sort();
+    expect(ids).toEqual(['rec-raymond-epic', 'rec-raymond-tnb']);
+
+    // Never scored: everything downstream is wasted work on a settled decision.
+    const scoredIds = report.scored.map((s) => s.contact.attioRecordId);
+    expect(scoredIds).not.toContain('rec-raymond-epic');
+    expect(scoredIds).not.toContain('rec-raymond-tnb');
+  });
+
+  it('⚠ records WHY, quoting the original annotation and naming both rows', async () => {
+    const { attio, sheets } = await setup({ people: PEOPLE, masterId: supersededMaster() });
+    const report = await runContactsTriage({ dryRun: true, attio, sheets, logger: silentLogger, today: TODAY });
+
+    const s = report.suppressed.find((x) => x.attioRecordId === 'rec-raymond-tnb')!;
+    expect(s.source).toBe('master-id-superseded');
+    expect(s.kind).toBe('SCRAPPED');
+    expect(s.masterRows).toEqual([456, 1585]);
+    expect(s.reason).toContain('SCRAPPED 2026-08-05: Raymond Yang is TNB staff, not an external contact');
+    expect(s.reason).not.toContain('Location set to SUPERSEDED 2026-08-30');
+  });
+
+  it('leaves the merge tombstone and the active SUPERSEDED contact alone', async () => {
+    const { attio, sheets } = await setup({ people: PEOPLE, masterId: supersededMaster() });
+    const report = await runContactsTriage({ dryRun: true, attio, sheets, logger: silentLogger, today: TODAY });
+
+    const suppressedIds = report.suppressed.map((s) => s.attioRecordId);
+    expect(suppressedIds).not.toContain('rec-jenny');
+    expect(suppressedIds).not.toContain('rec-rachel');
+    expect(report.mergeTombstonesIgnored).toBe(1);
+    expect(report.activeSupersededRows).toEqual([962]);
+    expect(report.retiredIdentitiesIndexed).toBe(2);
+  });
+
+  it('drops a stale queue row for a record that has since become suppressed', async () => {
+    // A prior run queued Raymond before suppression existed. That card must go.
+    const { backend, attio, sheets } = await setup({
+      people: PEOPLE,
+      masterId: supersededMaster(),
+      triageQueue: [['rec-raymond-tnb', 'Raymond Yang', 'raymondy@thenewblank.example', '', '70', '70', '', 'deterministic', 'FALSE', 'unclear', 'TRUE', '', '', '', '', '', '', 'stale', 'pending', '', '2026-08-31', '2026-08-31', '', 'Good']],
+    });
+    const report = await runContactsTriage({ dryRun: false, attio, sheets, logger: silentLogger, today: TODAY });
+    expect(report.suppressed.map((s) => s.attioRecordId)).toContain('rec-raymond-tnb');
+
+    const written = backend.sheetsWrites
+      .map((w) => JSON.stringify((w.body as { values?: unknown[][] }).values ?? []))
+      .join(' ');
+    expect(written).not.toContain('rec-raymond-tnb');
+  });
+
+  it('warns rather than silently disabling itself when the index comes back empty', async () => {
+    const { attio, sheets } = await setup({ people: PEOPLE, masterId: [] });
+    const report = await runContactsTriage({ dryRun: true, attio, sheets, logger: silentLogger, today: TODAY });
+
+    expect(report.retiredIdentitiesIndexed).toBe(0);
+    expect(report.suppressed).toHaveLength(0);
+    expect(report.warnings.join(' ')).toContain('SUPPRESSION INDEX IS EMPTY');
+  });
 });
