@@ -66,7 +66,17 @@ A `Tasks_Log`-closed / Attio-open state means Bobby closed it manually through A
 
 Sampled 25 of 76 Outlook events in August 2026.
 
-**~64% is personal recurring noise** — `Lunch (personal)` ×8, `transit` ×2, `Reading The Fifth Season` ×2, `Cretins MC` ×2, `Dental`, `hold for Dr Call`. Solo, no attendees, no relevance. **Filtering is the first design problem, not an afterthought.**
+**MEASURED, not sampled — all 72 August events, 2026-09-01.** The earlier "~64% personal recurring noise" figure came from a 25-event sample and is superseded:
+
+| | |
+|---|---|
+| recurring occurrences (carry `seriesMasterId`, `type: "occurrence"`) | **37 of 72** |
+| **dropped by the filter** | **46 of 72** |
+| · `recurring_no_external` | 28 |
+| · `no_external_participant` | 18 |
+| · `cancelled` | 0 |
+
+Recurrence is a reliable discriminator — no title heuristics needed. **Filtering is the first design problem, not an afterthought**, and it removes roughly two thirds of the source.
 
 **The remaining third correlates directly with open tasks:**
 
@@ -74,7 +84,17 @@ Sampled 25 of 76 Outlook events in August 2026.
 - `NICK B LAMB and Bobby Hougham`, 4 Aug, `nicklamb@insnw.com` — against the insurance thread
 - **`Lunch w Brian Johnson`, 7 Aug, DERU, `showAs: oof`** — in person, no Zoom link. **Fathom will never see this. The calendar entry is the only record it happened.** This single case is the argument for the whole source.
 
-⚠ **`attendees` is `null` on that event.** The name is only in the subject line. So matching must read **both attendees and subject text** — attendee-email matching alone would miss precisely the case that justifies the feature.
+⚠ **THREE EXTRACTION PATHS, AND PATH 3 IS THE LARGEST — measured across all 72 August events, re-measured identical 2026-09-01:**
+
+| Path | Events | |
+|---|---|---|
+| 1 — native `attendees[]` | **25** | name, address, response status |
+| 2 — attendee block in the `body` | **8** | `attendees` EMPTY; unreachable without the body |
+| 3 — **subject line only** | **39** | neither |
+
+**Path 3 is the main path, not a fallback.** `Lunch w Brian Johnson` — in person, no Zoom link, no guest list, the name only in the subject — is the case that justifies calendar as a source at all, and it is the single largest bucket. Attendee-email matching alone would miss more than half the source.
+
+**Try all three; do not stop at the first that returns something** — a native event can carry both a guest list and a different name in the subject, and they may not be the same set.
 
 **Task type changes what calendar proves:**
 
@@ -83,7 +103,15 @@ Sampled 25 of 76 Outlook events in August 2026.
 
 Both types exist in the current 34 — `Schedule audio sound design`, `Check team availability`, `Attend Hammer Creative x TNB` are the first kind.
 
-**Outlook primary, Google secondary**, per Bobby. Note the cost honestly: `bhc-routines` has no Microsoft credential. Graph app-only access needs an Azure app registration with application permissions and admin consent — **free in money, but an eighth credential home** in a system where the seventh caused a full rebuild on 2026-08-14. Google Calendar is one scope line on a service account already in Vercel. **Consider building Google first to prove the matching logic, then adding Outlook** — the matcher is the hard part and it is source-agnostic.
+### RESOLVED — Outlook via delegated Graph, built and verified. Google was tried and abandoned.
+
+This section previously recommended *"Outlook primary, Google secondary"* and *"consider building Google first to prove the matching logic."* **Google was built first, and abandoned.** The outcome, not the recommendation:
+
+⚠ **WHY GOOGLE FAILED, kept because it is exactly the kind of thing someone would retry.** The service account gets `reader`, which cannot see events the OWNER marked private — and CalendarBridge marks every synced event private by design. **32 of 72 August events came back masked**, a perfectly clean split where every masked event had `visibility: "private"` and no visible one did. The alternatives were per-event visibility edits (fights the sync, and new events keep arriving private) or granting **writer** access — a materially larger privilege for a read-only consumer, and the wrong trade.
+
+**Outlook via delegated Microsoft Graph is built, deployed and verified live.** Delegated rather than app-only because a delegated read is *proven* to return private events and app-only visibility of them is unverified; and delegated is narrower — one mailbox, no tenant-wide grant. One calendar is sufficient because CalendarBridge syncs both directions and each calendar sees its own events plainly, so reading one as its owner gets everything. No dedupe problem, no second integration.
+
+The credential cost was real and was paid: an Azure app registration is an eighth credential home, accepted because a Graph credential is infrastructure the C-Suite integration needs regardless. Its client-secret expiry belongs in `System_Counters`.
 
 The M365 MCP connector cannot serve this: it authenticates as Bobby interactively and there is no MCP host in a GitHub Actions container. Same wall as Fathom and Docs.
 
@@ -106,10 +134,24 @@ That does not make `*/30` theatre — it makes it justified by **calendar** and 
 | Layer | Clock | What it gives | What it does NOT give |
 |---|---|---|---|
 | **Calendar** | continuous | Closes scheduling tasks in near-real-time — a meeting appearing **is** the completion for *"schedule a call with X"* | anything about what was said |
-| **`last_email_interaction`** | continuous | A **timestamp only**: marks a contact as worth re-checking within minutes | any content — it never reveals what was said |
+| **`last_interaction`** | continuous | A **timestamp only**: marks a contact as worth re-checking within minutes | any content — it never reveals what was said |
 | **`Activity_Log`** | **nightly** | The actual content — email bodies, Zoom, DMs, manual logs | freshness; it is an overnight snapshot all day |
 
-**`last_email_interaction` is the watermark trigger, not evidence in itself.** It answers *"has something happened here?"* — never *"what happened?"* Treating a timestamp change as evidence would close tasks on the fact that an email exists, which is exactly the unverified-inference failure this spec is built to avoid. It moves a contact into the next run's candidate set; the verdict still waits for content.
+⚠ **THE TRIGGER IS `last_interaction`, NOT `last_email_interaction`. Measured across all 2506 Attio people, 2026-09-01:**
+
+| Attribute | Populated |
+|---|---|
+| `last_calendar_interaction` | **0 of 2506 (0.0%)** |
+| `last_email_interaction` | **0 of 2506 (0.0%)** |
+| `last_interaction` | **2440 of 2506 (97.4%)** |
+
+**The two channel-specific attributes exist in the schema and carry no values.** Verified against the raw attribute keys on a live record rather than through an accessor — with `first_interaction` populated on that same record as a control, so this is an empty field and not a parsing failure.
+
+This is recorded rather than silently corrected because **`last_email_interaction` is the obvious thing to reach for and it is always empty.** A future session that picks it on name alone gets a trigger that never fires, and a watermark that never fires looks exactly like a watermark that is working.
+
+`last_interaction` carries `interaction_type`, so **calendar can still be distinguished from email** from the generic field. It also arrives in the SAME query that resolves identity — so the watermark can skip untouched contacts **with no calendar read at all**.
+
+**`last_interaction` is the watermark trigger, not evidence in itself.** It answers *"has something happened here?"* — never *"what happened?"* Treating a timestamp change as evidence would close tasks on the fact that an email exists, which is exactly the unverified-inference failure this spec is built to avoid. It moves a contact into the next run's candidate set; the verdict still waits for content.
 
 The practical consequence: a scheduling task can close within half an hour of the meeting appearing, and an email-resolved task cannot close before the next Late Edition run. Those are different latencies for different task types, and the surface should not imply otherwise.
 
@@ -131,7 +173,15 @@ The practical consequence: a scheduling task can close within half an hour of th
 
 ---
 
-## 7. The engine — extending `pass2_5`
+## 7. The engine — `pass2_6`, a SEPARATE pass
+
+⚠ **This section previously read "extending `pass2_5`". Calendar reconciliation shipped as `pass2_6`, its own pass.** Two reasons, and the second is load-bearing:
+
+**`pass2_5` is already the pass with the most moving parts**, and adding a second evidence source to it makes the hardest pass harder.
+
+**THEY RUN ON DIFFERENT CLOCKS.** `pass2_5` reads `Activity_Log`, which Late Edition fills **nightly** — so a 30-minute pass reading only that re-reads the same overnight snapshot all day. Calendar is **continuously fresh**. Folding them together forces one cadence onto two sources that do not move at the same rate, and whichever cadence wins is wrong for one of them.
+
+`pass2_6` mirrors `pass2_5`'s shape — same `Reconciliation_Queue`, same 15 columns, so Part D's Accept path works unchanged — without living inside it.
 
 Established by investigation on 2026-08-31, so this does not need re-deriving:
 
@@ -140,7 +190,13 @@ Established by investigation on 2026-08-31, so this does not need re-deriving:
 - **Nothing assumes the `TASK-` prefix.** `Source_Task_ID` already holds five shapes.
 - **`sheetRow` is written and never read** — so the field an Attio task cannot supply is already dead weight.
 
-**Identity comes from `linked_records`, never from the prose.** All 34 Attio tasks carry it. Resolve `attioRecordId` → `Master_ID` col E → `BHC_ID`. Once you have the BHC_ID everything downstream works unchanged: clustering keys on it, `activity-candidates` filters `Activity_Log` on it.
+**Identity comes from `linked_records`, never from the prose.** All 34 Attio tasks carry it.
+
+⚠ **RESOLUTION IS ONE HOP, NOT TWO. This previously read "Resolve `attioRecordId` → `Master_ID` col E → `BHC_ID`."** Measured live 2026-09-01: **the Attio person record carries `bhc_contact_id` directly.** `Master_ID` is consulted only as a FALLBACK, when that field is absent.
+
+That fallback is itself a finding worth counting: **251 of 2506 Attio people (10.0%) have no `bhc_contact_id`**, where Non-negotiable #15 says every Attio person should carry one before leaving PASS 1. Every run reports the count rather than silently absorbing it.
+
+Once you have the BHC_ID everything downstream works unchanged: clustering keys on it, `activity-candidates` filters `Activity_Log` on it.
 
 ⚠ **Clustering keys on `contactId || contactName`.** An Attio task with neither would land in a bare-description bucket and could wrongly cluster with another contact's identically-worded task. Resolve identity **before** clustering.
 
@@ -242,7 +298,13 @@ Probe results below measured **2026-08-31** unless stated.
 
 ### Not open — conditional on a rejected option
 
-6. **Does `last_email_interaction` fire Attio's Attribute-value-changed trigger?** **Unanswerable without building a test workflow inside Attio**, and it only matters if the Attio-native-workflow option — rejected in §11 — is revisited. Not an open question for this build; a prerequisite for a different one.
+6. **Does `last_email_interaction` fire Attio's Attribute-value-changed trigger? — CLOSED 2026-09-01. Moot twice over.**
+
+   **First:** it was only ever conditional on the Attio-native-workflow option, which §11 rejects.
+
+   **Second, and it closes the question outright:** §5 records `last_email_interaction` as populated on **0 of 2506** Attio people. **The question cannot be answered because there is nothing to fire — an attribute that never carries a value cannot trigger on change.** No test workflow would settle it; it would only observe silence.
+
+   ⚠ **The SHAPE is the more useful part, and it is worth carrying past this item.** A trigger built on an empty field never fires, and **a watermark that never fires is indistinguishable from a watermark that is working perfectly.** Both look like "nothing has moved, nothing to re-evaluate" — a quiet, healthy-looking run, forever. That is the same failure §5 warns against, arriving through a different door: there the risk was picking the field by name, here it is building an event source on it. Anything gated on an Attio attribute needs its populated-ness measured **before** it is wired, not after it appears to work.
 
 7. **What Attio charges for AI blocks at current pricing.** The numbers found — Free 100/month, Plus 1000/month, most blocks 1 credit — are from March 2025 and predate the engine rebuild. Same condition as above: only relevant if the Attio-workflow option is revisited.
 
@@ -250,13 +312,19 @@ Probe results below measured **2026-08-31** unless stated.
 
 ## 10. Build order
 
-Everything that was a judgement call is now settled. **Done, 2026-08-31:** §8's verdict semantics, the concrete definition of "coverage" (§8), and **column O** — which turned out to need only a header, not a schema decision (§9). The build order now starts at code.
+Everything that was a judgement call is now settled. **Done, 2026-08-31:** §8's verdict semantics, the concrete definition of "coverage" (§8), and **column O** — which turned out to need only a header, not a schema decision (§9).
 
-1. **Google Calendar** read + the matcher, including the noise filter and subject-line matching. Prove the hard part on the cheap source.
-2. **`pass2_5` extension** — `listTasks` on `AttioClient`, identity via `linked_records` → `Master_ID`, watermark.
-3. **Part D closes through `bhc-aida`'s endpoint** — extract `syncAttioTaskClose`, make the fuzzy match optional.
-4. **The surface** — all tasks, greyed closed rows, evidence twirl-down, Reopen, the once-loud notice.
-5. **Outlook**, if calendar has earned its place by then.
+**Steps 1 and 2 shipped 2026-09-01, both differently than written:**
+
+- ~~Google Calendar read + matcher~~ → **the calendar route runs on Microsoft Graph, not Google.** Google was built first and abandoned when the service account could not see owner-private events (§4). The route is deployed and verified; the matcher, noise filter and three-path extraction are built and live-measured.
+- ~~`pass2_5` extension~~ → **`pass2_6`, a separate pass** (§7), because the two sources run on different clocks.
+
+Also shipped with them: identity resolution **Attio-first, one hop** (§7), the `Pass26_Watermark` tab, and the privileged-body boundary enforced by type rather than by convention.
+
+**Remaining:**
+1. **Part D closes through `bhc-aida`'s endpoint** — extract `syncAttioTaskClose`, make the fuzzy match optional.
+2. **The surface** — all tasks, greyed closed rows, evidence twirl-down, Reopen, the once-loud notice.
+3. **A second calendar source**, only if Outlook proves insufficient — which it has not. Outlook is the shipped source (§4); this item previously read *"Outlook, if calendar has earned its place by then"* and was written when Google was still primary.
 
 ---
 
