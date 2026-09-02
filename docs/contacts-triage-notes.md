@@ -410,14 +410,27 @@ writes are scoped to A:V and A:G and never reach them.
 **`Contact_Exclusions` still needs its two columns added** (or the next live
 run will add them): `recoverable` in F, `source` in G.
 
-## 15. STEP 1b — suppression against prior human decisions (2026-09-02)
+## 19. STEP 1b — suppression against prior human decisions (2026-09-01)
+
+> **Numbered 19, not 15.** `#15`–`#18` are already cited from code
+> (`excludes.ts`, `index.ts`, `signals.ts`, `triage-constants.ts`,
+> `types.ts`, `provenance.ts`, `run-contacts-triage.ts`) for notes that were
+> never written into this file — `#15` in particular means "the Attio Emails
+> scope is unavailable to workspace tokens". This entry starts above all of
+> them so it cannot be mistaken for one of those.
+>
+> ⚠ **DATES IN THIS FILE ARE BOBBY'S WORKING DATE — PACIFIC, NOT UTC.** Run
+> logs stamp UTC, so an evening run reads one day ahead: this run logged
+> `2026-09-02T05:31Z`, which is the evening of **2026-09-01** Pacific. Take the
+> date from the working day, never from the log timestamp. The same offset put
+> a wrong date on a Dev Log entry earlier this week.
 
 Built per `docs/attio-bridging-spec.md` §7 step 1 and §10 item 1. Suppression
 runs **before** scoring and before duplicate detection, reading the two places a
 human decision is durably recorded: `Master_ID` rows set to `Location:
 SUPERSEDED`, and `Contact_Exclusions`.
 
-**Live result, 2026-09-02:** 251 unbridged → **231 suppressed, 20 survive.**
+**Live result, 2026-09-01** (run logged `2026-09-02T05:31Z` UTC — see the date note above)**:** 251 unbridged → **231 suppressed, 20 survive.**
 
 | Signal | Suppressed |
 |---|---|

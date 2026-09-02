@@ -9,9 +9,15 @@
 
 **Attio auto-creates person records from email and calendar sync.** `created_by.actor_type: "system"` on all 251 unbridged records — zero created by any routine. One burst of 170 on 2026-07-22, then roughly one a day since. Two arrived on the morning this was written.
 
-**The Reconciler cannot see them.** Its PASS 4 candidate set is `master.rows.map(r => r.attioRecordId).filter(id => id !== '')` — it fetches only Attio records **already in Master_ID**. An unbridged record is never fetched, never checked, never counted. This is not a missing check; it is a candidate set that structurally cannot contain them.
+**The Reconciler cannot see them, and the mechanism is narrower than this spec first stated.** `pass4/index.ts:279` iterates `attio.listEntries(ATTIO_PIPELINE_LIST)` — roughly **44 pipeline entries** — and uses Master_ID only as a lookup index (`master.byAttioRecordId.get(entry.recordId)`). The candidate set is the pipeline list, not Master_ID.
+
+So **PASS 4 examines 44 of 2,506 people.** An unbridged record is invisible because **it is not on the pipeline list**, not because a Master_ID filter excluded it. This is not a missing check; it is a candidate set that structurally cannot contain them — and the blind spot is *wider* than a Master_ID-shaped one would be, because being in Master_ID would not help either.
+
+> **Corrected 2026-09-01.** The original text read: *"Its PASS 4 candidate set is `master.rows.map(r => r.attioRecordId).filter(id => id !== '')` — it fetches only Attio records already in Master_ID."* That described a Master_ID-derived candidate set. The conclusion is unchanged; the scope of the gap is larger than it described.
 
 So "2,472 checked · 0 findings" is a true statement about **Master_ID** and says nothing about Attio's 2,506 people.
+
+⚠ **`pass4/load.ts:54` skips rows with a blank BHC_ID** (`if (bhcId === '') return`). Every one of the 19 retired identities in §2 has a blank BHC_ID, so that loader cannot see the rows suppression depends on. **This is why STEP 1b reads `Master_ID!A2:F` directly rather than reusing `loadMasterId`** — reusing it would have produced an empty suppression index and a silently disabled gate.
 
 **Two gaps compound.** Unbridged inflow, and undetectable duplicates — because a record outside the candidate set cannot be compared against anything.
 
@@ -27,7 +33,39 @@ Nothing consults a prior human decision before a re-created record enters triage
 
 **This is the highest-value thing in the build.** Duplicate detection is worth having; suppression against scrapped identities is what stops the same decision being demanded every week.
 
-⚠ **The twenty rows set to `Location: SUPERSEDED` on 2026-08-30 are what make this possible.** That cleanup was framed as noise reduction — it also created the memory this pass reads. Nineteen tombstones carry `ORPHAN CLEARED` or `SCRAPPED` annotations naming exactly why each was retired.
+⚠ **The rows set to `Location: SUPERSEDED` on 2026-08-30 are what make this possible.** That cleanup was framed as noise reduction — it also created the memory this pass reads.
+
+### ⚠ SUPERSEDED IS THREE THINGS, NOT ONE
+
+This spec assumed `Location: SUPERSEDED` marked a retired identity. Measured live, the 31 SUPERSEDED rows are **three different shapes**, and only one of them is a suppression signal:
+
+| Shape | Count | A suppression source? |
+|---|---|---|
+| blank BHC_ID + name in **column B** | **19** | **yes — the signal** |
+| BHC_ID in column A, **column B blank** — `Merged into BHC-01195 · 2026-08-10 · was Jenny Kim` | 11 | **no.** That person still exists under another BHC_ID. They were renumbered, not retired |
+| **both populated** — row 962, `BHC-00920` **Rachel Marantz**, annotation `A3-FIXED` | 1 | **no.** An **ACTIVE bridged contact** whose Location was set during the 2026-08-30 cleanup |
+
+Of the 19, **13 are annotated `ORPHAN CLEARED` and 6 `SCRAPPED`** — and the distinction matters downstream. `SCRAPPED` means the person does not belong in this CRM at all (staff, unrecognised). `ORPHAN CLEARED` means they *are* tracked, under a canonical BHC_ID the annotation names. Step 2 should turn an `ORPHAN CLEARED` suppression into a **repoint** candidate rather than a plain dismissal; STEP 1b records the kind so that does not have to be re-derived.
+
+**Blank column A is load-bearing, not incidental.** Row 962 is the proof: Rachel Marantz is a live bridged contact, and a name match against her row would have suppressed her — hiding a real contact silently, which is the one failure direction this pass cannot afford. The gate is therefore `blank column A AND non-blank column B`, and it yields exactly the 19.
+
+⚠ **Names must be read from column B ONLY, never parsed out of the annotation.** The 11 merge tombstones carry their name *only* inside the note, after the ` · ` separator (`· was Jenny Kim`). Harvesting names from note prose readmits all 11 through the exact door the column-B rule closes.
+
+### Measured outcome — suppression shipped 2026-09-01 (`49cb8ef`)
+
+First live run: **251 unbridged → 231 suppressed, 20 survive.** But the headline is not the result, because the two signals are **disjoint**:
+
+| Signal | Suppressed | New? |
+|---|---|---|
+| `Contact_Exclusions` — 228 by record id, 1 by email | 229 | no — this matching already existed |
+| `Master_ID` SUPERSEDED | **2** | **yes — the new capability** |
+| both | 0 | |
+
+**The honest attribution: the new half caught 2 records, and both are Raymond Yang** — `raymond.yang@xa.epicgames.com` and `raymondy@thenewblank.com`, each suppressed against Master_ID rows 456 and 1585, each quoting *"SCRAPPED 2026-08-05: Raymond Yang is TNB staff, not an external contact"*.
+
+**The other 17 retired identities have no re-created Attio record today.** Two is the real value of this step, and reporting it as 231 would be claiming credit for a gate that already existed.
+
+**Two is also the right number to have built for.** It is precisely the case this section was written around — the one that had already cost the same decision twice in three days — and the other 17 are now covered *before* they come back rather than after.
 
 ---
 
@@ -161,7 +199,9 @@ Minting follows the existing contract without exception: compute max BHC_ID acro
 
 ## 10. Build order
 
-1. **Suppression against SUPERSEDED and `Contact_Exclusions`.** Highest value, smallest change, and it stops the same decision being demanded weekly. Ship it alone if nothing else lands.
+1. ✅ **DONE — 2026-09-01, commit `49cb8ef`. Suppression against SUPERSEDED and `Contact_Exclusions`.** Highest value, smallest change, and it stops the same decision being demanded weekly.
+
+   **What it actually caught: 2 records, not the 231 headline.** The first live run suppressed 231 of 251, but the two signals are disjoint — 229 came from `Contact_Exclusions` matching that already existed before this change, and **2 from the new SUPERSEDED capability, both of them Raymond Yang**. The other 17 retired identities have no re-created Attio record today. Two is the honest number and it is the right one to have built for: it is the case §2 was written around, and the other 17 are now covered before they come back. Detail in `docs/contacts-triage-notes.md` #19.
 2. **Duplicate candidate detection** — exact name, local-part corroboration, surfaced as a question.
 3. **The Aida card** — three actions, per-record links, dismissals that stick.
 4. **Minting on confirmation**, following the existing contract.
