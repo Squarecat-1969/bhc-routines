@@ -42,7 +42,11 @@
  */
 
 import { OWNED_DOMAINS, PERSON_SLUGS } from '../../config/constants.js';
-import { FREEMAIL_DOMAINS } from '../../config/triage-constants.js';
+import {
+  FREEMAIL_DOMAINS,
+  GENERIC_ROLE_LOCAL_PARTS,
+  ROLE_LOCAL_PARTS,
+} from '../../config/triage-constants.js';
 import { textOf, type AttioPersonRecord } from '../../lib/attio.js';
 import type { CivilDate } from '../../lib/dates.js';
 import { domainOf, localPartOf } from './excludes.js';
@@ -89,6 +93,18 @@ export const TYPO_DOMAIN_MAX_DISTANCE = 1;
  */
 export const TYPO_DOMAIN_MIN_LENGTH = 8;
 
+/**
+ * CRM-AS-REFERENCE typo radius. Wider than the owned-domain radius because the
+ * evidence is stronger, not because the reference is weaker: the owned-domain
+ * arm matches on the DOMAIN ALONE, so one edit is all it can safely allow,
+ * while this arm additionally requires the LOCAL PART TO MATCH EXACTLY.
+ *
+ * Set to 2 per the addendum. Measured live 2026-09-04 the choice is free —
+ * dropping it to 1 changes nothing, because every hit in this population is a
+ * single edit. It is reported at both radii rather than assumed.
+ */
+export const CRM_TYPO_MAX_DISTANCE = 2;
+
 export type DuplicateKind =
   /** An unbridged record that is the same person as a BRIDGED one. Merge consolidates addresses. */
   | 'merge-into-bridged'
@@ -120,6 +136,16 @@ export interface DuplicateSide {
 
 export interface BridgedNameIndex {
   readonly byNameKey: ReadonlyMap<string, readonly DuplicateSide[]>;
+  /**
+   * Bridged records keyed by the EXACT lowercased local part of each address.
+   * The reference set for CRM-as-reference typo detection.
+   */
+  readonly byEmailLocalPart: ReadonlyMap<string, readonly DuplicateSide[]>;
+  /**
+   * Every domain appearing on a bridged record — a domain a human has already
+   * accepted. A domain in this set is never a typo of another one in it.
+   */
+  readonly bridgedDomains: ReadonlySet<string>;
   readonly bridgedCount: number;
   /** Bridged records whose name normalises to nothing — they can never match. */
   readonly unusableNameCount: number;
@@ -139,6 +165,14 @@ export interface DuplicateCandidate {
   readonly bridgedMatches: readonly DuplicateSide[];
   /** Other UNBRIDGED records sharing the subject's name key. */
   readonly unbridgedSiblings: readonly DuplicateSide[];
+  /** Near-misses on an owned domain — ground truth by definition. */
+  readonly ownedDomainTypos: readonly TypoDomainHit[];
+  /**
+   * Near-misses on an address already on a BRIDGED record. Carries the
+   * known-good address and the record holding it, which is what the card needs
+   * to say "this should have been <reference>".
+   */
+  readonly crmTypos: readonly CrmTypoHit[];
   /** For a repoint: the BHC_ID the ORPHAN CLEARED annotation names, and the annotation itself. */
   readonly repointTo: string | null;
   readonly retiredMatches: readonly RetiredIdentity[];
@@ -176,6 +210,16 @@ export interface DuplicateDetection {
   readonly exactNameAgainstBridged: number;
   /** Name keys held by 2+ unbridged records, whether or not a bridged record also matches. */
   readonly unbridgedClusters: number;
+  /** Records flagged by the owned-domain arm (ground truth). */
+  readonly ownedTypoCandidates: number;
+  /** Records flagged by the CRM-as-reference arm. */
+  readonly crmTypoCandidates: number;
+  /**
+   * Records the CRM arm found that the owned-domain arm did NOT. Measured live
+   * 2026-09-04: ZERO. Reported as a first-class number because the card design
+   * rests on the size of this population, not on the mechanism finding it.
+   */
+  readonly crmTypoBeyondOwned: number;
   readonly byKind: Readonly<Record<DuplicateKind, number>>;
   readonly byConfidence: Readonly<Record<DuplicateConfidence, number>>;
   readonly colocatedDomains: readonly string[];
@@ -239,6 +283,18 @@ function isFreemail(domain: string): boolean {
   return (FREEMAIL_DOMAINS as readonly string[]).includes(domain);
 }
 
+/**
+ * `info@`, `sales@`, `support@` — matched as the WHOLE local part, never as a
+ * substring, exactly as `classifyLocalPart` does. Reused from the scoring
+ * constants rather than redeclared so the two cannot drift.
+ */
+function isGenericRoleLocalPart(local: string): boolean {
+  return (
+    (GENERIC_ROLE_LOCAL_PARTS as readonly string[]).includes(local) ||
+    (ROLE_LOCAL_PARTS as readonly string[]).includes(local)
+  );
+}
+
 /** Iterative Levenshtein. Small strings only; no early-exit cleverness needed. */
 export function editDistance(a: string, b: string): number {
   if (a === b) return 0;
@@ -298,6 +354,110 @@ export function typoDomainHits(
   return out;
 }
 
+export interface CrmTypoHit {
+  /** The unbridged record's address that looks like a typo. */
+  readonly email: string;
+  readonly domain: string;
+  /** The address it is a near-miss of — known-good, because it is on a bridged record. */
+  readonly referenceEmail: string;
+  readonly referenceDomain: string;
+  readonly distance: number;
+  /** The bridged record carrying the known-good address. */
+  readonly reference: DuplicateSide;
+}
+
+/**
+ * CRM-AS-REFERENCE TYPO DETECTION.
+ *
+ * The owned-domain arm works only where there is ground truth: `thenewblank.com`
+ * is known-correct by definition. For an external domain there is no such
+ * reference — `raymond@epicgames.com` against `raymond@epicgame.com` is
+ * undecidable on its own. **The CRM itself supplies the reference.** An address
+ * already on a bridged record is one a human accepted and that has been used;
+ * a near-variant of it arriving fresh from Attio's sync is a typo candidate.
+ *
+ * ⚠⚠ THE ASYMMETRY IS THE WHOLE DESIGN, AND IT IS NOT NEGOTIABLE.
+ *
+ *   SAME local part + NEAR-MISS DOMAIN  → almost certainly a typo.
+ *       `chuck@thenewblank.com` vs `chuck@thenewblanks.com`. A domain is
+ *       shared by many people, so an EXACT local-part match across a
+ *       one-character domain difference is very unlikely to be two humans.
+ *
+ *   SAME domain + NEAR-MISS LOCAL PART  → almost certainly TWO PEOPLE.
+ *       `jim@acme.com` and `tim@acme.com` are Levenshtein 1 and colleagues.
+ *       `raymondy@` and `raymondz@` likewise.
+ *
+ * So the local part must match EXACTLY and only the domain may vary. Never the
+ * reverse, and never both at once. Widening this to local-part variance is the
+ * same failure mode as `verifyName`: a signal that looks symmetric and is not.
+ * Two people at one company differing by a character is common; one person
+ * with two near-identical domains is not.
+ *
+ * The guards, each of which is load-bearing and individually mutation-checked:
+ *
+ *  - **exact local part**, not normalised — see `buildBridgedNameIndex`.
+ *  - **the domains must differ.** Equal domains mean equal addresses, which
+ *    `is_unique: true` makes impossible anyway; the check is what makes the
+ *    same-domain near-miss case return nothing rather than everything.
+ *  - **the suspect domain must be UNKNOWN to the CRM.** If both domains appear
+ *    on bridged records, both are known-good and neither is a typo of the
+ *    other — the direct analogue of "an owned domain is never its own typo".
+ *  - **no generic role local parts.** `info@`, `sales@`, `support@` are the
+ *    one place an exact local-part match carries no identity at all, and the
+ *    spec already records that this is how the local-part signal goes wrong.
+ *  - **no freemail on either side.** `gmail.com` and `ymail.com` are one edit
+ *    apart and are different providers used by different people, and `john` at
+ *    each of them is two humans. This deliberately FORGOES genuine freemail
+ *    typos (`john@gmai.com` for `john@gmail.com`) to avoid cross-provider
+ *    collisions on common local parts in namespaces with millions of users.
+ *    Revisit if a real freemail typo ever shows up; on a population of two,
+ *    the conservative side is the right one.
+ *  - **a length floor on the pair**, as for the owned-domain arm.
+ */
+export function crmTypoHits(emails: readonly string[], index: BridgedNameIndex): CrmTypoHit[] {
+  const out: CrmTypoHit[] = [];
+
+  for (const email of emails) {
+    const domain = domainOf(email);
+    const local = localPartOf(email);
+    if (domain === '' || local === '') continue;
+
+    // A domain already on a bridged record is known-good, not a suspect.
+    if (index.bridgedDomains.has(domain)) continue;
+    // Freemail near-misses are different providers, not typos of each other.
+    if (isFreemail(domain)) continue;
+    // A role mailbox's local part says nothing about who anybody is.
+    if (isGenericRoleLocalPart(local)) continue;
+
+    for (const reference of index.byEmailLocalPart.get(local) ?? []) {
+      for (const referenceEmail of reference.emails) {
+        if (localPartOf(referenceEmail) !== local) continue;
+        const referenceDomain = domainOf(referenceEmail);
+        // ⚠ NO blank-domain check and NO `referenceDomain === domain` check
+        // here, DELIBERATELY. It reads
+        // like it belongs, and it is unreachable: the reference is always a
+        // bridged record, so its domain is always in `bridgedDomains`, and the
+        // known-good-domain guard above has already skipped any suspect whose
+        // domain is in that set. Mutation-checked as dead — neutering it
+        // changed nothing, because the guard above rejects the case first.
+        // A blank domain is likewise already rejected: `Math.min(_, 0)` is
+        // below the length floor. Two guards for one job means neither is
+        // tested; the floor and the known-good check are the ones that are.
+        if (isFreemail(referenceDomain)) continue;
+        if (Math.min(domain.length, referenceDomain.length) < TYPO_DOMAIN_MIN_LENGTH) continue;
+
+        const distance = editDistance(domain, referenceDomain);
+        if (distance > CRM_TYPO_MAX_DISTANCE) continue;
+
+        out.push({ email, domain, referenceEmail, referenceDomain, distance, reference });
+        break;
+      }
+    }
+  }
+
+  return out;
+}
+
 /** A one-word name key — "Le", "MOHAI". Matching on it is a collision waiting to happen. */
 export function isSingleTokenKey(nameKey: string): boolean {
   return nameKey !== '' && !nameKey.includes(' ');
@@ -321,9 +481,42 @@ export function canonicalBhcIdIn(annotation: string): string | null {
 
 export function buildBridgedNameIndex(bridged: readonly DuplicateSide[]): BridgedNameIndex {
   const byNameKey = new Map<string, DuplicateSide[]>();
+  const byEmailLocalPart = new Map<string, DuplicateSide[]>();
+  const bridgedDomains = new Set<string>();
   let unusableNameCount = 0;
 
   for (const side of bridged) {
+    // ⚠ THE REFERENCE SET IS BRIDGED RECORDS ONLY. An address on a bridged
+    // record is one a human has already accepted and that demonstrably works.
+    // An unbridged record is exactly what is under suspicion, so using one as
+    // the reference would let a typo vouch for itself.
+    // ⚠ ONE ENTRY PER RECORD PER LOCAL PART. A bridged record routinely
+    // carries the same local part at two domains — BHC-02338 holds both
+    // `chuck@thenewblank.com` and `chuck@crrnt.co` — and pushing the side once
+    // per address put it in the `chuck` bucket twice, which emitted the same
+    // typo candidate twice on the first live measurement. Caught by measuring
+    // rather than by reading, which is why the count is reported before the
+    // card is designed around it.
+    const localsSeen = new Set<string>();
+    for (const email of side.emails) {
+      const domain = domainOf(email);
+      if (domain !== '') bridgedDomains.add(domain);
+      // ⚠ EXACT local part, NOT `normalizeLocalPart`. Stripping punctuation
+      // would make `john.smith@a.com` match `johnsmith@b.com` — local-part
+      // VARIANCE, which is the half of this signal that is not safe.
+      //
+      // ⚠ THIS MUST BE THE SAME FUNCTION `crmTypoHits` LOOKS UP WITH. If the
+      // two disagree the failure is SILENT AND IN THE SAFE-LOOKING DIRECTION —
+      // every punctuated local part simply stops matching and the arm quietly
+      // finds less. Pinned by the hyphenated-local-part test.
+      const local = localPartOf(email);
+      if (local === '' || localsSeen.has(local)) continue;
+      localsSeen.add(local);
+      const bucket = byEmailLocalPart.get(local);
+      if (bucket) bucket.push(side);
+      else byEmailLocalPart.set(local, [side]);
+    }
+
     if (side.nameKey === '') {
       unusableNameCount += 1;
       continue;
@@ -354,6 +547,8 @@ export function buildBridgedNameIndex(bridged: readonly DuplicateSide[]): Bridge
 
   return {
     byNameKey,
+    byEmailLocalPart,
+    bridgedDomains,
     bridgedCount: bridged.length,
     unusableNameCount,
     ambiguousKeys,
@@ -483,6 +678,9 @@ export function detectDuplicates(input: DetectInput): DuplicateDetection {
 
   for (const subject of sides) {
     const typos = typoDomainHits(subject.emails);
+    // CRM-as-reference: the second typo arm. Independent of the name match —
+    // a typo record with no resolvable name must still surface.
+    const crmTypos = crmTypoHits(subject.emails, index);
     // ⚠ A BLANK NAME NEVER MATCHES, and the guard lives in ONE place: every
     // index here refuses to store an empty key, so a blank-named subject
     // looks up a key that cannot exist. Mirroring the check here as well was
@@ -498,7 +696,13 @@ export function detectDuplicates(input: DetectInput): DuplicateDetection {
     if (bridgedMatches.length > 0) exactNameAgainstBridged += 1;
 
     // Nothing to say about this record.
-    if (typos.length === 0 && bridgedMatches.length === 0 && siblings.length === 0 && orphanCleared.length === 0) {
+    if (
+      typos.length === 0 &&
+      crmTypos.length === 0 &&
+      bridgedMatches.length === 0 &&
+      siblings.length === 0 &&
+      orphanCleared.length === 0
+    ) {
       continue;
     }
 
@@ -518,7 +722,7 @@ export function detectDuplicates(input: DetectInput): DuplicateDetection {
 
     // --- kind, in precedence order.
     let kind: DuplicateKind;
-    if (typos.length > 0) kind = 'exclude-typo-domain';
+    if (typos.length > 0 || crmTypos.length > 0) kind = 'exclude-typo-domain';
     else if (orphanCleared.length > 0) kind = 'repoint';
     else if (bridgedMatches.length > 0) kind = 'merge-into-bridged';
     else if (siblings.length > 0) kind = 'consolidate-unbridged';
@@ -551,6 +755,14 @@ export function detectDuplicates(input: DetectInput): DuplicateDetection {
     }
 
     // --- cautions.
+    for (const t of crmTypos) {
+      cautions.push(
+        `TYPO OF A KNOWN-GOOD ADDRESS: ${t.email} is ${t.distance} character(s) from ${t.referenceEmail}, ` +
+          `which is already on ${t.reference.bhcId ?? t.reference.attioRecordId} ` +
+          `(${t.reference.name ?? 'no name'}) — an address a human has accepted and that works. ` +
+          'Same local part, near-miss domain. Not a duplicate person, and not a person.',
+      );
+    }
     if (singleToken && kind !== 'exclude-typo-domain') {
       cautions.push(
         `ONE-TOKEN NAME ("${subject.name ?? ''}") — the match rests on a single word and is very likely a collision. ` +
@@ -610,6 +822,8 @@ export function detectDuplicates(input: DetectInput): DuplicateDetection {
       subject,
       bridgedMatches,
       unbridgedSiblings: siblings,
+      ownedDomainTypos: typos,
+      crmTypos,
       repointTo,
       retiredMatches: retired,
       corroboration,
@@ -635,7 +849,16 @@ export function detectDuplicates(input: DetectInput): DuplicateDetection {
     byConfidence[c.confidence] += 1;
   }
 
+  const ownedTypoCandidates = candidates.filter((c) => c.ownedDomainTypos.length > 0).length;
+  const crmTypoCandidates = candidates.filter((c) => c.crmTypos.length > 0).length;
+  const crmTypoBeyondOwned = candidates.filter(
+    (c) => c.crmTypos.length > 0 && c.ownedDomainTypos.length === 0,
+  ).length;
+
   return {
+    ownedTypoCandidates,
+    crmTypoCandidates,
+    crmTypoBeyondOwned,
     candidates: [...candidates].sort(
       (a, b) => RANK[b.confidence] - RANK[a.confidence] || a.nameKey.localeCompare(b.nameKey),
     ),

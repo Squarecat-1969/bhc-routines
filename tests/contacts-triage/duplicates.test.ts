@@ -18,6 +18,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildBridgedNameIndex,
   canonicalBhcIdIn,
+  crmTypoHits,
   detectDuplicates,
   editDistance,
   isSingleTokenKey,
@@ -250,6 +251,276 @@ describe('typoDomainHits', () => {
   });
 });
 
+describe('crmTypoHits — CRM-as-reference typo detection', () => {
+  const index = () => buildBridgedNameIndex(BRIDGED_ALL);
+
+  it('flags the live pair: same local part, one-character domain difference', () => {
+    // `chuck@thenewblanks.com` against `chuck@thenewblank.com`, which is on
+    // BHC-02338 — an address a human accepted and that works.
+    const hits = crmTypoHits(['chuck@thenewblanks.com'], index());
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.referenceEmail).toBe('chuck@thenewblank.com');
+    expect(hits[0]!.reference.bhcId).toBe('BHC-02338');
+    expect(hits[0]!.distance).toBe(1);
+  });
+
+  // ⚠⚠ THE TEST THIS WHOLE DESIGN EXISTS FOR.
+  it('produces ZERO candidates for same-domain near-miss LOCAL PARTS', () => {
+    // `jim@acme.com` and `tim@acme.com` are Levenshtein 1 and they are
+    // colleagues. `raymondy@` and `raymondz@` likewise. The signal is
+    // asymmetric: the local part must match EXACTLY and only the domain may
+    // vary. A test exercising only the positive case would pass without this
+    // guard and prove nothing.
+    const colleagues = buildBridgedNameIndex([
+      bridgedFrom('BHC-07001', {
+        attioRecordId: 'jim-bridged',
+        name: 'Jim Acme',
+        primaryEmail: 'jim@acmecorp.com',
+        allEmails: ['jim@acmecorp.com'],
+      }),
+      bridgedFrom('BHC-07002', {
+        attioRecordId: 'raymondy-bridged',
+        name: 'Raymond Yates',
+        primaryEmail: 'raymondy@bigcompany.com',
+        allEmails: ['raymondy@bigcompany.com'],
+      }),
+    ]);
+    expect(crmTypoHits(['tim@acmecorp.com'], colleagues)).toEqual([]);
+    expect(crmTypoHits(['raymondz@bigcompany.com'], colleagues)).toEqual([]);
+    // ...and the same holds through the whole detector, not just this function.
+    const viaDetector = detectDuplicates({
+      unbridged: [
+        contact({
+          attioRecordId: 'tim',
+          name: 'Tim Acme',
+          primaryEmail: 'tim@acmecorp.com',
+          allEmails: ['tim@acmecorp.com'],
+        }),
+      ],
+      index: colleagues,
+      suppression: SUPPRESSION,
+    });
+    expect(viaDetector.crmTypoCandidates).toBe(0);
+    expect(viaDetector.candidates).toEqual([]);
+  });
+
+  it('produces ZERO candidates when the local part AND the domain both vary', () => {
+    // "Never both varying at once." Two near-misses stacked is not stronger
+    // evidence, it is a second guess on top of the first.
+    const idx = buildBridgedNameIndex([
+      bridgedFrom('BHC-07014', {
+        attioRecordId: 'jim2',
+        name: 'Jim Acme',
+        primaryEmail: 'jim@acmecorp.com',
+        allEmails: ['jim@acmecorp.com'],
+      }),
+    ]);
+    expect(crmTypoHits(['tim@acmecorpp.com'], idx)).toEqual([]);
+  });
+
+  it('does not match a DIFFERENT local part that happens to sit on the same reference record', () => {
+    // A bridged record carries several addresses. Only the one whose local
+    // part actually matches may be compared — otherwise the record's first
+    // address gets compared against a suspect it has nothing to do with, and
+    // the "exact local part" claim quietly becomes "the record has this local
+    // part somewhere".
+    const idx = buildBridgedNameIndex([
+      bridgedFrom('BHC-07011', {
+        attioRecordId: 'multi',
+        name: 'Nina Park',
+        primaryEmail: 'ops@harborlight.com',
+        allEmails: ['ops@harborlight.com', 'ninap@quitedifferent.com'],
+      }),
+    ]);
+    // `ninap@harborlights.com` is one edit from `harborlight.com` — but that
+    // domain belongs to `ops@`, not to `ninap@`.
+    expect(crmTypoHits(['ninap@harborlights.com'], idx)).toEqual([]);
+  });
+
+  it('never varies the local part — no normalisation, no fuzzing', () => {
+    // `john.smith@` and `johnsmith@` are the same person in practice, and that
+    // is exactly why matching them here is forbidden: it is local-part
+    // variance, the half of the signal that is not safe.
+    const idx = buildBridgedNameIndex([
+      bridgedFrom('BHC-07003', {
+        attioRecordId: 'js-bridged',
+        name: 'John Smith',
+        primaryEmail: 'johnsmith@examplecorp.com',
+        allEmails: ['johnsmith@examplecorp.com'],
+      }),
+    ]);
+    expect(crmTypoHits(['john.smith@examplecorpp.com'], idx)).toEqual([]);
+
+    // ...and symmetrically, with the punctuation on the BRIDGED side. Checking
+    // only one direction leaves the other side free to normalise unnoticed.
+    const dotted = buildBridgedNameIndex([
+      bridgedFrom('BHC-07012', {
+        attioRecordId: 'js-dotted',
+        name: 'John Smith',
+        primaryEmail: 'john.smith@examplecorp.com',
+        allEmails: ['john.smith@examplecorp.com'],
+      }),
+    ]);
+    expect(crmTypoHits(['johnsmith@examplecorpp.com'], dotted)).toEqual([]);
+  });
+
+  it('still matches a PUNCTUATED local part against itself', () => {
+    // The index key and the lookup have to be derived the same way. If they
+    // drift the failure is silent and looks safe — punctuated local parts just
+    // stop matching and the arm quietly finds less. `mary-jane@` is the case
+    // that shows it; `chuck@` never could, because it has nothing to strip.
+    const idx = buildBridgedNameIndex([
+      bridgedFrom('BHC-07015', {
+        attioRecordId: 'mj',
+        name: 'Mary-Jane Ellis',
+        primaryEmail: 'mary-jane@northwindmedia.com',
+        allEmails: ['mary-jane@northwindmedia.com'],
+      }),
+    ]);
+    const hits = crmTypoHits(['mary-jane@northwindmedias.com'], idx);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.referenceEmail).toBe('mary-jane@northwindmedia.com');
+  });
+
+  it('refuses a domain that is ALREADY on a bridged record', () => {
+    // Both known-good, so neither is a typo of the other — the direct analogue
+    // of "an owned domain is never its own typo". Without this, two legitimate
+    // near-named client domains would flag each other forever.
+    const idx = buildBridgedNameIndex([
+      bridgedFrom('BHC-07004', {
+        attioRecordId: 'a1',
+        name: 'Alex One',
+        primaryEmail: 'alex@brightwater.com',
+        allEmails: ['alex@brightwater.com'],
+      }),
+      bridgedFrom('BHC-07005', {
+        attioRecordId: 'a2',
+        name: 'Alex Two',
+        primaryEmail: 'alex@brightwaters.com',
+        allEmails: ['alex@brightwaters.com'],
+      }),
+    ]);
+    expect(crmTypoHits(['alex@brightwaters.com'], idx)).toEqual([]);
+  });
+
+  it('refuses a generic role local part', () => {
+    // The spec's recorded failure of the local-part signal: "every info@ and
+    // sales@ pair across unrelated domains". An exact match on `info` carries
+    // no identity at all.
+    const idx = buildBridgedNameIndex([
+      bridgedFrom('BHC-07006', {
+        attioRecordId: 'i1',
+        name: 'Info Desk',
+        primaryEmail: 'info@companyname.com',
+        allEmails: ['info@companyname.com'],
+      }),
+    ]);
+    expect(crmTypoHits(['info@companynames.com'], idx)).toEqual([]);
+    // A real personal local part at the very same domain pair DOES flag, so
+    // the rejection above is the role rule and not the distance test.
+    expect(crmTypoHits(['marcus@companynames.com'], buildBridgedNameIndex([
+      bridgedFrom('BHC-07007', {
+        attioRecordId: 'm1',
+        name: 'Marcus Reed',
+        primaryEmail: 'marcus@companyname.com',
+        allEmails: ['marcus@companyname.com'],
+      }),
+    ]))).toHaveLength(1);
+  });
+
+  it('refuses freemail on the SUSPECT side', () => {
+    // The reference here is NOT freemail, so this isolates the suspect-side
+    // guard. Checking both sides in one assertion lets either guard cover for
+    // the other and neither gets tested.
+    const idx = buildBridgedNameIndex([
+      bridgedFrom('BHC-07008', {
+        attioRecordId: 'g1',
+        name: 'Grace Hall',
+        primaryEmail: 'gracehall@xmail.com',
+        allEmails: ['gracehall@xmail.com'],
+      }),
+    ]);
+    expect(crmTypoHits(['gracehall@ymail.com'], idx)).toEqual([]);
+  });
+
+  it('refuses freemail on the REFERENCE side', () => {
+    // `gracehall@gmial.com` really is a plausible typo of `@gmail.com`, and it
+    // is refused anyway: `john` at gmail and `john` at ymail are two humans,
+    // and these namespaces have millions of users. The trade is deliberate and
+    // recorded — see the doc comment on crmTypoHits.
+    const idx = buildBridgedNameIndex([
+      bridgedFrom('BHC-07013', {
+        attioRecordId: 'g2',
+        name: 'Grace Hall',
+        primaryEmail: 'gracehall@gmail.com',
+        allEmails: ['gracehall@gmail.com'],
+      }),
+    ]);
+    expect(crmTypoHits(['gracehall@gmial.com'], idx)).toEqual([]);
+  });
+
+  it('stops beyond two edits', () => {
+    const idx = buildBridgedNameIndex([
+      bridgedFrom('BHC-07009', {
+        attioRecordId: 'd1',
+        name: 'Dana West',
+        primaryEmail: 'danaw@northwindmedia.com',
+        allEmails: ['danaw@northwindmedia.com'],
+      }),
+    ]);
+    expect(crmTypoHits(['danaw@northwindmedias.com'], idx)).toHaveLength(1); // 1 edit
+    expect(crmTypoHits(['danaw@northwindmediass.com'], idx)).toHaveLength(1); // 2 edits
+    expect(crmTypoHits(['danaw@northwindmediasss.com'], idx)).toEqual([]); // 3
+  });
+
+  it('refuses a short domain pair', () => {
+    const idx = buildBridgedNameIndex([
+      bridgedFrom('BHC-07010', {
+        attioRecordId: 's1',
+        name: 'Sam Ko',
+        primaryEmail: 'samko@tnb.co',
+        allEmails: ['samko@tnb.co'],
+      }),
+    ]);
+    expect(crmTypoHits(['samko@tnb.io'], idx)).toEqual([]);
+  });
+
+  it('takes its reference ONLY from bridged records, never from unbridged ones', () => {
+    // An unbridged record is what is under suspicion. Letting one act as the
+    // reference would let a typo vouch for itself.
+    const noBridged = buildBridgedNameIndex([]);
+    expect(crmTypoHits(['chuck@thenewblanks.com'], noBridged)).toEqual([]);
+    const viaDetector = detectDuplicates({
+      unbridged: [
+        contact({
+          attioRecordId: 'u1',
+          name: 'Nina Park',
+          primaryEmail: 'ninap@harborlight.com',
+          allEmails: ['ninap@harborlight.com'],
+        }),
+        contact({
+          attioRecordId: 'u2',
+          name: 'Nina Park',
+          primaryEmail: 'ninap@harborlights.com',
+          allEmails: ['ninap@harborlights.com'],
+        }),
+      ],
+      index: noBridged,
+      suppression: SUPPRESSION,
+    });
+    expect(viaDetector.crmTypoCandidates).toBe(0);
+  });
+
+  it('emits one hit per reference record, not one per address on it', () => {
+    // BHC-02338 carries BOTH `chuck@thenewblank.com` and `chuck@crrnt.co`, so
+    // the same local part lands on the record twice. The first live
+    // measurement emitted Chuck's candidate twice because of it.
+    const hits = crmTypoHits(['chuck@thenewblanks.com'], index());
+    expect(hits).toHaveLength(1);
+    expect(index().byEmailLocalPart.get('chuck')).toHaveLength(1);
+  });
+});
+
 describe('canonicalBhcIdIn', () => {
   it('reads the BHC_ID out of a real ORPHAN CLEARED annotation', () => {
     expect(canonicalBhcIdIn('ORPHAN CLEARED: duplicate of BHC-00293 (Ron Buse, Google_Row 293)')).toBe('BHC-00293');
@@ -429,6 +700,61 @@ describe('detectDuplicates', () => {
     expect(c.confidence).toBe('high');
     expect(c.corroboration.join(' ')).toContain('identical LinkedIn URL');
     expect(c.corroboration.join(' ')).toContain('same Attio company record');
+  });
+
+  it('raises a CRM-ONLY typo as EXCLUDE — no owned domain involved', () => {
+    // ⚠ Every CRM hit in the LIVE population is also an owned-domain hit, so
+    // without a CRM-only fixture the whole second arm could be unwired and
+    // every test would still pass. This is that fixture.
+    const bridgedMarcus = bridgedFrom('BHC-07020', {
+      attioRecordId: 'marcus-bridged',
+      name: 'Marcus Reed',
+      primaryEmail: 'marcus@companyname.com',
+      allEmails: ['marcus@companyname.com'],
+    });
+    const suspect = contact({
+      attioRecordId: 'marcus-typo',
+      name: null, // ⚠ no name: the address evidence has to stand alone
+      primaryEmail: 'marcus@companynames.com',
+      allEmails: ['marcus@companynames.com'],
+    });
+    const result = detect([suspect], [...BRIDGED_ALL, bridgedMarcus]);
+    expect(result.candidates).toHaveLength(1);
+    const c = result.candidates[0]!;
+    expect(c.kind).toBe('exclude-typo-domain');
+    expect(c.ownedDomainTypos).toEqual([]);
+    expect(c.crmTypos).toHaveLength(1);
+    expect(c.crmTypos[0]!.referenceEmail).toBe('marcus@companyname.com');
+    expect(c.cautions.join(' ')).toContain('TYPO OF A KNOWN-GOOD ADDRESS');
+    expect(result.crmTypoBeyondOwned).toBe(1);
+  });
+
+  it('raises a CRM typo as EXCLUDE even when nothing else matches', () => {
+    // A typo record whose name resolves to nothing still has to surface — the
+    // address evidence stands on its own.
+    const nameless = contact({
+      attioRecordId: 'nameless-typo',
+      name: null,
+      primaryEmail: 'chuck@thenewblanks.com',
+      allEmails: ['chuck@thenewblanks.com'],
+    });
+    const result = detect([nameless]);
+    expect(result.candidates).toHaveLength(1);
+    const c = result.candidates[0]!;
+    expect(c.kind).toBe('exclude-typo-domain');
+    expect(c.crmTypos).toHaveLength(1);
+    expect(c.cautions.join(' ')).toContain('TYPO OF A KNOWN-GOOD ADDRESS');
+    expect(c.cautions.join(' ')).toContain('BHC-02338');
+  });
+
+  it('counts the CRM arm separately from the owned-domain arm', () => {
+    // Live 2026-09-04 the two arms found the SAME two records and the CRM arm
+    // found nothing the owned arm missed. Reported as its own number so a
+    // future divergence is visible rather than absorbed into a total.
+    const result = detect([CHUCK_TYPO]);
+    expect(result.ownedTypoCandidates).toBe(1);
+    expect(result.crmTypoCandidates).toBe(1);
+    expect(result.crmTypoBeyondOwned).toBe(0);
   });
 
   it('says nothing about a record with no match of any kind', () => {

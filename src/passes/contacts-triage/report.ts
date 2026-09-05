@@ -229,6 +229,10 @@ export function renderDuplicates(report: TriageReport): string[] {
   out.push(
     `  owned-domain co-location derived from live data: ${d.colocatedDomains.length > 0 ? d.colocatedDomains.join(', ') : '(none)'}`,
   );
+  out.push(
+    `  typo records: ${d.ownedTypoCandidates} against an owned domain · ${d.crmTypoCandidates} against a ` +
+      `known-good CRM address · ${d.crmTypoBeyondOwned} found ONLY by the CRM arm`,
+  );
   if (d.ambiguousBridgedKeys.length > 0) {
     out.push(`  ${d.ambiguousBridgedKeys.length} name(s) held by more than one BRIDGED record — two people can share a name`);
   }

@@ -716,6 +716,106 @@ detection surfaces its findings in the run report and the `#aida` post, and the
 queue-column contract belongs to step 3's card, which is Bobby's to shape. See
 the open questions.
 
+## 21. CRM-as-reference typo detection (2026-09-04)
+
+Item 1 of `docs/typo-variant-addendum.md`. Extends the owned-domain
+`TYPO_DOMAIN` classification from #20. Detection only — no card, no
+merge-and-remove action, nothing company-side.
+
+### The count, which is the deliverable
+
+**ZERO candidates beyond the two the owned-domain arm already found.**
+
+Live, 2026-09-04: 2,510 people · 2,255 bridged · 255 unbridged · 718 distinct
+bridged domains · 2,283 distinct bridged local parts.
+
+| | |
+|---|---|
+| owned-domain arm | 2 records (Chuck, Lana) |
+| CRM-as-reference arm | 2 records (Chuck, Lana) |
+| **found ONLY by the CRM arm** | **0** |
+| at radius ≤1 instead of ≤2 | identical — every hit is a single edit |
+
+The two arms agree completely, by independent routes: the CRM arm never
+consults `OWNED_DOMAINS`, it matches `chuck@thenewblanks.com` against
+`chuck@thenewblank.com` *because that address is on BHC-02338*. That is useful
+cross-validation and no new population. **The addendum §3 card design still
+rests on two records, and the threshold is still not fittable.**
+
+### The asymmetry, and why it is the whole design
+
+```
+same local part + near-miss DOMAIN      → almost certainly a typo
+same DOMAIN + near-miss local part      → almost certainly two people
+```
+
+`jim@acme.com` and `tim@acme.com` are Levenshtein 1 and colleagues. So the
+local part must match **exactly** and only the domain may vary — never the
+reverse, never both at once. This is the same failure mode as `verifyName`: a
+signal that looks symmetric and is not.
+
+Three tests pin it, and they are the point of the file: same-domain near-miss
+local parts produce zero, both-varying-at-once produces zero, and local-part
+normalisation is refused in both directions.
+
+### The guards, and what each is actually for
+
+| Guard | Stops |
+|---|---|
+| exact local part, both sides | the asymmetry itself |
+| the matching address on the reference record, not just the record | a record's *other* address being compared to an unrelated suspect |
+| suspect domain not already on a bridged record | two legitimate near-named client domains flagging each other forever |
+| no generic role local parts | `hello@aarke.com` collides with **ten** bridged records on local part alone |
+| no freemail either side | `gmail.com`/`ymail.com` are one edit apart and different providers |
+| length floor on the pair | `tnb.io` vs `tnb.co` |
+| Levenshtein ≤2 | everything past a plausible slip |
+
+**Reference set is bridged records only.** An unbridged record is what is under
+suspicion; letting one be the reference would let a typo vouch for itself.
+
+**The role guard fires on 0 live records** — `hello@aarke.com` is rejected by
+it, and the distance test would have rejected all ten of its pairs anyway. So
+it is currently unfalsifiable on live data and is proved by fixture instead.
+It stays because `info@company.com` vs `info@companies.com` clears every other
+guard.
+
+**Freemail exclusion is a deliberate trade.** It forgoes real freemail typos
+(`john@gmai.com` for `john@gmail.com`) to avoid cross-provider collisions on
+common local parts in namespaces with millions of users. On a population of
+two, the conservative side is right. Revisit if a real one appears.
+
+### A bug the measurement caught that reading would not have
+
+The first live run reported **3 hits for 2 records**. BHC-02338 carries both
+`chuck@thenewblank.com` and `chuck@crrnt.co` — the same local part at two
+domains — so the record was pushed into the `chuck` bucket twice and emitted
+its candidate twice. Fixed with a per-side `localsSeen` set, pinned by a test.
+
+**This is the argument for reporting the count before building the card.** The
+number was wrong by 50% and nothing in the code read as wrong.
+
+### Mutation checks — 21 run, 6 survived the first pass, all now caught
+
+Same failure as #20 and worse: **four of the six were paired guards masking
+each other.**
+
+| Survivor | Why | Fix |
+|---|---|---|
+| exact local part on the inner loop | no fixture had a reference record whose *other* address was near the suspect domain | added one |
+| index-side local-part derivation | the inner exact check rejected the case anyway | added a hyphenated local part (`mary-jane@`) that must still MATCH — mutating the index now causes a missed hit, not a false one |
+| `referenceDomain === domain` | unreachable: the known-good-domain guard rejects it first | **deleted**, with a comment saying why it reads like it belongs |
+| `referenceDomain === ''` | unreachable: `Math.min(_, 0)` is below the length floor | **deleted** |
+| freemail, suspect side | the reference-side check covered it | split into two tests, one isolating each side |
+| freemail, reference side | the suspect-side check covered it | as above |
+| CRM typo → `exclude` kind, and surfacing with no name match | **every live CRM hit is also an owned hit**, so the entire arm could have been unwired and every test still passed | added a CRM-only fixture (`marcus@companynames.com`) with a null name |
+
+That last one is the one worth remembering: **a second detector that only ever
+fires where the first one already fired cannot be tested by live data.** It
+needed a fixture that live data does not contain.
+
+All 21 caught. The six step-2 guards were re-run against the changed file and
+all still hold.
+
 ## Open questions for Bobby
 
 1. **BLOCKING — grant the Emails scope** to the bhc-routines Attio API key
@@ -742,7 +842,13 @@ the open questions.
    will keep excluding those records, and every future one, until the rule is
    removed. Removing it is a behaviour change to who gets queued and scored,
    not a detection change, so it was not made here.
-9. **Where does a duplicate candidate surface?** (#20) The spec says
+9. **Correct the addendum's account of what shipped** (#21) — §1 says the
+   owned-domain radius is ≤2 and that `hougham.us` is an owned domain. It is
+   ≤1, and `OWNED_DOMAINS` holds `thenewblank.com` only. A correction note is
+   in the addendum. Adding `hougham.us` at the domain level would also change
+   `isInternalDomain` and therefore who gets hard-excluded, so it is a decision
+   rather than a typo fix.
+10. **Where does a duplicate candidate surface?** (#20) The spec says
    `Contacts_Triage_Queue`, and the queue is one row per unbridged record,
    which fits. But 16 of the 18 candidates have no queue row today because
    suppression or a hard exclude removed them — so surfacing them means either

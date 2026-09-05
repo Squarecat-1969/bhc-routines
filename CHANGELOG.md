@@ -2,6 +2,37 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-09-04 — Typo addendum item 1: CRM-as-reference typo detection
+
+- **`crmTypoHits` in `src/passes/contacts-triage/duplicates.ts`.** Flags an
+  unbridged address whose local part matches a bridged one EXACTLY and whose
+  domain is within Levenshtein 2 of that bridged address's domain. The CRM
+  supplies the ground truth an external domain otherwise lacks.
+- **It surfaces ZERO records beyond the owned-domain arm's two.** Live: 2,510
+  people, 2,255 bridged, 718 bridged domains. Both arms find Chuck and Lana and
+  nothing else; the CRM arm reaches them without consulting `OWNED_DOMAINS`.
+  Radius ≤1 and ≤2 give identical results. The population did not change shape.
+- ⚠ **The signal is asymmetric and the tests say so explicitly.** Same local
+  part + near-miss domain is a typo; same domain + near-miss local part is two
+  colleagues (`jim@` / `tim@acme.com`). Local-part variance is refused in both
+  directions, and "both varying at once" produces zero.
+- Guards: exact local part on both sides, the matching address rather than the
+  record, suspect domain must be unknown to the CRM, no generic role local
+  parts, no freemail either side, length floor, distance ≤2. Reference set is
+  bridged records only — an unbridged record must never vouch for itself.
+- **Bug found by measuring, not reading:** the first run reported 3 hits for 2
+  records. BHC-02338 carries `chuck@thenewblank.com` and `chuck@crrnt.co`, so
+  it entered the `chuck` bucket twice. Fixed and pinned.
+- **21 mutation checks; 6 survived the first pass**, four of them paired guards
+  masking each other and two because every live CRM hit is also an owned hit —
+  the whole arm could have been unwired unnoticed. Two dead guards deleted,
+  fixtures added, all 21 now caught.
+- Corrects `docs/typo-variant-addendum.md` §1 on what `f6b3319` shipped: the
+  owned radius is ≤1, not ≤2, and `OWNED_DOMAINS` holds `thenewblank.com` only.
+- Not built, deliberately: the card, merge-and-remove, company-orphan warnings,
+  company sizing (items 2-4). `npm run typecheck` clean, 1,274 tests pass.
+
+
 ## 2026-09-04 — Attio bridging step 2: duplicate candidate detection (contacts-triage STEP 1c)
 
 - **New: `src/passes/contacts-triage/duplicates.ts`.** Detects unbridged Attio
