@@ -34,6 +34,7 @@
     "late-edition": "tsx src/cli/run-late-edition.ts",
     "late-edition:dry": "tsx src/cli/run-late-edition.ts --dry-run",
     "late-edition:live": "tsx src/cli/run-late-edition.ts --live",
+    "contacts-mint:dry": "tsx src/cli/run-contacts-mint.ts",
     "contacts-triage": "tsx src/cli/run-contacts-triage.ts",
     "contacts-triage:dry": "tsx src/cli/run-contacts-triage.ts --dry-run",
     "contacts-triage:live": "tsx src/cli/run-contacts-triage.ts --live",
