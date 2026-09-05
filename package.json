@@ -56,7 +56,9 @@
     "part-d": "tsx src/cli/run-part-d.ts",
     "part-d:dry": "tsx src/cli/run-part-d.ts --dry-run",
     "part-d:live": "tsx src/cli/run-part-d.ts --live",
-    "inspect:activity-log": "tsx src/cli/inspect-activity-log.ts"
+    "inspect:activity-log": "tsx src/cli/inspect-activity-log.ts",
+    "index": "tsx src/cli/run-index-maintenance.ts",
+    "index:dry": "tsx src/cli/run-index-maintenance.ts --dry-run"
   },
   "dependencies": {
     "dotenv": "^17.4.2",

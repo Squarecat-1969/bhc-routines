@@ -16,6 +16,7 @@ const EnvSchema = z.object({
   FATHOM_API_KEY: z.string().min(1).optional(),
   RUN_TIMEZONE: z.string().min(1).default('UTC'),
   SHEETS_PROXY_URL: z.string().url().default('https://aida.hougham.us/api/brain/sheets'),
+  DOCS_PROXY_URL: z.string().url().default('https://aida.hougham.us/api/brain/docs'),
   ATTIO_API_BASE: z.string().url().default('https://api.attio.com/v2'),
   FATHOM_API_BASE: z.string().url().optional(),
 });
@@ -37,6 +38,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     FATHOM_API_BASE: blankToUndefined(source.FATHOM_API_BASE),
     RUN_TIMEZONE: blankToUndefined(source.RUN_TIMEZONE),
     SHEETS_PROXY_URL: blankToUndefined(source.SHEETS_PROXY_URL),
+    DOCS_PROXY_URL: blankToUndefined(source.DOCS_PROXY_URL),
     ATTIO_API_BASE: blankToUndefined(source.ATTIO_API_BASE),
   });
 

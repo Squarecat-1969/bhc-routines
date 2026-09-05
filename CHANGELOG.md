@@ -2,6 +2,32 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-09-05 — Index maintenance routine built; first live run indexes September
+
+- **New: `src/lib/docs.ts` and `src/passes/index-maintenance/`.** Keeps the
+  keyword index's COVERAGE current — its links were fixed on 2026-08-30, its
+  coverage was not. Deterministic TypeScript plus one narrow LLM call per
+  entry, watermarked against the index itself.
+- ⚠ **NOTHING IS ESCAPED, and the brief said to escape everything.** Dev log
+  §105 and the live health endpoint both state the route writes literal bytes
+  and never renders markdown, so escaping would store `bhc\_contact\_id`.
+  §098's rule applies to MARKDOWN writes. The run aborts if that health note
+  ever stops saying so. Full disagreement list in `docs/index-maintenance-notes.md` §1.
+- ⚠ **The live index has FOUR term-header shapes, and a TRAILING SPACE on
+  high-frequency ones.** Anchoring on `$` silently missed 481 of 640 headers —
+  which would have re-proposed the entire controlled vocabulary as new.
+- ⚠ **Two defects found by running, not reading:** an anchor that is not unique
+  (one entry's reference line is byte-identical under every term in a tab)
+  skipped 38 of 150 live writes, failing closed; and a count computed as a
+  delta left eight terms overstated when those inserts failed. Anchors are now
+  shortest-unique spans over a simulated post-write tab; counts are derived
+  from the reference list that will exist; capped counts are not bumped at all
+  because a capped bump cannot be idempotent. Twelve inflated headers restored.
+- 22 mutation checks, all caught. `npm run index:dry` · `--source september` ·
+  `--ignore-watermark` for recovery.
+- Not built: Plan indexing (the Plan has no §-entries), the 68-entry backlog,
+  the schedule.
+
 ## 2026-09-04 — Step 3 Part A: duplicate candidates written to Contacts_Triage_Queue
 
 - **`Contacts_Triage_Queue` widened 24 -> 45 columns (A-X unchanged, Y-AS
