@@ -816,6 +816,142 @@ needed a fixture that live data does not contain.
 All 21 caught. The six step-2 guards were re-run against the changed file and
 all still hold.
 
+## 22. STEP 3 PART A — writing the duplicate candidates (2026-09-04)
+
+Part A of `docs/attio-bridging-step3-brief.md`. The queue write step 2 had been
+holding back. The card (Part B, `bhc-aida`) is not built.
+
+### The live schema, read before anything was designed
+
+`Contacts_Triage_Queue!A1:AZ1` → **width 24**, A-X, matching `QUEUE_HEADER`
+exactly. 97 data rows, **all `status: processed`**, all dated 2026-08-09. Three
+rows were 23 cells wide (Sheets truncates trailing blanks). Nothing was
+inferred from a spec.
+
+Widened to **45 columns, A-AS**: the triage half A-X untouched, 21 duplicate
+columns appended Y-AS. Appended, never inserted — Aida reads positionally.
+
+### ⚠ The count is 18, not 9
+
+The brief's §0 says *"Nine cards"* — 7 exact-name candidates and 2
+`TYPO_DOMAIN`. Measured against the same population on the same day, both
+halves of that are wrong:
+
+| | brief | measured |
+|---|---|---|
+| exact-name records matching a bridged record | 7 | **7** ✓ |
+| ...of which reclassified `TYPO_DOMAIN` | (counted separately) | **2 of the 7** |
+| `merge-into-bridged` after that reclassification | — | **5** |
+| `consolidate-unbridged` (2+ unbridged, one name) | not counted | **11** |
+| **distinct records with a duplicate question** | 9 | **18** |
+| confidence of the exact-name set | 4 MED / 3 LOW / 0 HIGH | 1 MED / 4 LOW (merge-into-bridged), 2 HIGH (typo) |
+
+Two independent errors. The `7 + 2 = 9` **double-counts**: the two typo records
+ARE two of the seven name hits, so adding them makes nine out of seven. And the
+`consolidate-unbridged` arm — added in #20, reported then, and the arm that
+carries **Raymond Yang**, whose two records are both unbridged — is absent from
+the brief's accounting entirely.
+
+**All 18 were written.** Writing nine would have meant silently dropping nine
+real candidates, including both Raymond records.
+
+### ⚠ `dropped_second_bhc_id` fires on ZERO records
+
+The brief says *"Two of the four real candidates are in that state"* (both
+sides bridged). Measured: **none of the 18**. The subject of every candidate is
+unbridged by construction, so the field can only populate when a candidate
+names TWO OR MORE bridged records. Four name keys in the workspace are held by
+two bridged records each, but none of them belongs to a candidate.
+
+Implemented anyway, because the state is reachable and the data loss is silent
+when it happens. Pinned by a test that constructs the two-bridged case.
+
+### ⚠ The duplicate question needs its OWN status column
+
+The brief says *"skipUntil and status already exist on this tab — use them."*
+The MECHANISM is reused exactly — same vocabulary, same preserve-a-decision
+rule, same expiry check. The COLUMN is not, and the reason is measured:
+
+**2 of the 18 candidates already carried `status: processed`** from the
+2026-08-09 triage run — Chuck Granade and `"Le"`. On a shared column the merge
+would (correctly) preserve those rows byte for byte and **their duplicate
+question would never be asked at all.** Chuck is a HIGH-confidence typo record
+and the flagship case of the whole addendum.
+
+`status` (S) answers *"should this become a contact?"*. `duplicate_status` (Y)
+answers *"is this the same person as one we already have?"*. Sharing one column
+means answering either silently answers the other — the identical conflation
+step 2 found in `Contact_Exclusions`, and putting it in a second place would
+not have made it true.
+
+### A candidate is written even when the record is suppressed
+
+**16 of the 18 are suppressed or hard-excluded.** `mergeQueue` previously
+dropped those rows outright, which would have confined duplicate detection to
+records nobody has ruled on — not where the duplicates are. Two new merge
+outcomes:
+
+- `duplicate-only` (15 live) — no queue row existed; one is created carrying
+  **blank** `keeper_probability`, `column` and `status`, so it appears in no
+  triage bucket and answers no triage question.
+- `kept-for-duplicate` — a row existed and the record is now excluded. If its
+  triage status was a real DECISION it is preserved byte for byte (Chuck's
+  `processed`); if it was merely `pending`, the triage half is **neutralised**,
+  because re-emitting a pending card for an excluded contact is precisely the
+  stale card the drop existed to remove. That defect appeared on the first test
+  run and is now pinned in both directions.
+
+A candidate that becomes BRIDGED is still dropped — acquiring a
+`bhc_contact_id` IS the answer to the question.
+
+### The pre-blank gate, which `writeQueue`'s own comment demanded
+
+`writeQueue` carried a comment naming the condition under which its
+write-then-blank needed a gate: *"the queue stops being rebuilt from scratch
+each run … anything that makes a row's only copy live here."* `duplicate_status`
+is exactly that — a human's answer that exists nowhere else and cannot be
+recomputed from Attio or Master_ID. So the survivors are now **confirmed
+present before the tail is erased**, and the run aborts with the tail intact if
+they are not. Prevention, not detection-after-the-fact.
+
+### Confirmed writes, never intended
+
+`verifyWrite` now re-reads the classification column per row and counts only
+rows where the **read-back** matches what was sent. Checking column A alone
+would have confirmed the row and said nothing about the 21 columns that are the
+entire point. A fake-backend mode that stores a row while silently dropping its
+duplicate half proves the counter reports 0 rather than 18 when that happens.
+
+### Live results
+
+| | |
+|---|---|
+| run 1 | 45 rows written, survivor write confirmed, 52 trailing blanked, **18 duplicate questions CONFIRMED by read-back** |
+| run 2 (idempotency) | 18 `duplicate-refreshed`, **45 of 45 rows byte-identical**, nothing re-raised |
+| resolve one | `duplicate_status` → `resolved_delete` on Chuck Granade |
+| run 3 (dismissal) | 17 refreshed, **1 `duplicate-preserved-decision`**, 45 of 45 byte-identical, `resolved_delete` intact |
+
+Written: `DUPLICATE_CANDIDATE` 16, `TYPO_DOMAIN` 2 · high 2, medium 5, low 11 ·
+`consolidate-unbridged` 11, `merge-into-bridged` 5, `exclude-typo-domain` 2.
+
+One caveat stated plainly: a **pending** row regenerates
+`duplicate_last_detected` each run, so on a different day those cells move.
+That is a pending question being re-detected, not re-asked — its status stays
+`pending` and nothing else changes. A **resolved** row re-emits its own cells
+including `last_detected`, so it is byte-identical across days.
+
+### Mutation checks — 22 run, 3 survived the first pass
+
+| Survivor | Why | Fix |
+|---|---|---|
+| `duplicateRowsWritten` counts only rows with a question | no fixture mixed a row with a question and one without | added the mixed tab |
+| the pre-blank gate | nothing simulated a survivor write that does not land | added `triageQueueIgnoreDataWrites` to the fake backend |
+| confirmed-not-intended counting | nothing simulated a 200 that stores less than it was sent | added `triageQueueDropDuplicateHalfOnWrite` |
+
+All three were in the counting and safety path — the area the brief names
+("seven counters were found reporting attempts rather than results"). None was
+findable by review; all three needed the harness to be able to lie.
+
 ## Open questions for Bobby
 
 1. **BLOCKING — grant the Emails scope** to the bhc-routines Attio API key
@@ -848,7 +984,13 @@ all still hold.
    in the addendum. Adding `hougham.us` at the domain level would also change
    `isInternalDomain` and therefore who gets hard-excluded, so it is a decision
    rather than a typo fix.
-10. **Where does a duplicate candidate surface?** (#20) The spec says
+10. **RESOLVED by #22** — duplicate candidates surface in
+   `Contacts_Triage_Queue` columns Y-AS, with their own `duplicate_status`.
+11. **The brief's "nine cards" is 18** (#22). Two counting errors: `7 + 2`
+   double-counts the typo records, and the `consolidate-unbridged` arm is
+   missing. Part B should be built for 18, and for the fact that 11 of them are
+   low-confidence noise (Bobby's own addresses, CalendarBridge, MOHAI).
+12. **Where does a duplicate candidate surface?** (#20) The spec says
    `Contacts_Triage_Queue`, and the queue is one row per unbridged record,
    which fits. But 16 of the 18 candidates have no queue row today because
    suppression or a hard exclude removed them — so surfacing them means either

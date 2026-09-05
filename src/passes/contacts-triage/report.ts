@@ -172,6 +172,21 @@ export function renderReport(report: TriageReport): string {
   }
   out.push(`  rows ${report.dryRun ? 'that would be written' : 'written'}: ${report.queueRowsWritten}`);
   out.push(`  Contact_Exclusions rows ${report.dryRun ? 'that would be appended' : 'appended'}: ${report.exclusionsAppended}`);
+  out.push('');
+  out.push('  DUPLICATE HALF (columns Y-AS)');
+  for (const [action, n] of Object.entries(report.duplicateMergeCounts)) {
+    if (n > 0) out.push(`  ${String(n).padStart(4, ' ')}  ${action}`);
+  }
+  out.push(`  rows carrying a duplicate question (staged) : ${report.duplicateRowsStaged}`);
+  if (!report.dryRun) {
+    // CONFIRMED by re-reading the tab, never the count we intended to write.
+    out.push(`  ...CONFIRMED by read-back                   : ${report.confirmedDuplicateRows}`);
+    if (report.confirmedDuplicateRows !== report.duplicateRowsStaged) {
+      out.push(
+        `  ⚠ ${report.duplicateRowsStaged - report.confirmedDuplicateRows} duplicate row(s) did NOT confirm — the card would render fewer than detected.`,
+      );
+    }
+  }
   if (report.readBackVerified !== null) {
     out.push(`  read-back: ${report.readBackVerified ? 'VERIFIED' : 'FAILED'} — ${report.readBackDetail}`);
   }

@@ -2,6 +2,46 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-09-04 — Step 3 Part A: duplicate candidates written to Contacts_Triage_Queue
+
+- **`Contacts_Triage_Queue` widened 24 -> 45 columns (A-X unchanged, Y-AS
+  appended).** Live schema read first: width 24, 97 rows, all `processed`.
+  Nothing inferred from a spec.
+- **18 duplicate candidates written and CONFIRMED by read-back**, not 9. The
+  brief's "seven exact-name + two TYPO_DOMAIN" double-counts (the two typo
+  records ARE two of the seven) and omits the `consolidate-unbridged` arm
+  entirely — 11 records, including both Raymond Yang records, which are the
+  only arm that finds him because neither of his records is bridged.
+  Written: `DUPLICATE_CANDIDATE` 16, `TYPO_DOMAIN` 2; high 2, medium 5, low 11.
+- ⚠ **The duplicate question gets its OWN status column.** 2 of the 18
+  candidates already carried `status: processed` from the 2026-08-09 triage
+  run — one of them Chuck Granade, the flagship typo case — so on a shared
+  column their duplicate question would never have been asked. The mechanism
+  (`skipUntil`/`status` semantics) is reused exactly; the column is not.
+- ⚠ **A candidate is written even when the record is suppressed** — 16 of 18
+  are. New merge outcomes `duplicate-only` and `kept-for-duplicate`. A
+  duplicate-only row carries blank `column`/`status`/`keeper_probability` so it
+  never appears as a triage card, and a `pending` triage half on a
+  now-excluded record is neutralised rather than re-emitted.
+- ⚠ **`dropped_second_bhc_id` fires on ZERO records**, not the two the brief
+  expects. Implemented and tested anyway — the state is reachable and the data
+  loss is silent.
+- **The pre-blank gate `writeQueue`'s own comment demanded.** `duplicate_status`
+  is a human answer that exists nowhere else, which is the named condition
+  under which write-then-blank needed a gate. Survivors are now confirmed
+  present before the tail is erased; the run aborts with the tail intact if not.
+- **Confirmed writes, never intended.** `verifyWrite` re-reads the
+  classification per row and counts only what came back.
+- **Live: 45 rows written · 18 confirmed · re-run 45/45 byte-identical, nothing
+  re-raised · one resolved to `resolved_delete`, re-run preserved it and left
+  45/45 byte-identical.**
+- **22 mutation checks, 3 survived the first pass** — all in the counting and
+  safety path; the fake backend gained the ability to drop a duplicate half and
+  to ignore a data write so they could be caught.
+- Corrects the step 3 brief §0 and §5.4. Not built: the card (Part B), the
+  company-orphan warning, company sizing. `npm run typecheck` clean, 1,301 tests.
+
+
 ## 2026-09-04 — Typo addendum item 1: CRM-as-reference typo detection
 
 - **`crmTypoHits` in `src/passes/contacts-triage/duplicates.ts`.** Flags an

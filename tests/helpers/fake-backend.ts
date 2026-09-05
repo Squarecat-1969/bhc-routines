@@ -12,7 +12,12 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 
 import { RANGES } from '../../src/config/constants.js';
-import { EXCLUSIONS_HEADER, QUEUE_HEADER, TRIAGE_RANGES } from '../../src/config/triage-constants.js';
+import {
+  EXCLUSIONS_HEADER,
+  QUEUE_HEADER,
+  TRIAGE_COLUMNS,
+  TRIAGE_RANGES,
+} from '../../src/config/triage-constants.js';
 
 export interface FakePerson {
   name?: string;
@@ -96,6 +101,20 @@ export interface FakeBackendConfig {
   triageExclusions?: unknown[][];
   /** Simulate the Contacts_Triage_Queue tab not existing (its header read fails). */
   triageQueueTabMissing?: boolean;
+  /**
+   * Simulate a PARTIAL queue write: the row lands but the duplicate half
+   * (columns Y-AS) is silently dropped. This is the failure the confirmed
+   * count exists to catch — a write that returns 200 and stores less than it
+   * was sent — and without it the "confirmed, not intended" claim is untested.
+   */
+  triageQueueDropDuplicateHalfOnWrite?: boolean;
+  /**
+   * Simulate the survivor block failing to land at all: the stored rows keep
+   * their OLD ids. This is what the pre-blank gate exists to detect, and it is
+   * the scenario in which blanking the tail destroys the only copy of a
+   * human's duplicate answer.
+   */
+  triageQueueIgnoreDataWrites?: boolean;
   /** Simulate the Contact_Exclusions tab not existing. */
   triageExclusionsTabMissing?: boolean;
   /** Return a header row that doesn't match QUEUE_HEADER — the shape-contract guard. */
@@ -437,10 +456,15 @@ export class FakeBackend {
             // Header write on a brand-new tab — not part of the data block.
             this.config.triageQueueHeaderEmpty = false;
           } else {
-            newRows.forEach((row, i) => {
-              store[parsed.startRow - 2 + i] = row;
-            });
-            this.config.triageQueue = store;
+            if (!this.config.triageQueueIgnoreDataWrites) {
+              newRows.forEach((row, i) => {
+                const stored = this.config.triageQueueDropDuplicateHalfOnWrite
+                  ? row.slice(0, TRIAGE_COLUMNS)
+                  : row;
+                store[parsed.startRow - 2 + i] = stored;
+              });
+              this.config.triageQueue = store;
+            }
           }
         }
         return send(200, {});

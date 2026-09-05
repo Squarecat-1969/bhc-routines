@@ -222,7 +222,11 @@ export type MergeAction =
   | 'reactivated-new-evidence'
   | 'dropped-bridged'
   | 'dropped-excluded'
-  | 'kept-unseen';
+  | 'kept-unseen'
+  /** Excluded from triage, kept solely to carry a duplicate question. */
+  | 'kept-for-duplicate'
+  /** No triage row at all — the row exists only for the duplicate question. */
+  | 'duplicate-only';
 
 export interface MergedRow {
   readonly attioRecordId: string;
@@ -306,6 +310,14 @@ export interface TriageReport {
   readonly merged: readonly MergedRow[];
   readonly mergeCounts: Readonly<Record<MergeAction, number>>;
   readonly queueRowsWritten: number;
+  /** Rows the merge decided carry a live duplicate question. */
+  readonly duplicateRowsStaged: number;
+  /**
+   * Rows whose duplicate classification was CONFIRMED by re-reading the tab.
+   * Never the intended count — see verifyWrite.
+   */
+  readonly confirmedDuplicateRows: number;
+  readonly duplicateMergeCounts: Readonly<Record<string, number>>;
   readonly exclusionsAppended: number;
   readonly readBackVerified: boolean | null;
   readonly readBackDetail: string;

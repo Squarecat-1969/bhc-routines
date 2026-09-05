@@ -32,8 +32,22 @@ export function columnLetter(index: number): string {
   return out;
 }
 
-/** Contacts_Triage_Queue is 24 columns, A-X. See QUEUE_HEADER for the order. */
-export const QUEUE_COLUMNS = 24;
+/**
+ * The TRIAGE half of Contacts_Triage_Queue: 24 columns, A-X. Verified against
+ * the live tab 2026-09-04 — header width 24, 97 data rows.
+ */
+export const TRIAGE_COLUMNS = 24;
+
+/**
+ * The DUPLICATE half, appended 2026-09-04 for step 3 Part A: 21 columns, Y-AS.
+ *
+ * ⚠ APPENDED, NEVER INSERTED. Aida reads this tab positionally, so A-X keep
+ * their meanings byte for byte and every existing row simply gains blanks.
+ */
+export const DUPLICATE_COLUMNS = 21;
+
+/** Contacts_Triage_Queue is 45 columns, A-AS. See QUEUE_HEADER for the order. */
+export const QUEUE_COLUMNS = TRIAGE_COLUMNS + DUPLICATE_COLUMNS;
 
 /**
  * ALWAYS derive a write range's end column from QUEUE_COLUMNS — never hardcode
@@ -51,9 +65,9 @@ export const QUEUE_LAST_COLUMN = columnLetter(QUEUE_COLUMNS);
 export const EXCLUSIONS_COLUMNS = 7;
 
 export const TRIAGE_RANGES = {
-  queueHeader: 'Contacts_Triage_Queue!A1:X1',
-  queueData: 'Contacts_Triage_Queue!A2:X',
-  queueWrite: 'Contacts_Triage_Queue!A2:X',
+  queueHeader: `Contacts_Triage_Queue!A1:${QUEUE_LAST_COLUMN}1`,
+  queueData: `Contacts_Triage_Queue!A2:${QUEUE_LAST_COLUMN}`,
+  queueWrite: `Contacts_Triage_Queue!A2:${QUEUE_LAST_COLUMN}`,
   exclusionsHeader: 'Contact_Exclusions!A1:G1',
   exclusionsData: 'Contact_Exclusions!A2:G',
   exclusionsAppend: 'Contact_Exclusions!A2:G',
@@ -110,6 +124,40 @@ export const QUEUE_HEADER = [
   // Appended, never inserted — Aida reads this tab positionally.
   'provenance_source',
   'connection_strength',
+
+  // --- STEP 1c duplicate candidates. Appended 2026-09-04 (step 3 Part A). ---
+  //
+  // ⚠ THE DUPLICATE QUESTION HAS ITS OWN STATUS, AND IT HAS TO.
+  //
+  // `status` (S) answers "should this record become a contact?". The duplicate
+  // question is "is this record the same person as one we already have?" —
+  // a different question with a different answer. Measured live 2026-09-04:
+  // 2 of the 18 candidates ALREADY carry `status: processed` from the
+  // 2026-08-09 triage run, and one of them is Chuck Granade, a HIGH-confidence
+  // typo record and the flagship case of the whole addendum. Sharing column S
+  // would mean his duplicate question is never asked, and would mean answering
+  // either question silently answers the other. See docs/contacts-triage-notes.md #22.
+  'duplicate_status',
+  'duplicate_skip_until',
+  'duplicate_classification',
+  'duplicate_kind',
+  'duplicate_confidence',
+  'duplicate_match_record_ids',
+  'duplicate_match_bhc_ids',
+  'dropped_second_bhc_id',
+  'duplicate_repoint_to',
+  'duplicate_reference_email',
+  'duplicate_corroboration',
+  'duplicate_distinguishing',
+  'duplicate_cautions',
+  'duplicate_proposed_action',
+  'duplicate_subject_url',
+  'duplicate_match_urls',
+  'duplicate_first_interaction',
+  'duplicate_last_interaction',
+  'duplicate_strength',
+  'duplicate_first_seen',
+  'duplicate_last_detected',
 ] as const;
 
 export const EXCLUSIONS_HEADER = [
@@ -149,6 +197,45 @@ export const QUEUE_COLS = {
   provenanceSource: 22,
   connectionStrength: 23,
 } as const;
+
+/** 0-based indices into the DUPLICATE half of a Contacts_Triage_Queue row. */
+export const DUP_COLS = {
+  status: 24,
+  skipUntil: 25,
+  classification: 26,
+  kind: 27,
+  confidence: 28,
+  matchRecordIds: 29,
+  matchBhcIds: 30,
+  droppedSecondBhcId: 31,
+  repointTo: 32,
+  referenceEmail: 33,
+  corroboration: 34,
+  distinguishing: 35,
+  cautions: 36,
+  proposedAction: 37,
+  subjectUrl: 38,
+  matchUrls: 39,
+  firstInteraction: 40,
+  lastInteraction: 41,
+  strength: 42,
+  firstSeen: 43,
+  lastDetected: 44,
+} as const;
+
+/**
+ * The two classifications the card branches on. `TYPO_DOMAIN` gets a different
+ * card with two actions and a delete default; `DUPLICATE_CANDIDATE` gets four.
+ */
+export const DUPLICATE_CLASSIFICATIONS = ['DUPLICATE_CANDIDATE', 'TYPO_DOMAIN'] as const;
+export type DuplicateClassification = (typeof DUPLICATE_CLASSIFICATIONS)[number];
+
+/**
+ * How long a skipped duplicate question stays quiet. Only relevant if Aida
+ * ever writes `duplicate_status: skipped`; a resolved decision is preserved
+ * forever and never needs a window.
+ */
+export const DUPLICATE_SKIP_DAYS = 30;
 
 /** 0-based column indices into a Contact_Exclusions row. */
 export const EXCLUSIONS_COLS = {

@@ -9,7 +9,14 @@
  * decidable — both named explicitly in STEP 6.
  */
 
-import { QUEUE_COLS, QUEUE_COLUMNS } from '../../config/triage-constants.js';
+import { DUP_COLS, QUEUE_COLS, QUEUE_COLUMNS } from '../../config/triage-constants.js';
+import {
+  duplicateOnlyTriageCells,
+  mergeDuplicateCells,
+  readDuplicateState,
+  type DuplicateMergeAction,
+} from './duplicate-queue.js';
+import type { DuplicateCandidate } from './duplicates.js';
 import { isCivilDate, isSameOrBefore, type CivilDate } from '../../lib/dates.js';
 import { cell, type SheetRow } from '../../lib/sheets.js';
 import { bandFor } from './score.js';
@@ -25,6 +32,11 @@ import type {
 
 const BOOL = (v: boolean): string => (v ? 'TRUE' : 'FALSE');
 
+/**
+ * The TRIAGE half of a row, padded to the full width. The duplicate half (Y-AS)
+ * is left blank here and filled in by `mergeQueue`, which is the only thing
+ * that knows what a row's duplicate question already said.
+ */
 export function serializeQueueRow(row: QueueRow): unknown[] {
   const cells = new Array<unknown>(QUEUE_COLUMNS).fill('');
   cells[QUEUE_COLS.attioRecordId] = row.attioRecordId;
@@ -145,14 +157,35 @@ export interface MergeInput {
   readonly bridgedIds: ReadonlySet<string>;
   /** Record IDs in Contact_Exclusions, or hard-excluded this run. */
   readonly excludedIds: ReadonlySet<string>;
+  /**
+   * STEP 1c candidates, keyed by the subject's Attio record id.
+   *
+   * ⚠ A RECORD WITH A CANDIDATE IS NEVER DROPPED BY `excludedIds`. 16 of the
+   * 18 live candidates are suppressed or hard-excluded, and dropping them
+   * would mean the duplicate question can only ever be asked about records
+   * nobody has ruled on — which is not the population that has duplicates.
+   */
+  readonly duplicates?: ReadonlyMap<string, DuplicateCandidate>;
   readonly today: CivilDate;
 }
 
 export interface MergeResult {
   readonly rows: readonly MergedRow[];
   readonly counts: Record<MergeAction, number>;
+  readonly duplicateCounts: Record<DuplicateMergeAction, number>;
+  /** Rows carrying a live duplicate question — what the card will render. */
+  readonly duplicateRowsWritten: number;
   readonly warnings: readonly string[];
 }
+
+const EMPTY_DUPLICATE_COUNTS = (): Record<DuplicateMergeAction, number> => ({
+  'duplicate-new': 0,
+  'duplicate-refreshed': 0,
+  'duplicate-preserved-decision': 0,
+  'duplicate-preserved-skip': 0,
+  'duplicate-reactivated-skip-expired': 0,
+  'duplicate-cleared': 0,
+});
 
 const EMPTY_COUNTS = (): Record<MergeAction, number> => ({
   new: 0,
@@ -164,16 +197,54 @@ const EMPTY_COUNTS = (): Record<MergeAction, number> => ({
   'dropped-bridged': 0,
   'dropped-excluded': 0,
   'kept-unseen': 0,
+  'kept-for-duplicate': 0,
+  'duplicate-only': 0,
 });
+
+/**
+ * Identity only. Everything the triage UI keys on — `keeper_probability`,
+ * `column`, `status`, the score and the reason — is cleared, so the row is
+ * inert as a triage card while still carrying its duplicate half.
+ */
+function neutralisedTriageCells(cells: readonly unknown[]): unknown[] {
+  const out = new Array<unknown>(DUP_COLS.status).fill('');
+  out[QUEUE_COLS.attioRecordId] = cells[QUEUE_COLS.attioRecordId] ?? '';
+  out[QUEUE_COLS.name] = cells[QUEUE_COLS.name] ?? '';
+  out[QUEUE_COLS.primaryEmail] = cells[QUEUE_COLS.primaryEmail] ?? '';
+  out[QUEUE_COLS.company] = cells[QUEUE_COLS.company] ?? '';
+  return out;
+}
 
 export function mergeQueue(input: MergeInput): MergeResult {
   const { scored, existing, bridgedIds, excludedIds, today } = input;
+  const duplicates = input.duplicates ?? new Map<string, DuplicateCandidate>();
   const counts = EMPTY_COUNTS();
+  const duplicateCounts = EMPTY_DUPLICATE_COUNTS();
   const warnings: string[] = [];
   const rows: MergedRow[] = [];
+  let duplicateRowsWritten = 0;
 
   const existingById = new Map(existing.map((e) => [e.attioRecordId, e]));
   const scoredById = new Map(scored.map((s) => [s.contact.attioRecordId, s]));
+
+  /**
+   * Attach the duplicate half to a triage row. The triage cells arrive already
+   * decided — new, rescored, or preserved byte for byte — and are never
+   * rewritten here; only Y-AS are.
+   */
+  const withDuplicate = (id: string, triageCells: readonly unknown[]): unknown[] => {
+    const prior = existingById.get(id);
+    const outcome = mergeDuplicateCells(
+      duplicates.get(id) ?? null,
+      prior ? readDuplicateState(prior.cells as SheetRow) : null,
+      today,
+    );
+    duplicateCounts[outcome.action] += 1;
+    if (outcome.warning) warnings.push(outcome.warning);
+    const cells = [...triageCells.slice(0, DUP_COLS.status), ...outcome.cells];
+    if (String(cells[DUP_COLS.classification] ?? '') !== '') duplicateRowsWritten += 1;
+    return cells;
+  };
 
   const emit = (
     attioRecordId: string,
@@ -183,7 +254,13 @@ export function mergeQueue(input: MergeInput): MergeResult {
     keeperProbability: number,
   ): void => {
     counts[action] += 1;
-    rows.push({ attioRecordId, action, cells, column, keeperProbability });
+    rows.push({
+      attioRecordId,
+      action,
+      cells: cells === null ? null : withDuplicate(attioRecordId, cells),
+      column,
+      keeperProbability,
+    });
   };
 
   // --- Contacts scored this run.
@@ -235,12 +312,54 @@ export function mergeQueue(input: MergeInput): MergeResult {
   for (const prior of existing) {
     if (scoredById.has(prior.attioRecordId)) continue;
 
+    // ⚠ A LIVE DUPLICATE QUESTION OUTRANKS AN EXCLUSION, BUT NOT A BRIDGE.
+    //
+    // Bridged first: the subject having acquired a bhc_contact_id IS the
+    // answer to "is this the same person as one we already have", so the row
+    // goes, candidate or not.
+    //
+    // Exclusion does not answer it. `Contact_Exclusions` says "do not make
+    // this a NEW contact" — a different question, and 16 of the 18 live
+    // candidates are excluded by it. Dropping them here would confine
+    // duplicate detection to records nobody has ruled on, which is not where
+    // the duplicates are.
+    const hasLiveDuplicate =
+      duplicates.has(prior.attioRecordId) ||
+      readDuplicateState(prior.cells as SheetRow).status.trim() !== '';
+
     if (bridgedIds.has(prior.attioRecordId)) {
       emit(prior.attioRecordId, 'dropped-bridged', null, prior.column, prior.keeperProbability);
       continue;
     }
-    if (excludedIds.has(prior.attioRecordId)) {
+    if (excludedIds.has(prior.attioRecordId) && !hasLiveDuplicate) {
       emit(prior.attioRecordId, 'dropped-excluded', null, prior.column, prior.keeperProbability);
+      continue;
+    }
+    if (excludedIds.has(prior.attioRecordId)) {
+      // Kept for the duplicate question ALONE.
+      //
+      // ⚠ THE TRIAGE HALF IS NEUTRALISED, NOT CARRIED OVER. The record is now
+      // excluded, so its triage question is settled — and re-emitting a
+      // `pending` triage row for it would leave an open triage card for a
+      // contact a human has already ruled out, which is precisely the stale
+      // card the drop existed to remove.
+      //
+      // A real DECISION is different and is preserved byte for byte: it is
+      // history rather than an open question, and Chuck Granade's `processed`
+      // row is the live case — a triage answer that must survive while his
+      // duplicate question is asked for the first time.
+      const priorStatus = prior.status.trim().toLowerCase();
+      const settled = priorStatus !== '' && priorStatus !== 'pending';
+      const triageCells = settled
+        ? prior.cells
+        : neutralisedTriageCells(prior.cells);
+      emit(
+        prior.attioRecordId,
+        'kept-for-duplicate',
+        triageCells,
+        settled ? prior.column : 'unclear',
+        settled ? prior.keeperProbability : 0,
+      );
       continue;
     }
 
@@ -254,7 +373,21 @@ export function mergeQueue(input: MergeInput): MergeResult {
     );
   }
 
-  return { rows: sortMerged(rows), counts, warnings };
+  // --- Candidates with no queue row at all. 16 of 18 live, because they are
+  // suppressed or hard-excluded and so never reach `scored`.
+  for (const [id, candidate] of duplicates) {
+    if (scoredById.has(id) || existingById.has(id)) continue;
+    if (bridgedIds.has(id)) continue;
+    emit(id, 'duplicate-only', duplicateOnlyTriageCells(candidate), 'unclear', 0);
+  }
+
+  return {
+    rows: sortMerged(rows),
+    counts,
+    duplicateCounts,
+    duplicateRowsWritten,
+    warnings,
+  };
 }
 
 /**

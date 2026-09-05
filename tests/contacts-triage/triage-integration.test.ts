@@ -8,10 +8,14 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  DUP_COLS,
+  DUPLICATE_COLUMNS,
   QUEUE_COLS,
   QUEUE_COLUMNS,
   QUEUE_HEADER,
   QUEUE_LAST_COLUMN,
+  TRIAGE_COLUMNS,
+  TRIAGE_RANGES,
   EXCLUSIONS_COLS,
   columnLetter,
 } from '../../src/config/triage-constants.js';
@@ -483,8 +487,61 @@ describe('STEP 5 — the live write', () => {
     expect(live).toHaveLength(1);
   });
 
+  it('⚠ ABORTS RATHER THAN BLANKING THE TAIL when the survivor write does not land', async () => {
+    // The queue now carries `duplicate_status` — a human's answer to the
+    // duplicate question, which exists NOWHERE ELSE and cannot be recomputed.
+    // If the survivor block silently no-ops and the blank proceeds, that answer
+    // is destroyed. So the survivors are confirmed present BEFORE the tail is
+    // erased, and the run stops if they are not.
+    const stale = Array.from({ length: 3 }, (_, i) => {
+      const row = new Array(TRIAGE_COLUMNS).fill('');
+      row[QUEUE_COLS.attioRecordId] = `old-${i}`;
+      row[QUEUE_COLS.status] = 'pending';
+      return row;
+    });
+
+    const { backend, attio, sheets } = await setup({
+      people: { 'rec-keep': keeperPerson('jane@dcsg.com', 'Jane Doe') },
+      triageQueue: stale,
+      triageExclusions: [0, 1, 2].map((i) => [`old-${i}`, '', '', 'bobby archived', '2026-06-01', 'FALSE', 'bobby']),
+      triageQueueIgnoreDataWrites: true,
+    });
+
+    const report = await runContactsTriage({ dryRun: false, attio, sheets, logger: silentLogger, today: TODAY });
+
+    expect(report.aborted).toBe(true);
+    expect(report.abortReason).toContain('REFUSING TO BLANK THE TAIL');
+    // Nothing was erased: all three original rows are still there.
+    const live = (backend.config.triageQueue ?? []).filter((r) => String(r[QUEUE_COLS.attioRecordId] ?? '') !== '');
+    expect(live).toHaveLength(3);
+  });
+
+  it('⚠ counts CONFIRMED duplicate rows, not intended ones, when a write lands partially', async () => {
+    // A 200 that stores less than it was sent. Seven counters were found in
+    // August reporting attempts as results; this is the test that stops this
+    // one joining them.
+    const { attio, sheets } = await setup({
+      // Two unbridged records, one name — a consolidate-unbridged candidate.
+      people: {
+        'rec-ray-a': keeperPerson('raymond.yang@xa.epicgames.example', 'Raymond Yang'),
+        'rec-ray-b': keeperPerson('raymondy@other.example', 'Raymond Yang'),
+      },
+      triageQueueDropDuplicateHalfOnWrite: true,
+    });
+
+    const report = await runContactsTriage({ dryRun: false, attio, sheets, logger: silentLogger, today: TODAY });
+
+    expect(report.duplicateRowsStaged).toBeGreaterThan(0);
+    expect(report.confirmedDuplicateRows).toBe(0);
+    expect(report.readBackVerified).toBe(false);
+    expect(report.readBackDetail).toContain('duplicate half disagrees');
+  });
+
   it('preserves a decided row verbatim across a re-run', async () => {
-    const decided = new Array(24).fill('');
+    // ⚠ 24 wide ON PURPOSE — that is the live tab's shape before the duplicate
+    // half was appended, so this is the real migration case: the triage half
+    // must survive byte for byte and the new columns must arrive blank.
+    const decided = new Array(TRIAGE_COLUMNS).fill('');
     decided[QUEUE_COLS.attioRecordId] = 'rec-keep';
     decided[QUEUE_COLS.name] = 'Jane Doe';
     decided[QUEUE_COLS.keeperProbability] = 91;
@@ -501,7 +558,11 @@ describe('STEP 5 — the live write', () => {
     const report = await runContactsTriage({ dryRun: false, attio, sheets, logger: silentLogger, today: TODAY });
 
     expect(report.mergeCounts['preserved-decision']).toBe(1);
-    expect(backend.config.triageQueue![0]).toEqual(decided);
+    const written = backend.config.triageQueue![0]!;
+    expect(written.slice(0, TRIAGE_COLUMNS)).toEqual(decided);
+    // The duplicate half is blank — this record has no duplicate question.
+    expect(written.slice(TRIAGE_COLUMNS)).toEqual(new Array(DUPLICATE_COLUMNS).fill(''));
+    expect(written).toHaveLength(QUEUE_COLUMNS);
   });
 });
 
@@ -559,7 +620,9 @@ describe('tab preflight', () => {
 
     expect(report.aborted).toBe(false);
     const headerWrite = backend.sheetsWrites.find(
-      (w) => (w.body as { range: string }).range === 'Contacts_Triage_Queue!A1:X1',
+      // From the constant, never a hardcoded letter: hardcoding "A1:V1" is
+      // what broke the 2026-08-09 live run when the width changed.
+      (w) => (w.body as { range: string }).range === TRIAGE_RANGES.queueHeader,
     );
     expect((headerWrite!.body as { values: unknown[][] }).values[0]).toEqual([...QUEUE_HEADER]);
   });
@@ -586,7 +649,9 @@ describe('tab preflight', () => {
     await runContactsTriage({ dryRun: false, attio, sheets, logger: silentLogger, today: TODAY });
 
     const headerWrite = backend.sheetsWrites.find(
-      (w) => (w.body as { range: string }).range === 'Contacts_Triage_Queue!A1:X1',
+      // From the constant, never a hardcoded letter: hardcoding "A1:V1" is
+      // what broke the 2026-08-09 live run when the width changed.
+      (w) => (w.body as { range: string }).range === TRIAGE_RANGES.queueHeader,
     );
     expect(headerWrite).toBeDefined();
     expect((headerWrite!.body as { values: unknown[][] }).values[0]).toEqual([...QUEUE_HEADER]);
@@ -678,6 +743,10 @@ describe('STEP 1b — suppression against prior human decisions', () => {
       'SCRAPPED 2026-08-05: Raymond Yang is TNB staff, not an external contact. Attio record 9878628f ' +
       'deleted by Bobby. · Location set to SUPERSEDED 2026-08-30: identity fields were cleared.']);
     put(582, ['BHC-00537', '', 'SUPERSEDED', '', '', 'Merged into BHC-01195 · 2026-08-10 · was Jenny Kim']);
+    // A retired identity with no twin and no bridged namesake — SCRAPPED, so
+    // no repoint either. The control for "suppressed AND no duplicate question".
+    put(590, ['', 'Michael McCoy', 'SUPERSEDED', '', '',
+      'SCRAPPED 2026-08-04: Bobby does not recognise this contact and has no relationship with anyone by this name.']);
     put(962, ['BHC-00920', 'Rachel Marantz', 'SUPERSEDED', '', '', 'A3-FIXED: record_id updated.']);
     put(1585, ['', 'Raymond Yang', 'SUPERSEDED', '', '',
       'SCRAPPED 2026-08-05: duplicate of BHC-01889 (Raymond Yang), TNB staff. · Location set to SUPERSEDED']);
@@ -728,11 +797,40 @@ describe('STEP 1b — suppression against prior human decisions', () => {
     expect(suppressedIds).not.toContain('rec-rachel');
     expect(report.mergeTombstonesIgnored).toBe(1);
     expect(report.activeSupersededRows).toEqual([962]);
-    expect(report.retiredIdentitiesIndexed).toBe(2);
+    // Raymond x2 + Michael McCoy. The tombstone (582) and the active
+    // SUPERSEDED contact (962) are counted and deliberately not indexed.
+    expect(report.retiredIdentitiesIndexed).toBe(3);
   });
 
-  it('drops a stale queue row for a record that has since become suppressed', async () => {
-    // A prior run queued Raymond before suppression existed. That card must go.
+  it('drops a stale queue row for a suppressed record with NO duplicate question', async () => {
+    // A prior run queued someone before suppression existed. That card must go.
+    // Michael McCoy is SCRAPPED, has no twin and no bridged namesake — so he
+    // is suppressed and raises no duplicate question of any kind.
+    const { backend, attio, sheets } = await setup({
+      people: { 'rec-mccoy': keeperPerson('mccoy@example.com', 'Michael McCoy') },
+      masterId: supersededMaster(),
+      triageQueue: [['rec-mccoy', 'Michael McCoy', 'mccoy@example.com', '', '70', '70', '', 'deterministic', 'FALSE', 'unclear', 'TRUE', '', '', '', '', '', '', 'stale', 'pending', '', '2026-08-31', '2026-08-31', '', 'Good']],
+    });
+    const report = await runContactsTriage({ dryRun: false, attio, sheets, logger: silentLogger, today: TODAY });
+    expect(report.suppressed.map((s) => s.attioRecordId)).toContain('rec-mccoy');
+
+    const written = backend.sheetsWrites
+      .map((w) => JSON.stringify((w.body as { values?: unknown[][] }).values ?? []))
+      .join(' ');
+    expect(written).not.toContain('rec-mccoy');
+  });
+
+  it('KEEPS a suppressed record that has a duplicate question, with NO pending triage card', async () => {
+    // ⚠ THE BEHAVIOUR CHANGE OF STEP 3 PART A, ASSERTED DIRECTLY.
+    //
+    // Raymond is suppressed — a human retired him — AND he has a live
+    // duplicate question, because Attio has re-created him twice and the two
+    // records are one person. Suppression answers "should this become a NEW
+    // contact?"; it does not answer "are these two records the same person?".
+    //
+    // So the row stays for the duplicate question, and its triage half is
+    // NEUTRALISED: no score, no band, no `pending` status. A suppressed record
+    // must not sit in the triage UI as an open card.
     const { backend, attio, sheets } = await setup({
       people: PEOPLE,
       masterId: supersededMaster(),
@@ -741,10 +839,19 @@ describe('STEP 1b — suppression against prior human decisions', () => {
     const report = await runContactsTriage({ dryRun: false, attio, sheets, logger: silentLogger, today: TODAY });
     expect(report.suppressed.map((s) => s.attioRecordId)).toContain('rec-raymond-tnb');
 
-    const written = backend.sheetsWrites
-      .map((w) => JSON.stringify((w.body as { values?: unknown[][] }).values ?? []))
-      .join(' ');
-    expect(written).not.toContain('rec-raymond-tnb');
+    const row = (backend.config.triageQueue ?? []).find(
+      (r) => String(r[QUEUE_COLS.attioRecordId] ?? '') === 'rec-raymond-tnb',
+    );
+    expect(row).toBeDefined();
+    // Triage half: inert.
+    expect(row![QUEUE_COLS.status]).toBe('');
+    expect(row![QUEUE_COLS.column]).toBe('');
+    expect(row![QUEUE_COLS.keeperProbability]).toBe('');
+    expect(row![QUEUE_COLS.reason]).toBe('');
+    // Duplicate half: the question, asked.
+    expect(row![DUP_COLS.status]).toBe('pending');
+    expect(row![DUP_COLS.classification]).toBe('DUPLICATE_CANDIDATE');
+    expect(row![DUP_COLS.kind]).toBe('consolidate-unbridged');
   });
 
   it('warns rather than silently disabling itself when the index comes back empty', async () => {

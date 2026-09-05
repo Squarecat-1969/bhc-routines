@@ -30,6 +30,7 @@
  */
 
 import {
+  DUP_COLS,
   COMPROMISE_EXPECTED,
   COMPROMISE_EXPECTED_TOLERANCE,
   COMPROMISE_REASON,
@@ -146,6 +147,9 @@ function abortedReport(
     merged: [],
     mergeCounts: emptyMergeCounts(),
     queueRowsWritten: 0,
+    duplicateRowsStaged: 0,
+    confirmedDuplicateRows: 0,
+    duplicateMergeCounts: {},
     exclusionsAppended: 0,
     readBackVerified: null,
     readBackDetail: '',
@@ -164,6 +168,8 @@ function emptyMergeCounts(): Record<MergeAction, number> {
     'dropped-bridged': 0,
     'dropped-excluded': 0,
     'kept-unseen': 0,
+    'kept-for-duplicate': 0,
+    'duplicate-only': 0,
   };
 }
 
@@ -543,20 +549,33 @@ async function runInner(
   const newExclusions = exclusions.filter((e) => !priorExcludedIds.has(e.attioRecordId));
   const excludedIds = new Set<string>([...priorExcludedIds, ...newExclusions.map((e) => e.attioRecordId)]);
 
+  // STEP 1c's candidates, keyed for the merge. The merge is what decides
+  // whether each one is raised, refreshed, or left alone because a human
+  // already answered it.
+  const duplicatesById = new Map(duplicates.candidates.map((c) => [c.subject.attioRecordId, c]));
+
   const merge = mergeQueue({
     scored,
     existing,
     bridgedIds: enumeration.bridgedIds,
     excludedIds,
+    duplicates: duplicatesById,
     today,
   });
   warnings.push(...merge.warnings);
 
   const rowsToWrite = merge.rows.filter((r) => r.cells !== null).map((r) => r.cells as unknown[]);
 
+  logger.info(`  duplicate half: ${merge.duplicateRowsWritten} row(s) carry a duplicate question`);
+  for (const [action, n] of Object.entries(merge.duplicateCounts)) {
+    if (n > 0) logger.info(`  ${String(n).padStart(4, ' ')}  ${action}`);
+  }
+
   let readBackVerified: boolean | null = null;
   let readBackDetail = '';
   let exclusionsAppended = 0;
+  // CONFIRMED by a re-read, never the intended count.
+  let confirmedDuplicateRows = 0;
 
   if (dryRun) {
     logger.info(`  DRY RUN — would write ${rowsToWrite.length} queue row(s) and append ${newExclusions.length} exclusion(s)`);
@@ -592,6 +611,7 @@ async function runInner(
     const verification = await verifyWrite(sheets, rowsToWrite);
     readBackVerified = verification.ok;
     readBackDetail = verification.detail;
+    confirmedDuplicateRows = verification.confirmedDuplicateRows;
     if (!verification.ok) warnings.push(`read-back verification failed: ${verification.detail}`);
     logger.info(`  read-back: ${verification.ok ? 'verified' : 'FAILED'} — ${verification.detail}`);
   }
@@ -662,6 +682,9 @@ async function runInner(
     merged: merge.rows,
     mergeCounts: merge.counts,
     queueRowsWritten: dryRun ? 0 : rowsToWrite.length,
+    duplicateRowsStaged: merge.duplicateRowsWritten,
+    confirmedDuplicateRows,
+    duplicateMergeCounts: merge.duplicateCounts,
     exclusionsAppended,
     readBackVerified,
     readBackDetail,
@@ -835,6 +858,38 @@ async function writeQueue(
     await sheets.update(`Contacts_Triage_Queue!A2:${QUEUE_LAST_COLUMN}${newLastRow}`, rows);
   }
 
+  // ⚠ THE GATE THE COMMENT ABOVE SAID WOULD BE NEEDED, NOW NEEDED.
+  //
+  // Reason 1 above — "the queue is rebuilt from scratch every run, so a
+  // corrupted queue self-repairs" — STOPPED BEING TRUE on 2026-09-04. The
+  // duplicate half (Y-AS) carries `duplicate_status`: a human's answer to the
+  // duplicate question, which exists NOWHERE ELSE and cannot be recomputed
+  // from Attio or from Master_ID. That is exactly the named expiry condition,
+  // "anything that makes a row's only copy live here".
+  //
+  // So the survivors are CONFIRMED PRESENT before the tail they used to occupy
+  // is erased. Prevention, not detection-after-the-fact. If the read-back
+  // disagrees, the blank is skipped and the run aborts with the tail intact —
+  // a duplicated tail is recoverable by re-running; an erased one is not.
+  if (rows.length > 0 && priorLastRow > newLastRow) {
+    // Re-read through the SAME range the rest of the routine uses rather than
+    // inventing a narrower one — one range contract, not two — and compare
+    // only the survivor block at the top.
+    const check = await sheets.read(TRIAGE_RANGES.queueData);
+    const liveIds = check.slice(0, rows.length).map((r) => cell(r, 0));
+    const expectedIds = rows.map((r) => String(r[0] ?? ''));
+    const bad = expectedIds.findIndex((id, i) => id !== (liveIds[i] ?? ''));
+    if (liveIds.length !== expectedIds.length || bad !== -1) {
+      throw new AbortRun(
+        'REFUSING TO BLANK THE TAIL — the survivor write did not read back as written ' +
+          `(expected ${expectedIds.length} row(s), read ${liveIds.length}` +
+          (bad !== -1 ? `; first disagreement at row ${bad + 2}` : '') +
+          '). The rows below are untouched, so nothing is lost. Re-run.',
+      );
+    }
+    logger.info(`  survivor write confirmed (${liveIds.length} row(s)) — safe to blank the tail`);
+  }
+
   if (priorLastRow > newLastRow) {
     const blankCount = priorLastRow - newLastRow;
     const blank = new Array(QUEUE_COLUMNS).fill('');
@@ -850,20 +905,58 @@ async function writeQueue(
 async function verifyWrite(
   sheets: SheetsClient,
   written: readonly unknown[][],
-): Promise<{ ok: boolean; detail: string }> {
+): Promise<{ ok: boolean; detail: string; confirmedDuplicateRows: number }> {
   const readBack = await sheets.read(TRIAGE_RANGES.queueData);
   const live = readBack.map((r) => cell(r, 0)).filter((id) => id !== '');
   const expected = written.map((r) => String(r[0] ?? ''));
 
   if (live.length !== expected.length) {
-    return { ok: false, detail: `wrote ${expected.length} row(s), read back ${live.length}` };
+    return {
+      ok: false,
+      detail: `wrote ${expected.length} row(s), read back ${live.length}`,
+      confirmedDuplicateRows: 0,
+    };
   }
   const firstMismatch = expected.findIndex((id, i) => id !== live[i]);
   if (firstMismatch !== -1) {
     return {
       ok: false,
       detail: `row ${firstMismatch + 2} reads back as ${live[firstMismatch]}, expected ${expected[firstMismatch]}`,
+      confirmedDuplicateRows: 0,
     };
   }
-  return { ok: true, detail: `${live.length} row(s) confirmed` };
+
+  // ⚠ COUNT WHAT CAME BACK, NOT WHAT WAS SENT. Seven counters were found in
+  // August reporting attempts as results. A duplicate row is confirmed only
+  // when the RE-READ carries the expected classification in the expected
+  // column — checking column A alone would confirm the row and say nothing
+  // about the 21 columns that are the entire point of this step.
+  let confirmedDuplicateRows = 0;
+  const mismatches: string[] = [];
+  written.forEach((row, i) => {
+    const sent = String(row[DUP_COLS.classification] ?? '');
+    const got = cell(readBack[i], DUP_COLS.classification);
+    if (sent === '' && got === '') return;
+    if (sent === got) {
+      confirmedDuplicateRows += 1;
+      return;
+    }
+    mismatches.push(`row ${i + 2} (${expected[i]}): sent "${sent}", read back "${got}"`);
+  });
+
+  if (mismatches.length > 0) {
+    return {
+      ok: false,
+      detail:
+        `${live.length} row id(s) confirmed, but the duplicate half disagrees on ${mismatches.length}: ` +
+        mismatches.slice(0, 5).join('; '),
+      confirmedDuplicateRows,
+    };
+  }
+
+  return {
+    ok: true,
+    detail: `${live.length} row(s) confirmed, ${confirmedDuplicateRows} carrying a confirmed duplicate question`,
+    confirmedDuplicateRows,
+  };
 }
