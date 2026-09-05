@@ -2,6 +2,41 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-09-04 — Attio bridging step 2: duplicate candidate detection (contacts-triage STEP 1c)
+
+- **New: `src/passes/contacts-triage/duplicates.ts`.** Detects unbridged Attio
+  person records that are the same person as an already-bridged record, or as
+  another unbridged record. **Detection only** — it writes nothing, mints
+  nothing, merges nothing, changes no tab and no schema.
+- **The measured shape held: exactly 7 exact-name hits**, live, unchanged from
+  2026-09-01. Plus **6 unbridged name clusters** the spec's table never
+  measured — including Raymond Yang, whose two records are both unbridged.
+  18 candidates: 2 high, 5 medium, 11 low.
+- ⚠ **Detection runs over the FULL unbridged population, not the
+  post-suppression one.** Six of the seven hits are already suppressed; on the
+  filtered set this step finds one candidate and looks like it works. A
+  `Contact_Exclusions` row answers "should this be a NEW contact?", not "is
+  this address missing from an EXISTING contact?".
+- Exact set equality over significant words, reusing step 1's normaliser.
+  **Never `verifyName`** (it passes on one shared word — Raymond Yang vs
+  Raymond Worsdale). **Never exact email** (`is_unique: true`, so it can never
+  fire). Corroboration: shared Attio company record, identical LinkedIn URL,
+  shared email local part, and owned-domain pairing derived from live
+  co-location — `xa.epicgames.com`, on 12 bridged records, is the Epic cohort.
+- Typo domains (`thenewblanks.com`) are classified **exclude**, outranking
+  merge. One-token names (`"Le"`, `MOHAI`) are **locked at low confidence** and
+  corroboration cannot raise them. `ORPHAN CLEARED` matches become **repoint**
+  candidates naming the canonical BHC_ID (0 fire today).
+- Merge wording says what a merge actually does here: it **consolidates both
+  addresses onto one record** (Zoe Cattolico, BHC-02386, is the live worked
+  example) — not the removal of a redundant entry.
+- 19 mutation checks, **6 of which survived the first pass** — all paired
+  guards masking each other, plus one confidence level with no assertion at
+  all. Redundant guards removed, missing fixtures added, all 19 caught.
+  `npm run typecheck` clean, 1,257 tests pass.
+- Notes: `docs/contacts-triage-notes.md` #20. Spec build order updated.
+
+
 ## 2026-08-27 (later) — PASS 2 was fabricating three columns on every REVIEW write
 
 **P2-STEP 6 wrote the full row `A:N` while P2-STEP 1 read six columns.** `duration`, `participants` and `topline_summary` were never captured, so they were undefined at the write and the routine supplied whatever it was holding — which, after P2-STEP 3, is the complete `get_meeting_summary` output. Three live REVIEW rows carry several thousand characters of markdown in a column named `topline_summary`, including payroll figures, insolvency modelling and buyout terms in a displayed CRM field, against non-negotiable #10. It also wrote `""` into col M, blanking `commit_result`, which PASS 1 owns.

@@ -202,7 +202,11 @@ Minting follows the existing contract without exception: compute max BHC_ID acro
 1. ✅ **DONE — 2026-09-01, commit `49cb8ef`. Suppression against SUPERSEDED and `Contact_Exclusions`.** Highest value, smallest change, and it stops the same decision being demanded weekly.
 
    **What it actually caught: 2 records, not the 231 headline.** The first live run suppressed 231 of 251, but the two signals are disjoint — 229 came from `Contact_Exclusions` matching that already existed before this change, and **2 from the new SUPERSEDED capability, both of them Raymond Yang**. The other 17 retired identities have no re-created Attio record today. Two is the honest number and it is the right one to have built for: it is the case §2 was written around, and the other 17 are now covered before they come back. Detail in `docs/contacts-triage-notes.md` #19.
-2. **Duplicate candidate detection** — exact name, local-part corroboration, surfaced as a question.
+2. ✅ **DONE — 2026-09-04. Duplicate candidate detection** — exact name, local-part corroboration, surfaced as a question. `src/passes/contacts-triage/duplicates.ts`, STEP 1c. Detection only: no write of any kind, no schema change.
+
+   **The seven reproduced exactly** on a live dry run against 2,510 people, and a second arm the table above never measured turned up alongside them: **6 clusters of 2+ UNBRIDGED records sharing a name**, one of which is Raymond Yang — whose two records are both unbridged, so unbridged-against-bridged could never have found him. 18 candidates: 2 high, 5 medium, 11 low.
+
+   ⚠ **The order of operations in §7 is wrong for this step, and measurably so.** Six of the seven exact-name hits are already dropped by STEP 1b and a seventh cohort by STEP 2, so detection on the post-suppression population finds **one** candidate and looks like it worked. A `Contact_Exclusions` row answers "should this become a NEW contact?" — not "is this address missing from an EXISTING contact?". Detection therefore runs over the full unbridged set and records the gate on each candidate instead of obeying it. Nothing about what gets queued, scored or excluded changed. Detail in `docs/contacts-triage-notes.md` #20.
 3. **The Aida card** — three actions, per-record links, dismissals that stick.
 4. **Minting on confirmation**, following the existing contract.
 5. **Post-merge Master_ID reconciliation**, survivor found by email.

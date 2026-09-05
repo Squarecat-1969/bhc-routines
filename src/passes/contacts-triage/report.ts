@@ -17,6 +17,7 @@ import {
   LLM_SCORE_MAX,
   LLM_SCORE_MIN,
 } from '../../config/triage-constants.js';
+import type { DuplicateCandidate } from './duplicates.js';
 import type { BandDistribution, TriageReport } from './types.js';
 
 function pct(n: number, total: number): string {
@@ -97,6 +98,10 @@ export function renderReport(report: TriageReport): string {
       out.push(`      ${s.reason}`);
     }
   }
+
+  // --- STEP 1c
+  out.push('');
+  out.push(...renderDuplicates(report));
 
   // --- STEP 2
   out.push('');
@@ -192,6 +197,84 @@ export function renderReport(report: TriageReport): string {
   return out.join('\n');
 }
 
+
+/**
+ * STEP 1c's section. Long on purpose.
+ *
+ * ⚠ REJECTION HAS TO BE AS CHEAP AS ACCEPTANCE. Three of the seven live
+ * exact-name hits are wrong, so this prints what DISTINGUISHES the records
+ * alongside what matches, and prints the per-record links so both sides are
+ * one click away. A report that only listed the matches would get wrong
+ * answers confirmed.
+ */
+export function renderDuplicates(report: TriageReport): string[] {
+  const out: string[] = [];
+  out.push('STEP 1c — DUPLICATE CANDIDATES (detection only — nothing is written, nothing is minted)');
+
+  const d = report.duplicates;
+  if (!d) {
+    out.push('  (not computed)');
+    return out;
+  }
+
+  out.push(`  unbridged matching a BRIDGED record by exact full name : ${d.exactNameAgainstBridged}`);
+  out.push(`  unbridged name clusters (2+ unbridged, same name)      : ${d.unbridgedClusters}`);
+  out.push(`  candidates raised                                      : ${d.candidates.length}`);
+  for (const [kind, n] of Object.entries(d.byKind)) {
+    if (n > 0) out.push(`  ${String(n).padStart(4, ' ')}  ${kind}`);
+  }
+  out.push(
+    `  confidence: ${d.byConfidence.high} high · ${d.byConfidence.medium} medium · ${d.byConfidence.low} low`,
+  );
+  out.push(
+    `  owned-domain co-location derived from live data: ${d.colocatedDomains.length > 0 ? d.colocatedDomains.join(', ') : '(none)'}`,
+  );
+  if (d.ambiguousBridgedKeys.length > 0) {
+    out.push(`  ${d.ambiguousBridgedKeys.length} name(s) held by more than one BRIDGED record — two people can share a name`);
+  }
+  if (d.unbridgedWithoutUsableName > 0) {
+    out.push(`  ${d.unbridgedWithoutUsableName} unbridged record(s) have no usable name and can never match`);
+  }
+
+  if (d.candidates.length === 0) {
+    out.push('  no candidates.');
+    return out;
+  }
+
+  for (const c of d.candidates) {
+    out.push('');
+    out.push(`  [${c.confidence.toUpperCase()}] ${c.kind} — "${c.subject.name ?? '(no name)'}"`);
+    out.push(`    ${c.proposedAction}`);
+    out.push(`    UNBRIDGED  ${c.subject.emails.join(', ') || '(no address)'}`);
+    out.push(`               ${c.subject.attioUrl}`);
+    for (const b of c.bridgedMatches) {
+      out.push(`    BRIDGED ${b.bhcId ?? '(none)'}  ${b.emails.join(', ') || '(no address)'}`);
+      out.push(`               ${b.attioUrl}`);
+    }
+    for (const u of c.unbridgedSiblings) {
+      out.push(`    SIBLING (also unbridged)  ${u.emails.join(', ') || '(no address)'}`);
+      out.push(`               ${u.attioUrl}`);
+    }
+    if (c.repointTo) out.push(`    repoint target: ${c.repointTo}`);
+    for (const line of c.corroboration) out.push(`    + ${line}`);
+    for (const line of c.distinguishing) out.push(`    ? ${line}`);
+    for (const line of c.cautions) out.push(`    ! ${line}`);
+    out.push(
+      `    gating: suppressed by ${c.gating.suppressedBy ?? 'nothing'} · hard-exclude ${c.gating.hardExcludedBy ?? 'none'}`,
+    );
+  }
+
+  return out;
+}
+
+/** One line per candidate, for the #aida post. */
+function duplicateLine(c: DuplicateCandidate): string {
+  const target =
+    c.bridgedMatches.map((b) => b.bhcId).filter((b): b is string => !!b).join('/') ||
+    (c.unbridgedSiblings.length > 0 ? `${c.unbridgedSiblings.length} other unbridged record(s)` : '—');
+  return `  · [${c.confidence}] ${c.subject.name ?? '(no name)'} <${c.subject.emails[0] ?? '—'}> → ${c.kind} ${target}`;
+}
+
 /** STEP 7's #aida post. */
 export function buildSlackMessage(report: TriageReport): string {
   if (report.aborted) {
@@ -218,6 +301,17 @@ export function buildSlackMessage(report: TriageReport): string {
   if (report.clampEvents > 0) llmBits.push(`${report.clampEvents} clamped`);
   if (report.llmFailures > 0) llmBits.push(`${report.llmFailures} failed → deterministic fallback`);
   lines.push(llmBits.join(' · '));
+
+  const dupes = report.duplicates;
+  if (dupes && dupes.candidates.length > 0) {
+    lines.push(
+      `🔎 ${dupes.candidates.length} duplicate candidate(s) — ${dupes.byConfidence.high} high · ` +
+        `${dupes.byConfidence.medium} medium · ${dupes.byConfidence.low} low. Detection only; nothing merged or minted.`,
+    );
+    for (const c of dupes.candidates.filter((x) => x.confidence !== 'low').slice(0, 8)) {
+      lines.push(duplicateLine(c));
+    }
+  }
 
   if (!report.compromiseCohortInRange) {
     lines.push(

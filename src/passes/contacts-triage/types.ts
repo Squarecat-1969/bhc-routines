@@ -1,4 +1,5 @@
 import type { CivilDate } from '../../lib/dates.js';
+import type { DuplicateDetection } from './duplicates.js';
 import type { Suppression } from './suppression.js';
 import type { StrengthBand } from '../../config/triage-constants.js';
 
@@ -264,6 +265,17 @@ export interface TriageReport {
   readonly retiredIdentitiesIndexed: number;
   readonly mergeTombstonesIgnored: number;
   readonly activeSupersededRows: readonly number[];
+
+  /**
+   * STEP 1c — duplicate candidates. Null only on an aborted run.
+   *
+   * Computed over the FULL unbridged population, deliberately: under the
+   * 2026-09-04 policy correction (TNB staff and former staff ARE contacts,
+   * tier Strategic) the largest duplicate cohort is staff already suppressed
+   * or hard-excluded under the old rule, and filtering first would hide them.
+   * Detection changes nothing about what gets queued.
+   */
+  readonly duplicates: DuplicateDetection | null;
 
   // STEP 2
   readonly excludedByReason: Readonly<Record<string, number>>;

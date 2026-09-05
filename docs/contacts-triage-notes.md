@@ -542,6 +542,180 @@ filter. (Separately, [pass4/load.ts](../src/passes/pass4/load.ts) skips rows wit
 a blank BHC_ID — which is every one of the 19 retired identities — so STEP 1b
 reads Master_ID directly rather than reusing that loader.)
 
+## 20. STEP 1c — duplicate candidate detection (2026-09-04)
+
+Step 2 of `docs/attio-bridging-spec.md`. Detection only: it writes nothing,
+mints nothing, merges nothing, and touches no tab. `src/passes/contacts-triage/duplicates.ts`.
+
+### The measured shape held — exactly seven
+
+Re-measured live 2026-09-04 against 2,510 people (2,255 bridged / 255
+unbridged): **exact full name against a bridged record returns 7**, the same
+seven the spec recorded on 2026-09-01, and three are still wrong. The filter
+design rested on that shape and the shape did not move.
+
+Detection also found a second arm the brief did not count: **6 clusters of two
+or more UNBRIDGED records sharing a name**, one of which is Raymond Yang. That
+is additional to the 7, not a contradiction of it — the spec's table only ever
+measured unbridged-against-bridged.
+
+18 candidates in total: 2 high, 5 medium, 11 low.
+
+### ⚠ SIX OF THE SEVEN ARE ALREADY SUPPRESSED — so detection must not run on
+### the filtered population
+
+This is the finding that shaped the file. The spec's order of operations
+(§7) says suppression runs first and "everything downstream is wasted work on a
+record a human already ruled on." Applied literally to duplicate detection,
+that is false, and measurably so: of the seven exact-name hits, **six are
+already dropped by STEP 1b** — five by `Contact_Exclusions` record id, one by
+email — and a seventh cohort is hard-excluded by STEP 2. Detecting on
+`survivedSuppression` would have found **one** candidate, passed every fixture
+test, and looked like it worked.
+
+The reason the exclusions are there matters:
+
+| Record | Gate | Written by |
+|---|---|---|
+| Kim Adelman `kima@thenewblank.com` | `thenewblank.com internal` | rule |
+| Lana Hougham ×2 | `family` | rule |
+| Chuck Granade `chuck@thenewblanks.com` | `archived from triage` | bobby |
+| `"Le"` | `archived from triage` | bobby |
+| June Yang `june.yang@xa.epicgames.com` | `archived from triage` (by EMAIL) | bobby |
+
+**A `Contact_Exclusions` row answers "should this become a NEW contact?". It
+does not answer "is this address a missing address on an EXISTING contact?"**
+Those are different questions with different answers, and the queue conflates
+them today. June Yang is the clearest case: BHC-01917 already exists carrying
+`juney@thenewblank.com`, so the right outcome for her Epic address is not a new
+contact — which is what Bobby declined on 2026-08-10 — but a second address on
+the record she already has.
+
+So detection runs over `enumeration.unbridged`, the **full** population, and
+the gate is recorded on each candidate as `gating.suppressedBy` /
+`gating.hardExcludedBy` rather than used as a filter. It changes nothing about
+what is queued, scored or excluded — `classifyHardExclude` is called for
+annotation only, and the STEP 2 loop below is still the only thing that decides.
+
+The 2026-09-04 policy correction is why this is not a licence to ignore
+suppression generally: **TNB staff and former staff ARE contacts, tier
+Strategic.** The owned-domain rule is a threading rule. The largest duplicate
+cohort in this population is TNB staff on the Epic account carrying both a
+`@thenewblank.com` and an `@xa.epicgames.com` address, and under the old policy
+every one of them was excluded.
+
+### Zoe Cattolico is the end state, and merge wording follows from it
+
+BHC-02386 carries `zoec@thenewblank.com` **and** `zoe.cattolico@xa.epicgames.com`
+on one record. Chuck Granade (BHC-02338) is the same. So **merge here
+CONSOLIDATES ADDRESSES onto one record** — it is not the elimination of a
+redundant entry, and `proposedAction` says so in those words. The spec's
+framing was too narrow; a test pins the wording.
+
+### The signals, and what each one is worth
+
+**Primary: exact set equality over significant words**, reusing step 1's
+`nameKeyOf` so the two steps cannot drift about what a name is.
+
+⚠ **Not `verifyName`.** It passes on one significant word in common — right for
+verifying a pair a human proposed, wrong for generating them. `Raymond Yang`
+and `Raymond Worsdale` (BHC-00679, active at NBCUniversal) share `raymond`.
+`verifyName` appears nowhere in this routine except in comments saying why.
+
+⚠ **No exact-email signal, ever.** `email_addresses` is `is_unique: true`:
+Attio cannot put one address on two person records, so it returns zero by
+construction. It would pass every fixture test and find nothing forever.
+
+Corroboration — never sufficient alone:
+
+| Signal | Weight | Fires live on |
+|---|---|---|
+| same Attio `company` record reference | strong → high | MOHAI pair (locked low, one-token) |
+| identical LinkedIn URL | strong → high | nothing today |
+| shared normalised email local part | weak → medium | Bobby Hougham's three own addresses |
+| owned-domain pairing | weak → medium | June Yang, Raymond Yang |
+
+**Owned-domain pairing is derived from live data, not hardcoded.** A domain
+counts as co-located once it shares a bridged record with an owned-domain
+address on at least `COLOCATED_MIN_RECORDS` (2) distinct records. Freemail is
+excluded — half the workspace has a gmail address on their record. Measured
+live, exactly one domain clears it: **`xa.epicgames.com`, on 12 records**. That
+is the Epic cohort, found rather than assumed.
+
+`company_name` is never read: our routines write it on bridged records only and
+Attio never populates it, so name-plus-company can only ever agree on zero. The
+spec states the reason wrongly (it says the field is empty everywhere); the
+conclusion stands.
+
+### The three known-wrong hits, and how each is caught
+
+- **`chuck@thenewblanks.com` and `lana@thenewblanks.com`** — typo domains, one
+  edit from an owned domain. Classified `exclude-typo-domain`, which
+  **outranks** merge in the kind precedence, so the card asks the right
+  question. High confidence — about what they are NOT.
+- **`"Le"` matching BHC-01225** — a one-token name key. **Confidence is locked
+  low and corroboration cannot raise it**, which is load-bearing rather than
+  cosmetic: the MOHAI pair shares an Attio company record, the strongest signal
+  there is, and two role mailboxes at one museum are still not one person.
+
+### Repoint
+
+An unbridged record matching an `ORPHAN CLEARED` retired identity becomes a
+**repoint**, not a merge: those annotations name a canonical BHC_ID. Verified
+live — all 13 name one in the leading clause `leadAnnotation` already keeps
+(`"duplicate of BHC-00293 (Ron Buse…)"`, `"Andrew Kobliska is BHC-01541 at
+Master_ID row 1572"`). `canonicalBhcIdIn` returns null rather than guessing when
+none is present. **It fires on zero records today** — the arm is built and
+tested against the real annotation text, and the population simply has no
+ORPHAN CLEARED identity re-created by Attio right now.
+
+### Raymond Yang: the second arm exists because Master_ID asked for it
+
+`Master_ID` row 456, in Bobby's own words:
+
+> ⚠ NOT YET UN-SUPPRESSED, DELIBERATELY. Attio's sync has re-created Raymond
+> TWICE […] Un-suppressing before step 2's duplicate detection exists would let
+> both enter triage and mint TWO BHC_IDs for one person: the exact duplicate
+> this retirement was addressing, recreated with new numbers. **Un-suppress when
+> step 2 ships and can surface them as one merge candidate.**
+
+Both Raymond records are unbridged (BHC-01889 was retired), so exact-name
+against bridged finds nothing for him. `consolidate-unbridged` is the arm that
+does, and it now surfaces both at medium confidence with the caution that
+neither carries a BHC_ID and minting each separately recreates the duplicate.
+
+**Un-suppressing row 456 / 1585 is a Master_ID write and is therefore NOT part
+of this step** (spec §7: "Do NOT write to `Master_ID`"). It is Bobby's call and
+it is listed in the open questions.
+
+### Mutation checks — nineteen, and SIX survived the first pass
+
+Every guard was neutered, the suite confirmed failing, then restored and
+confirmed passing. **Six survived the first attempt, all for the same reason:
+paired guards masking each other**, which is a stronger version of the failure
+step 1 hit (two of eleven).
+
+| Survivor | Why | Fix |
+|---|---|---|
+| owned-domain skip / `distance > 0` | either alone rejects the owned domain | dropped `distance > 0`; the skip now also covers two similar owned domains, and a test injects that list |
+| two length floors, one per side | either alone rejects a short pair | one floor on `Math.min` of the pair |
+| one-token confidence lock | no fixture had a one-token name WITH corroboration | added the live MOHAI pair (shared company record) |
+| freemail excluded from co-location | gmail sat at 1 record, so the count threshold rejected it first | added Chuck's real `cgranade01@gmail.com`, putting gmail at 2 |
+| blank name key, index side vs subject side | either alone rejects it | removed the redundant subject-side checks; one guard, one place |
+| strong → high confidence | **no test asserted `high` at all** | added the Michael Hayward shape — identical LinkedIn URL *and* identical company record, which Master_ID row 2013 calls "conclusive" |
+
+All nineteen are caught now. The harness that found them is throwaway; the
+finding worth keeping is that **a guard duplicated "for safety" is a guard that
+cannot be tested**, and two of the six were exactly that.
+
+### What this step deliberately did NOT do
+
+No minting (step 4). No post-merge reconciliation (step 5). No `Master_ID`
+write. **No write to `Contacts_Triage_Queue` and no change to its schema** —
+detection surfaces its findings in the run report and the `#aida` post, and the
+queue-column contract belongs to step 3's card, which is Bobby's to shape. See
+the open questions.
+
 ## Open questions for Bobby
 
 1. **BLOCKING — grant the Emails scope** to the bhc-routines Attio API key
@@ -557,3 +731,21 @@ reads Master_ID directly rather than reusing that loader.)
    histogram, which does not exist yet.
 6. **Schedule.** The workflow is `workflow_dispatch`-only, deliberately. Wire
    it to a Launcher Zap once run one's distribution has been reviewed.
+7. **Un-suppress Raymond Yang?** (#20) `Master_ID` rows 456 and 1585 say to do
+   it "when step 2 ships and can surface them as one merge candidate." It ships
+   here and it does. The edit is a `Master_ID` write, which this routine is
+   forbidden to make, so it is Bobby's.
+8. **The `thenewblank.com internal` exclusion is now wrong** (#20). Seven rows
+   in `Contact_Exclusions` carry it, written by rule, and the 2026-09-04 policy
+   says TNB staff and former staff ARE contacts. Kim Adelman is suppressed by
+   it today. Detection is unaffected — it runs before the filter — but STEP 2
+   will keep excluding those records, and every future one, until the rule is
+   removed. Removing it is a behaviour change to who gets queued and scored,
+   not a detection change, so it was not made here.
+9. **Where does a duplicate candidate surface?** (#20) The spec says
+   `Contacts_Triage_Queue`, and the queue is one row per unbridged record,
+   which fits. But 16 of the 18 candidates have no queue row today because
+   suppression or a hard exclude removed them — so surfacing them means either
+   admitting suppressed records to the queue with a marker, or a
+   `duplicate_*` column set that only step 3 can specify. That contract is
+   Bobby's and Aida's to settle, not something to pick quietly.

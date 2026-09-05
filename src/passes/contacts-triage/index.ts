@@ -11,6 +11,10 @@
  *      write and then discover it has nowhere valid to put it.
  *   1. Enumerate every unbridged person (STEP 1), cross-checked. Everything
  *      scoring needs arrives with this one walk.
+ *   1c. Duplicate candidate detection (STEP 1c) — read-only, over the FULL
+ *      unbridged population. It writes nothing and changes nothing about what
+ *      gets queued; see duplicates.ts for why it must not run on the filtered
+ *      subset.
  *   2. Hard excludes (STEP 2a-d) — the compromise cohort alone is ~60% of the
  *      unbridged population.
  *   3. Resolve company references, then score on Attio's computed signals
@@ -46,6 +50,7 @@ import { sleep } from '../../lib/http.js';
 import type { Logger } from '../../lib/logger.js';
 import { cell, type SheetsClient, type SheetRow } from '../../lib/sheets.js';
 import { enumerateUnbridged } from './enumerate.js';
+import { buildBridgedNameIndex, detectDuplicates, toDuplicateSide } from './duplicates.js';
 import { classifyHardExclude } from './excludes.js';
 import { countByReason, readExclusionIndex, serializeExclusion } from './exclusions.js';
 import { classifySuppression, readSuppressionIndex, type Suppression } from './suppression.js';
@@ -118,6 +123,7 @@ function abortedReport(
     retiredIdentitiesIndexed: 0,
     mergeTombstonesIgnored: 0,
     activeSupersededRows: [],
+    duplicates: null,
     excludedByReason: {},
     exclusions: [],
     alreadyExcludedSkipped: 0,
@@ -287,6 +293,72 @@ async function runInner(
   );
 
   const alreadyExcludedSkipped = suppressed.filter((s) => s.source === 'contact-exclusions').length;
+
+  // --- STEP 1c — DUPLICATE CANDIDATE DETECTION -------------------------------
+  //
+  // Read-only. It writes nothing, changes nothing about what gets queued, and
+  // never mints. Its whole output is a question with per-record links.
+  //
+  // ⚠ IT RUNS OVER `enumeration.unbridged`, THE FULL POPULATION — not over
+  // `survivedSuppression` and not over the post-exclusion candidates. Measured
+  // live 2026-09-04: of the seven unbridged records matching a bridged one by
+  // exact name, SIX are already suppressed and a seventh cohort is hard-
+  // excluded — almost all of them under the `thenewblank.com internal` and
+  // `family` rules, or archived from triage before the 2026-09-04 policy
+  // correction that made TNB staff and former staff contacts. Detecting on the
+  // filtered subset would find ONE candidate and look like it worked.
+  //
+  // The gating is recorded on each candidate instead, because a
+  // Contact_Exclusions row answers "should this become a NEW contact?" and not
+  // "is this address missing from an EXISTING contact?".
+  logger.info('STEP 1c — duplicate candidate detection (read-only)');
+  const bridgedSides = [...enumeration.recordsById.values()]
+    .filter((r) => enumeration.bridgedIds.has(r.recordId))
+    .map(toDuplicateSide);
+  const bridgedNameIndex = buildBridgedNameIndex(bridgedSides);
+
+  const suppressedById = new Map<string, string>(
+    suppressed.map((s) => [s.attioRecordId, `${s.source} (${s.matchedOn})`]),
+  );
+  // Computed for annotation only — `classifyHardExclude` is pure and this call
+  // does not add, remove or reorder a single exclusion. STEP 2 below is still
+  // the only thing that decides what is actually excluded.
+  const hardExcludedById = new Map<string, string>();
+  for (const contact of enumeration.unbridged) {
+    const e = classifyHardExclude(contact);
+    if (e) hardExcludedById.set(contact.attioRecordId, e.reason);
+  }
+
+  const duplicates = detectDuplicates({
+    unbridged: enumeration.unbridged,
+    index: bridgedNameIndex,
+    suppression: suppressionIndex,
+    suppressedById,
+    hardExcludedById,
+  });
+
+  logger.info(
+    `  ${duplicates.exactNameAgainstBridged} unbridged record(s) match a bridged one by exact full name; ` +
+      `${duplicates.unbridgedClusters} unbridged name cluster(s); ${duplicates.candidates.length} candidate(s) total`,
+  );
+  for (const [kind, n] of Object.entries(duplicates.byKind)) {
+    if (n > 0) logger.info(`  ${String(n).padStart(4, ' ')}  ${kind}`);
+  }
+  if (bridgedNameIndex.byNameKey.size === 0) {
+    // The same shape as an empty suppression index: possible in principle,
+    // and indistinguishable from a broken name extraction that silently
+    // disables the only viable primary signal.
+    const msg =
+      'DUPLICATE NAME INDEX IS EMPTY — no bridged record produced a usable name key, so duplicate detection ' +
+      'cannot fire this run. Verify the Attio name attribute before trusting the candidate count.';
+    logger.warn(`  ${msg}`);
+    warnings.push(msg);
+  }
+  if (duplicates.bridgedWithoutUsableName > 0) {
+    logger.info(
+      `  ${duplicates.bridgedWithoutUsableName} bridged record(s) have no usable name — they can never be matched against`,
+    );
+  }
 
   // --- STEP 2a-d — hard excludes that need only the record ---------------------
   logger.info('STEP 2 — hard excludes');
@@ -569,6 +641,7 @@ async function runInner(
     retiredIdentitiesIndexed: suppressionIndex.retiredCount,
     mergeTombstonesIgnored: suppressionIndex.mergeTombstoneCount,
     activeSupersededRows: suppressionIndex.activeSupersededRows,
+    duplicates,
     alreadyExcludedSkipped,
     compromiseCohortCount,
     compromiseCohortInRange,
