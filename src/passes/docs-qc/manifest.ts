@@ -59,12 +59,27 @@ export const RULES: readonly Rule[] = [
     severity: 'finding',
   },
   {
-    id: 'toc-no-log-entry-ref',
+    id: 'toc-no-log-entry-range',
     document: "Plan's ToC",
-    statement: "The Plan's Table of Contents contains no §NNN log-entry reference.",
+    statement:
+      "The Plan's Table of Contents carries no §NNN RANGE — the shape of a Dev log inventory. " +
+      'A single §NNN citation is allowed and expected.',
     earnedBy:
-      'Same incident, 2026-09-05. The negative form needs no judgement, which is why it is stated this way ' +
-      'rather than as "the ToC should describe only the Plan".',
+      'Same 2026-09-05 incident, NARROWED 2026-09-06. ⚠ WHAT THIS RULE DOES NOT COVER, AND WHY: it does ' +
+      'NOT forbid citing a log entry. The original form fired on any §NNN and caught the ToC\'s own ' +
+      '"inserted before PERMANENT IDENTITY CORRECTIONS · Dev log §123" — a cross-reference saying where ' +
+      'Incident 7 is written up in full, which is useful and belongs. That was a true positive against the ' +
+      'letter of the rule and a false one against its purpose. ' +
+      '⚠ CHECKED BEFORE NARROWING, so the next reader does not re-broaden it: the 2026-09-05 addition was a ' +
+      'log TAB INVENTORY, and an inventory names tabs, so `toc-no-log-tab-name` would have caught it alone. ' +
+      'Re-stating this rule as "no inventory" would have duplicated that sibling. It survives as a RANGE ' +
+      'rule because a range is the one inventory shape neither sibling can see: ' +
+      '"log-001 §001–§035.1 · log-002 §036–§059" carries no tab name and no document ID, and both siblings ' +
+      'pass it. A range is also the figure that went stale — the ToC carried §106–§127 after §133 was ' +
+      'written. ' +
+      'KNOWN LIMIT: an inventory written as a comma-enumeration ("§106, §107, §108") rather than a range ' +
+      'would not fire. Left uncovered deliberately — no such enumeration has occurred, and a rule for an ' +
+      'unobserved shape is the speculative kind this manifest exists to keep out.',
     severity: 'finding',
   },
   {

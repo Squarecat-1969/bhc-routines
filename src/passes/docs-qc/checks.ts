@@ -79,14 +79,40 @@ export function normaliseHeadingText(s: string): string {
 
 // --- Placement --------------------------------------------------------------
 
-/** §NNN with the section sign, which is how the Log names its entries. */
-export const ENTRY_REF_RE = /§\d{1,4}(?:\.\d+)?/g;
+/**
+ * A §NNN RANGE — `§106–§127`, `§001–§035.1` — which is the shape a Dev log
+ * inventory takes. NOT a single citation.
+ *
+ * ⚠ NARROWED 2026-09-06, AND THE NARROWING IS THE POINT.
+ *
+ * The rule used to fire on ANY §NNN, which made it broader than the incident
+ * that earned it. What went wrong on 2026-09-05 was a log TAB INVENTORY living
+ * in the Plan's ToC — log content in the wrong document. A citation naming
+ * where something is written up in full is not that; it is useful and belongs.
+ * The broad form fired on line 95's "inserted before PERMANENT IDENTITY
+ * CORRECTIONS · Dev log §123", a true positive against the letter of the rule
+ * and a false one against its purpose, which is exactly how a report earns the
+ * reader's indifference.
+ *
+ * ⚠ WHY A RANGE AND NOT "NO TAB INVENTORY". Checked before narrowing: an
+ * inventory names tabs by definition, so `toc-no-log-tab-name` would have
+ * caught the 2026-09-05 addition on its own, and re-stating the rule as "no
+ * inventory" would duplicate it. A RANGE is the one inventory shape the two
+ * sibling rules provably cannot see — `log-001 §001–§035.1 · log-002
+ * §036–§059` carries no tab name and no document ID, and both siblings pass
+ * it. That is what this rule is for.
+ *
+ * Both en dash and hyphen, because the document uses both.
+ */
+export const ENTRY_RANGE_RE = /§\d{1,4}(?:\.\d+)?\s*[–—-]\s*§?\d{1,4}(?:\.\d+)?/g;
 
-export function findLogEntryRefs(content: string): Finding[] {
+export function findLogEntryRanges(content: string): Finding[] {
   const out: Finding[] = [];
   content.split('\n').forEach((line, i) => {
-    const hits = line.match(ENTRY_REF_RE);
-    if (hits) out.push({ ruleId: 'toc-no-log-entry-ref', detail: `${hits.join(', ')} — ${line.trim()}`, line: i + 1 });
+    const hits = line.match(ENTRY_RANGE_RE);
+    if (hits) {
+      out.push({ ruleId: 'toc-no-log-entry-range', detail: `${hits.join(', ')} — ${line.trim()}`, line: i + 1 });
+    }
   });
   return out;
 }

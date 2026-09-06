@@ -18,7 +18,7 @@ import {
   generatedTocLines,
   handAppendedFrom,
   findLogEntryHeadings,
-  findLogEntryRefs,
+  findLogEntryRanges,
   findStrings,
   headingsMissingFromToc,
   missingByName,
@@ -161,9 +161,10 @@ async function runInner(opts: QcOptions, runId: string, startedAt: string): Prom
     `${LOG_TAB_NAMES.length} log tab name(s) searched for`,
   );
   emit(
-    'toc-no-log-entry-ref',
-    findLogEntryRefs(toc.content),
-    `${toc.content.split('\n').length} ToC lines scanned for §NNN`,
+    'toc-no-log-entry-range',
+    findLogEntryRanges(toc.content),
+    `${toc.content.split('\n').length} ToC lines scanned for a §NNN range ` +
+      '(a single §NNN citation is allowed — see the manifest for why)',
   );
   emit(
     'plan-no-log-entries',

@@ -3,6 +3,32 @@
 All dates are the routine-config install date. Newest first.
 
 <<<<<<< HEAD
+## 2026-09-06 — QC rule narrowed: `toc-no-log-entry-ref` → `toc-no-log-entry-range`
+
+- **The rule was broader than the incident that earned it.** It fired on any
+  §NNN and caught the ToC's own *"inserted before PERMANENT IDENTITY
+  CORRECTIONS · Dev log §123"* — a cross-reference saying where Incident 7 is
+  written up in full. True against the letter of the rule, false against its
+  purpose. Narrowed to a §NNN **range**, which is the shape of an inventory.
+- ⚠ **Checked before narrowing, as instructed.** The 2026-09-05 incident was a
+  log TAB INVENTORY, and an inventory names tabs — so `toc-no-log-tab-name`
+  **would have caught it alone**, and re-stating this rule as "no inventory"
+  would have duplicated that sibling. **It survives as a range rule because a
+  range is the one inventory shape neither sibling can see:**
+  `log-001 §001–§035.1 · log-002 §036–§059` carries no tab name and no document
+  ID, and both siblings pass it — verified against both.
+- **The manifest entry records what the rule no longer covers, and its known
+  limit** (a comma-enumeration would not fire, left uncovered because no such
+  enumeration has occurred). A test asserts the entry still says so, so the
+  next reader cannot silently re-broaden it.
+- **7 mutation checks, both directions, all caught.** Four survived a first
+  pass — and the reason was the harness, not the guards: shell quoting mangled
+  the regex anchors so the mutations matched something else. Re-run through a
+  file-based patcher, every one bites. A clean first-attempt pass is worth
+  investigating, not recording.
+- Live: the rule now PASSES, the acceptance test still fires alone.
+  1,422 tests pass.
+
 ## 2026-09-06 — The documents QC routine
 
 - **New: `src/passes/docs-qc/`, `docs/qc-manifest.md`, `.github/workflows/docs-qc.yml`.**

@@ -19,7 +19,7 @@ import type { DocHeading } from '../../src/lib/docs.js';
 import {
   countBlankHeadings,
   findLogEntryHeadings,
-  findLogEntryRefs,
+  findLogEntryRanges,
   findStrings,
   generatedTocLines,
   handAppendedFrom,
@@ -74,6 +74,19 @@ describe('the manifest', () => {
       expect(r.earnedBy.length, `${r.id} has no incident`).toBeGreaterThan(40);
       expect(r.statement.length).toBeGreaterThan(20);
     }
+  });
+
+  // ⚠ A NARROWED RULE MUST RECORD WHAT IT NO LONGER COVERS, or the next
+  // reader re-broadens it and the false positive comes back.
+  it('records, for the narrowed rule, what it does NOT cover and why', () => {
+    const r = ruleById('toc-no-log-entry-range');
+    expect(r.earnedBy).toMatch(/NARROWED/i);
+    expect(r.earnedBy).toMatch(/DOES NOT COVER/i);
+    // The sibling-coverage check that justified keeping it at all.
+    expect(r.earnedBy).toContain('toc-no-log-tab-name');
+    // The known limit, stated rather than hidden.
+    expect(r.earnedBy).toMatch(/KNOWN LIMIT/i);
+    expect(r.statement).toMatch(/single §NNN citation is allowed/i);
   });
 
   it('names the valid rules when asked for an unknown one', () => {
@@ -188,14 +201,55 @@ describe('recorded figures', () => {
 });
 
 describe('placement rules', () => {
-  it('finds a §NNN reference in the ToC', () => {
-    const f = findLogEntryRefs(TOC);
+  // ⚠ BOTH DIRECTIONS. This rule was NARROWED on 2026-09-06 because its broad
+  // form was wider than the incident that earned it, and the over-broad half
+  // is now as much a defect as the under-broad half.
+  it('FIRES on a §NNN range — the shape of a Dev log inventory', () => {
+    const f = findLogEntryRanges('Dev log tabs: May 2026 §001–§012 · June 2026 §013–§035');
     expect(f).toHaveLength(1);
-    expect(f[0]!.detail).toContain('§123');
+    expect(f[0]!.detail).toContain('§001–§012');
+  });
+
+  it('FIRES on an inventory carrying NEITHER a tab name NOR a document ID', () => {
+    // The one inventory shape the two sibling rules provably cannot see, and
+    // the whole reason this rule survives rather than being deleted.
+    expect(findLogEntryRanges('log-001 §001–§035.1 · log-002 §036–§059 · log-003 §060–§133')).toHaveLength(1);
+  });
+
+  it('FIRES on the range that actually went stale', () => {
+    expect(findLogEntryRanges('September 2026 covers §106–§127')).toHaveLength(1);
+  });
+
+  it('FIRES on a HYPHEN range as well as an en dash — the documents use both', () => {
+    expect(findLogEntryRanges('log-003 §060-§133')).toHaveLength(1);
+    expect(findLogEntryRanges('log-003 §060–§133')).toHaveLength(1);
+    expect(findLogEntryRanges('log-003 §060—§133')).toHaveLength(1);
+  });
+
+  it('FIRES on a range whose second half omits the section sign', () => {
+    // "§001–035" is the same inventory shape written loosely.
+    expect(findLogEntryRanges('log-001 §001–035')).toHaveLength(1);
+  });
+
+  it('⚠ does NOT fire on the ToC’s cross-reference — a citation belongs', () => {
+    // Line 95 of the live ToC. It names where Incident 7 is written up in
+    // full; that is useful, and the broad form of this rule reported it as a
+    // failure, which is how a report earns the reader's indifference.
+    expect(findLogEntryRanges(TOC)).toEqual([]);
+    expect(
+      findLogEntryRanges('        (inserted before PERMANENT IDENTITY CORRECTIONS · Dev log §123)'),
+    ).toEqual([]);
+  });
+
+  it('does NOT fire on a bare citation in prose', () => {
+    expect(findLogEntryRanges('see Dev log §089.4 for the locked decisions')).toEqual([]);
+    expect(findLogEntryRanges('§123 and §124 are both about minting')).toEqual([]);
   });
 
   it('does NOT fire on a chapter number that is not a log reference', () => {
-    expect(findLogEntryRefs('CHAPTER 5.9 — HF Segment Sync\n    · 7.5 the Attio bridging chain')).toEqual([]);
+    expect(findLogEntryRanges('CHAPTER 5.9 — HF Segment Sync\n    · 7.5 the Attio bridging chain')).toEqual([]);
+    // A hyphen followed by words is not a range.
+    expect(findLogEntryRanges('§123 - see also the mint contract')).toEqual([]);
   });
 
   it('finds a log document ID, and ignores an unrelated one', () => {
