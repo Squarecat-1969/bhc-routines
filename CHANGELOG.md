@@ -2,6 +2,7 @@
 
 All dates are the routine-config install date. Newest first.
 
+<<<<<<< HEAD
 ## 2026-09-06 — Index maintenance workflow: the missing shared env key
 
 - **`index-maintenance.yml` now passes `ATTIO_API_KEY`.** Its first dispatch
@@ -212,6 +213,20 @@ The 2026-08-27 `#aida` timeline shows it plainly: the sweep staged one row at 10
 **Also this install:** routine model bumped from Sonnet to Opus. PASS 1 allocates BHC_IDs and writes to live CRMs against a five-step atomic contract and roughly fifteen numbered non-negotiables — instruction-following fidelity there is worth more than three runs a day of savings. Worth noting nobody knows whether Sonnet was always the setting or whether it drifted; if it drifted, that is the same silent-config-drift family already documented for this routine's trigger token.
 
 Prompt-only change — 445 → 422 lines. No `src/` touched, no tests affected. Installed to the cloud config Instructions panel and mirrored to the "Claude Code Routines" Google Doc the same day. **Confirmation is the next 15:11 PT post: PASS 1 / PASS 2 / Backfill, with no DISCOVERY line.**
+=======
+## 2026-08-15 — Actions bumped off the deprecated Node 20 runner
+
+All three workflows (`late-edition.yml`, `part-d.yml`, `contacts-triage.yml`) warned on every run: "Node.js 20 is deprecated… actions/checkout@v4, actions/setup-node@v4, actions/upload-artifact@v4 are being forced to run on Node.js 24." Those three are the only pinned actions in the repo — there is nothing else to bump.
+
+- `actions/checkout` **v4 → v5**, `actions/setup-node` **v4 → v5** — both are `node24` at v5, so one major clears it.
+- `actions/upload-artifact` **v4 → v6**, skipping v5. **v5 does not retire the warning**: its `action.yml` is still `runs.using: node20`, so bumping to it merely renames the action inside the same warning. The vendor's v6 notes say it outright — "v5 had preliminary support for Node.js 24, however this action was by default still running on Node.js 20." v6 is the first major that actually moves the runtime. This was caught by checking each tag's `action.yml` rather than trusting the major number; the v5 release notes are actively misleading here, headed `BREAKING CHANGE: this update supports Node v24.x`.
+
+Verified before committing: `upload-artifact@v6` is `runs.using: 'node24'`, and the four inputs in use (`name`, `path`, `retention-days`, `if-no-files-found`) are all present with unchanged semantics. The complete v5→v6 `action.yml` diff is a single line — the runtime — so nothing shifted beneath those inputs.
+
+- **`node-version: '20'` in setup-node is deliberately unchanged.** That is the Node the routines themselves execute on, a separate decision from the runner's own Node. Changing it would alter the runtime, not silence a warning.
+- **Other breaking changes checked, none apply.** `setup-node@v5` adds automatic package-manager caching when `package.json` has a `packageManager` field — this repo has none, and all three workflows set `cache: npm` explicitly, so caching behaviour is unchanged. The node24 actions require runner ≥ 2.327.1; all three jobs are `ubuntu-latest`.
+- Latest majors upstream are already v7 across all three. Staying one behind is deliberate — the goal (off node20) is met, and v7 carries its own breaking-change surface worth deciding separately.
+>>>>>>> origin/chore/actions-node24
 
 ## 2026-08-15 — Part D executed ZERO primary CRM writes for a month while reporting success
 
