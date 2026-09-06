@@ -2,6 +2,27 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-09-05 — Index maintenance wired to GitHub Actions
+
+- **`.github/workflows/index-maintenance.yml`.** Triggers are Dev log §089.4's,
+  verbatim: `workflow_dispatch` as the primary path plus a weekly safety net.
+- **Cron `0 17 * * 6`** — Saturday 17:00 UTC = **Sat 10:00 PDT / 09:00 PST**,
+  verified against real tz data. ONE expression, not a DST pair: a weekly net
+  has an hour of slack by design, so it avoids the double-fire bug
+  late-edition.yml shipped. Saturday morning keeps it clear of sessions even
+  4 hours late, which is how late GitHub cron was observed running.
+- **The 68-entry backlog is OPT-IN and separately bounded.** `scope: latest`
+  (default, and always used by the schedule) restricts a run to the newest log
+  tab via `latestSourceLabel()`, which reads the end of `SOURCE_TABS` so a new
+  month tab moves it with no workflow edit; `max_entries` caps entries per run
+  at 40. Reaching the backlog requires choosing `all-sources` by hand.
+- **Verified safe with nothing to do**: the exact scheduled command returns
+  0 unindexed, 0 LLM calls, 0 writes and **exit code 0**.
+- The run step branches on `github.event_name` before reading any input — a
+  scheduled trigger has no `inputs` context, and without the branch the weekly
+  run would silently dry-run and report success.
+- New CLI flag `--latest-source`. 1,368 tests pass.
+
 ## 2026-09-05 — Index maintenance routine built; first live run indexes September
 
 - **New: `src/lib/docs.ts` and `src/passes/index-maintenance/`.** Keeps the

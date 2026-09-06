@@ -65,6 +65,19 @@ export const SOURCE_TABS: readonly SourceTab[] = [
   { label: 'log-003 · September 2026', documentId: '1Qa3cHgEmWsWMEa4vc4WxKjVbLeLoeldSX9eyz54Z1zA', tabId: 't.jknmiezen1ga', measuredPreReadMs: 1771, measuredOn: '2026-09-05' },
 ];
 
+/**
+ * The newest source — the tab a session is currently writing into.
+ *
+ * ⚠ DERIVED FROM THE END OF `SOURCE_TABS`, NOT NAMED. A scheduled run must
+ * follow the current month without anyone remembering to edit a workflow; the
+ * list is maintained in chronological order, so adding a new month tab moves
+ * this automatically. Naming a month here would silently keep indexing
+ * September forever.
+ */
+export function latestSourceLabel(): string {
+  return SOURCE_TABS[SOURCE_TABS.length - 1]!.label;
+}
+
 /** `--source september` etc. The first live run indexes ONE tab, not the backlog. */
 export const SOURCE_ALIASES: Readonly<Record<string, string>> = {
   september: 'log-003 · September 2026',

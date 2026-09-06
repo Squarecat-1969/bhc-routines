@@ -10,6 +10,7 @@
 
 import { describe, expect, it } from 'vitest';
 
+import { SOURCE_ALIASES, SOURCE_TABS, latestSourceLabel } from '../../src/passes/index-maintenance/constants.js';
 import { excerptFor, parseIndexTab, parseSourceTab } from '../../src/passes/index-maintenance/parse.js';
 import {
   buildVocabulary,
@@ -383,6 +384,37 @@ describe('planWrites', () => {
     const plan = setup(['dedup gap']);
     for (const w of plan.writes) {
       expect(['insert-reference', 'update-count', 'insert-term']).toContain(w.kind);
+    }
+  });
+});
+
+describe('the scheduled run\'s scope', () => {
+  // ⚠ THE WEEKLY SAFETY NET RUNS `--latest-source`, AND THAT MUST FOLLOW THE
+  // CALENDAR WITHOUT ANYONE EDITING A WORKFLOW. Naming a month in the
+  // workflow would keep indexing September forever once October exists.
+  it('is the LAST source tab, so a new month tab moves it automatically', () => {
+    expect(latestSourceLabel()).toBe(SOURCE_TABS[SOURCE_TABS.length - 1]!.label);
+  });
+
+  it('resolves to a real, uniquely-labelled source', () => {
+    const label = latestSourceLabel();
+    expect(SOURCE_TABS.filter((s) => s.label === label)).toHaveLength(1);
+    const tab = SOURCE_TABS.find((s) => s.label === label)!;
+    // ⚠ tabId is REQUIRED on every call — an empty one resolves to the FIRST
+    // tab of the document and verifies clean.
+    expect(tab.tabId).not.toBe('');
+    expect(tab.documentId).not.toBe('');
+  });
+
+  it('gives every source a non-empty tabId — none may default to the first tab', () => {
+    for (const s of SOURCE_TABS) {
+      expect(s.tabId, `${s.label} has no tabId`).toMatch(/^t\./);
+    }
+  });
+
+  it('keeps every --source alias pointing at a real label', () => {
+    for (const [alias, label] of Object.entries(SOURCE_ALIASES)) {
+      expect(SOURCE_TABS.some((s) => s.label === label), `alias "${alias}"`).toBe(true);
     }
   });
 });

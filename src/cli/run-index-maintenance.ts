@@ -21,7 +21,7 @@ import { loadEnv } from '../config/env.js';
 import { AnthropicClient } from '../lib/anthropic.js';
 import { DocsClient } from '../lib/docs.js';
 import { createLogger } from '../lib/logger.js';
-import { SOURCE_ALIASES, SOURCE_TABS } from '../passes/index-maintenance/constants.js';
+import { SOURCE_ALIASES, SOURCE_TABS, latestSourceLabel } from '../passes/index-maintenance/constants.js';
 import { runIndexMaintenance } from '../passes/index-maintenance/index.js';
 import { renderReport } from '../passes/index-maintenance/report.js';
 
@@ -41,6 +41,11 @@ function parseArgs(argv: readonly string[]): Args {
     switch (a) {
       case '--live': args.dryRun = false; break;
       case '--dry-run': args.dryRun = true; break;
+      // ⚠ THE BACKLOG IS OPT-IN, AND THIS IS THE OPT-OUT OF IT. Restricts the
+      // run to the newest source tab — the one a session is writing into.
+      // Without it a scheduled run reaches all seven sources and 68 older
+      // unindexed entries, which is not what a weekly safety net is for.
+      case '--latest-source': args.sources.push(latestSourceLabel()); break;
       case '--no-llm': args.noLlm = true; break;
       // ⚠ RECOVERY ONLY — re-judges indexed entries at full LLM cost.
       case '--ignore-watermark': args.ignoreWatermark = true; break;

@@ -104,6 +104,76 @@ Three survived a first pass and were fixed by adding what was missing, not by we
 
 ---
 
-## 5. Deliberately not built
+## 5. The GitHub Actions wiring (2026-09-05)
+
+`.github/workflows/index-maintenance.yml`. Triggers are §089.4's, verbatim:
+*"Triggered by workflow_dispatch at session close rather than cron, since the
+log only changes when a session writes to it, plus a weekly safety-net run."*
+
+### The cron, and why it is one expression rather than two
+
+```
+cron: '0 17 * * 6'   Saturday 17:00 UTC
+  · Saturday 10:00 PDT (UTC-7, roughly Mar-Nov)
+  · Saturday 09:00 PST (UTC-8, roughly Nov-Mar)
+```
+
+Verified against real tz data for 2026-01-10, 2026-07-11 and 2026-11-07.
+
+⚠ **Deliberately NOT a DST pair.** `late-edition.yml` needs two expressions and
+a runtime guard because it must hit a specific Pacific hour — and it shipped a
+real double-run bug on exactly that. A weekly safety net has an hour of slack
+by design, so the DST shift is absorbed rather than corrected for, and there is
+no second expression that could double-fire.
+
+⚠ **Saturday morning, because a mid-session fire would index a half-written
+entry** — the excerpt would quote an unfinished sentence, and the watermark
+would then record that entry as done, so the finished version would never be
+re-read. The window is also what makes it safe against GitHub cron being
+"best effort": Late Edition was observed running **2.5-4 hours late every
+night**. Four hours late here is Saturday 13:00-14:00 PT, still nowhere near a
+session and clear of Late Edition (Sun-Thu 23:00 PT).
+
+### The backlog is OPT-IN, and separately bounded
+
+Both, because either alone is insufficient:
+
+- **`scope: latest` (the default, and what the schedule always uses)** restricts
+  a run to the newest source tab. `latestSourceLabel()` reads the END of
+  `SOURCE_TABS` rather than naming a month, so adding an October tab moves it
+  with no workflow edit — pinned by test. **Reaching the 68-entry backlog
+  requires choosing `all-sources` by hand.**
+- **`max_entries`** (default 40) caps entries assigned per run regardless, and
+  the run reports how many were left.
+
+A bound alone would still chew through the backlog silently over consecutive
+Saturdays, spending real Anthropic budget on a corpus nobody is waiting on. An
+opt-in alone would let one deliberate backlog run do all 68 in a single
+invocation. The pair means the backlog only moves when someone asks, and then
+only in reviewable batches.
+
+### Safe with nothing to do — verified, not assumed
+
+The weekly net will find nothing most weeks. Running the exact scheduled
+command (`--live --latest-source`) against the current index:
+
+```
+0 unindexed · 0 LLM calls · 0 planned writes · attempted 0 · CONFIRMED 0
+EXIT CODE: 0
+```
+
+The CLI fails only on an abort or on `writesConfirmed !== writesAttempted`;
+0 === 0, so a no-op run is green rather than a false alarm.
+
+⚠ **A scheduled trigger has no `inputs` context at all** — only
+`workflow_dispatch` populates it. The run step branches on
+`github.event_name` before reading any input, because without that the weekly
+run reads every input as empty, falls through to `--dry-run`, and reports
+success having written nothing. That is the failure `late-edition.yml` records
+having shipped.
+
+---
+
+## 6. Deliberately not built
 
 **No wholesale replacement, expressible nowhere.** **No Plan indexing** (§2). **No backlog run** — 68 older entries remain unindexed, including §002 and §005; the first live run was September alone by instruction, and the backlog is a separate, larger decision. **No schedule** — `workflow_dispatch` plus §089.4's weekly safety net still to be wired.

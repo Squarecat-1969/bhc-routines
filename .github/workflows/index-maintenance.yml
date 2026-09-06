@@ -1,0 +1,156 @@
+name: Index maintenance
+
+# TWO TRIGGERS, AND THE SPLIT IS FROM Dev log §089.4 (2026-08-23, "decisions
+# locked"), not from convenience:
+#
+#   "Triggered by workflow_dispatch at session close rather than cron, since
+#    the log only changes when a session writes to it, plus a weekly
+#    safety-net run."
+#
+# workflow_dispatch is the PRIMARY path. Nothing is worth indexing until a
+# session's entries are written, and writing them is a human act — a cron that
+# fires on an unchanged log spends real Anthropic budget to discover there is
+# nothing to do.
+#
+# The weekly cron is the SAFETY NET, and it exists because dispatch alone
+# fails in exactly the wrong correlation: the index falls behind precisely
+# when Bobby is busy enough to forget to dispatch it, which is when the most
+# is being written. §089.4 anticipated that; the 68-entry backlog this routine
+# inherited is what it looks like in practice.
+#
+# ⚠ ONE CRON EXPRESSION, NOT A DST PAIR — DELIBERATELY DIFFERENT FROM
+# late-edition.yml. GitHub cron is always UTC and does not observe DST, so a
+# workflow that must hit a specific Pacific HOUR needs two expressions plus a
+# runtime guard, and Late Edition shipped a real double-run bug on exactly
+# that. This one does not need it: a weekly safety net has an hour of slack by
+# design, so the one-hour DST shift is absorbed rather than corrected for, and
+# there is no second expression that could double-fire.
+#
+#   cron: '0 17 * * 6'  =  Saturday 17:00 UTC
+#     · Saturday 10:00 PDT (UTC-7, roughly Mar-Nov)
+#     · Saturday 09:00 PST (UTC-8, roughly Nov-Mar)
+#
+# ⚠ WHY SATURDAY MORNING, AND WHY IT HAS TO BE FAR FROM A SESSION. A run that
+# fires mid-session would read a half-written entry and index it — the excerpt
+# would quote an unfinished sentence, and the watermark would then record that
+# entry as done, so the finished version would never be re-read. Saturday
+# morning is clear of Bobby's evening sessions and clear of Late Edition
+# (Sun-Thu 23:00 PT).
+#
+# That margin is also what makes this safe against GitHub's cron being
+# "best effort": Late Edition was observed running 2.5-4 HOURS late every
+# night it was scheduled (late-edition.yml documents the whole history). Four
+# hours late here is Saturday 13:00-14:00 PT — still nowhere near a session.
+# A safety net timed to the minute would have inherited that bug.
+
+on:
+  schedule:
+    - cron: '0 17 * * 6'   # Sat 17:00 UTC = Sat 10:00 PDT / 09:00 PST
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'dry-run reads everything and prints the planned writes without touching the index; live writes it'
+        required: true
+        default: 'dry-run'
+        type: choice
+        options:
+          - dry-run
+          - live
+      scope:
+        description: 'latest = the newest log tab only (what a session just wrote). all-sources = ALSO the 68-entry backlog — opt in deliberately, it is a large LLM spend.'
+        required: true
+        default: 'latest'
+        type: choice
+        options:
+          - latest
+          - all-sources
+      max_entries:
+        description: 'Cap on entries assigned in one run (blank = the built-in 40). The second bound on the backlog: it is processed over several runs, never in one.'
+        required: false
+        type: string
+      ignore_watermark:
+        description: 'RECOVERY ONLY. Re-judge entries the index already references, at full LLM cost. Needed after a partially-failed run left an entry indexed under some terms and not others.'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  # Two runs writing the index at once would compute their anchors against
+  # different states of the same tab. The second would fail closed on a
+  # RANGE_ANCHOR_MISMATCH rather than corrupt anything, but a queued run is
+  # the better outcome than a failed one.
+  group: index-maintenance
+  cancel-in-progress: false
+
+jobs:
+  index-maintenance:
+    name: Index maintenance — keep the keyword index's coverage current
+    runs-on: ubuntu-latest
+    # Measured 2026-09-05: the September tab alone (22 entries, 82 writes) took
+    # ~11 minutes, because every write is a find plus a verified write and a
+    # verified write is ~2.5x its pre-read against a 310,967-character index.
+    # Generous margin above that for a fuller run and for retry backoff.
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+      - name: Run index maintenance
+        env:
+          BRAIN_API_TOKEN: ${{ secrets.BRAIN_API_TOKEN }}
+          ANTHROPIC_BHC_ROUTINES_API: ${{ secrets.ANTHROPIC_BHC_ROUTINES_API }}
+          RUN_TIMEZONE: UTC
+        run: |
+          FLAGS="--json-out out/index-maintenance-report.json"
+
+          # ⚠ A SCHEDULED TRIGGER HAS NO `inputs` CONTEXT AT ALL — only
+          # workflow_dispatch populates it. Without this branch every input
+          # below reads as empty on the weekly run, which would silently make
+          # the safety net a dry run that reports success and writes nothing.
+          # That is the failure late-edition.yml records having shipped.
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            # The safety net indexes for real, and ONLY the newest tab.
+            FLAGS="$FLAGS --live --latest-source"
+            echo "Scheduled safety-net run: --live, newest source tab only."
+          else
+            if [ "${{ inputs.mode }}" = "live" ]; then
+              FLAGS="$FLAGS --live"
+            else
+              FLAGS="$FLAGS --dry-run"
+            fi
+            # ⚠ THE BACKLOG IS OPT-IN. `latest` restricts the run to the tab a
+            # session is currently writing into. `all-sources` reaches all
+            # seven sources and the 68 older unindexed entries — a real
+            # Anthropic spend on a corpus nobody is waiting on, which must be
+            # a decision rather than a default.
+            if [ "${{ inputs.scope }}" != "all-sources" ]; then
+              FLAGS="$FLAGS --latest-source"
+            else
+              echo "BACKLOG OPT-IN: all seven sources selected."
+            fi
+            if [ -n "${{ inputs.max_entries }}" ]; then FLAGS="$FLAGS --max-llm-calls ${{ inputs.max_entries }}"; fi
+            if [ "${{ inputs.ignore_watermark }}" = "true" ]; then FLAGS="$FLAGS --ignore-watermark"; fi
+          fi
+
+          echo "Flags: $FLAGS"
+          npx tsx src/cli/run-index-maintenance.ts $FLAGS
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: index-maintenance-report-${{ github.run_id }}
+          path: out/index-maintenance-report.json
+          # Contains verbatim excerpts of Dev log entries — keep the retention
+          # window short.
+          retention-days: 7
+          if-no-files-found: warn
