@@ -1,0 +1,99 @@
+name: Documents QC
+
+# ⚠ READ-ONLY. This routine reads the Plan, its Table of Contents, the keyword
+# index and every Dev log tab, and writes to none of them. There is no
+# insertText, no replaceRange and no insertLink anywhere in the pass, and no
+# --live flag, because there is nothing to gate.
+#
+# THE REASON IT NEVER EDITS IS CAPABILITY, NOT CAUTION. On 2026-09-05 a Dev log
+# tab inventory was written into the Plan's ToC and removed the same day — but
+# a routine that deleted prose failing to match a generated list would also
+# delete that ToC's opening paragraph and its note about blank page-break
+# headings, both deliberate. A checker cannot tell a mistake from an intention
+# without judgement. It surfaces; a human decides.
+#
+# WEEKLY, AFTER THE INDEX RUN. Nothing here is urgent and all of it is silent —
+# a renamed tab or a moved document breaks links with no symptom until someone
+# clicks one. Index maintenance runs Saturday 17:00 UTC and takes ~11 minutes
+# at its longest; this follows at 18:00 UTC so it reads the index as the index
+# run left it.
+#
+#   cron: '0 18 * * 6'  =  Saturday 18:00 UTC
+#     · Saturday 11:00 PDT (UTC-7, roughly Mar-Nov)
+#     · Saturday 10:00 PST (UTC-8, roughly Nov-Mar)
+#
+# ONE EXPRESSION, NOT A DST PAIR, for the same reason index-maintenance.yml
+# uses one: a weekly check has an hour of slack by design, so the DST shift is
+# absorbed rather than corrected for, and there is no second expression that
+# could double-fire. GitHub cron is best-effort and was observed running Late
+# Edition 2.5-4 hours late; four hours late here is Saturday afternoon Pacific,
+# which is still clear of a session and still after the index run.
+
+on:
+  schedule:
+    - cron: '0 18 * * 6'   # Sat 18:00 UTC = Sat 11:00 PDT / 10:00 PST
+  workflow_dispatch:
+
+concurrency:
+  # It writes nothing, so a concurrent run cannot corrupt anything — but two
+  # runs reading five large documents at once is wasted budget against a route
+  # whose pre-reads are the expensive half.
+  group: docs-qc
+  cancel-in-progress: false
+
+jobs:
+  docs-qc:
+    name: Documents QC — read-only
+    runs-on: ubuntu-latest
+    # Reads the Plan (194k), its ToC, nine index tabs and six log tabs.
+    # ⚠ log-002 pre-reads at 6,477-17,800ms depending on where it is measured
+    # from — WHERE A MEASUREMENT WAS TAKEN IS PART OF THE MEASUREMENT, and
+    # GitHub runners came in 1.8-2.2x local on the same document with a 20%
+    # spread between two runs minutes apart. Budgeted generously for that.
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+      - name: Run documents QC
+        env:
+          BRAIN_API_TOKEN: ${{ secrets.BRAIN_API_TOKEN }}
+          # ⚠ Passed although this routine never touches Attio. `loadEnv`
+          # validates the whole shared schema up front and this is one of its
+          # two required keys; index-maintenance.yml failed its first dispatch
+          # on exactly this omission. tests/workflows.test.ts derives the
+          # required set from loadEnv and asserts every workflow passes it.
+          ATTIO_API_KEY: ${{ secrets.ATTIO_API_KEY }}
+          RUN_TIMEZONE: UTC
+        run: |
+          # ⚠ A scheduled trigger has NO `inputs` context at all. This pass
+          # takes no inputs, so there is nothing to read wrongly — the branch
+          # exists to say so out loud, because the opposite mistake has shipped
+          # twice in this repo and the next person to add an input here needs
+          # to see where it would go.
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "Weekly scheduled QC run — read-only, no inputs."
+          else
+            echo "Manual dispatch — read-only, no inputs."
+          fi
+          npx tsx src/cli/run-docs-qc.ts --json-out out/docs-qc-report.json
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: docs-qc-report-${{ github.run_id }}
+          path: out/docs-qc-report.json
+          # Contains verbatim lines from the Plan and its ToC — keep the
+          # retention window short.
+          retention-days: 7
+          if-no-files-found: warn

@@ -3,6 +3,37 @@
 All dates are the routine-config install date. Newest first.
 
 <<<<<<< HEAD
+## 2026-09-06 — The documents QC routine
+
+- **New: `src/passes/docs-qc/`, `docs/qc-manifest.md`, `.github/workflows/docs-qc.yml`.**
+  Checks that each governing document holds what it declares it holds. **It
+  reports and never edits** — capability, not caution: a routine that deleted
+  prose failing to match a generated list would also delete the ToC's
+  deliberate preamble. `writesIssued: 0`, and no write method is referenced
+  anywhere in the pass.
+- ⚠ **THE ACCEPTANCE TEST IS FOUND, and it is the only thing that rule
+  reports:** the ToC's "PERMANENT IDENTITY CORRECTIONS" entry, whose heading
+  was demoted to normal text after the 2026-08-30 migration linked it, so
+  `h.68mlrx18r7t` resolves to nothing. Caught WITHOUT reading link markup —
+  `/api/brain/docs` carries none in either format and reports 0 of 83 real
+  links — by checking the link's TARGET instead.
+- **12 rules, each carrying the incident that earned it, in a manifest a human
+  reads before writing.** A test asserts the code and `docs/qc-manifest.md`
+  cannot drift.
+- **Findings:** the ToC states 11 omitted blank headings and there are **15**;
+  13 level-1/2 Plan headings absent from the ToC; one §NNN reference in the
+  ToC. **Gaps by name:** 46 log entries and 41 Plan headings uncovered by the
+  index — reported as gaps, never failures.
+- **Two exclusions, both read from the document rather than hardcoded:** the
+  ToC's prose preamble, and the block it marks itself "not re-generated from
+  live headings". Without the second, two false positives.
+- **17 mutation checks, all caught; 6 survived a first pass.** One exposed a
+  genuinely dead guard — bare `startsWith` treats the empty string as matching
+  everything, which silently made the blank-heading filter dead code. Now
+  `prefixMatch` with a minimum length.
+- Weekly, Saturday 18:00 UTC (11:00 PDT / 10:00 PST), one hour after index
+  maintenance. `npm run docs-qc`. 1,415 tests pass.
+
 ## 2026-09-06 — The index routine writes LINKED references
 
 - **New entries are now clickable.** `read` gains `includeHeadings`, and
