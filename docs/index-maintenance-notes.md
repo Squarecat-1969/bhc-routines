@@ -172,6 +172,48 @@ run reads every input as empty, falls through to `--dry-run`, and reports
 success having written nothing. That is the failure `late-edition.yml` records
 having shipped.
 
+### The first dispatch failed on shared env, not on anything in this routine
+
+`Invalid environment: ATTIO_API_KEY: Required`, thrown by `loadEnv` before any
+work started. The flags were correct — the `event_name` branch worked.
+
+⚠ **`loadEnv` validates the WHOLE shared schema up front.** Derived
+empirically by removing each key in turn rather than read off the file, its
+required set is **exactly two**:
+
+| key | |
+|---|---|
+| `BRAIN_API_TOKEN` | **required** |
+| `ATTIO_API_KEY` | **required** |
+| `ANTHROPIC_BHC_ROUTINES_API`, `ZAPIER_SLACK_HOOK_URL`, `FATHOM_API_KEY`, `FATHOM_API_BASE` | optional |
+| `RUN_TIMEZONE`, `SHEETS_PROXY_URL`, `DOCS_PROXY_URL`, `ATTIO_API_BASE` | defaulted |
+
+So a routine that reads Google Docs and calls Anthropic still fails at startup
+without an Attio key. **All seven other workflows pass both**; this was the only
+one that did not, and that is the whole defect. One line, in the workflow —
+narrowing the schema per-routine is a change to config seven workflows depend on.
+
+`ANTHROPIC_BHC_ROUTINES_API` is worth naming separately: optional in the schema,
+but the CLI hard-requires it unless `--no-llm`. That requirement lives outside
+`env.ts` and an audit of the schema alone would miss it.
+
+**The artifact warning was downstream, confirmed rather than assumed.**
+Reproduced with `ATTIO_API_KEY` unset: same error, same line, and **no report
+file** — `loadEnv` throws before `writeFileSync` is reached. The CLI exits **1**,
+so the job goes red at the run step; `if-no-files-found: warn` is noise after an
+already-failed run, not a silent no-op upload. With the key present the report
+is written and the run exits 0.
+
+**`tests/workflows.test.ts` now derives the required set from `loadEnv` itself
+and asserts every workflow passes it.** Mutation-checked both ways: reverting
+the fix fails it, and making an optional key required fails it. A hardcoded list
+would have rotted exactly the way the schema changed.
+
+*(An aside worth keeping: verifying this, a hand-rolled harness passed the token
+with its surrounding quotes and the route answered **404**. That is Rule 1
+working — a bad Bearer is indistinguishable from a missing route — and §105
+records the same trap. The fix was the harness, not the routine.)*
+
 ---
 
 ## 6. Deliberately not built

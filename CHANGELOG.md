@@ -2,6 +2,26 @@
 
 All dates are the routine-config install date. Newest first.
 
+## 2026-09-06 — Index maintenance workflow: the missing shared env key
+
+- **`index-maintenance.yml` now passes `ATTIO_API_KEY`.** Its first dispatch
+  failed with `Invalid environment: ATTIO_API_KEY: Required` — `loadEnv`
+  validates the whole shared schema up front, so a routine that never touches
+  Attio still aborts at startup without it. The flags were correct; the run
+  never got far enough to use them.
+- **The schema requires exactly two keys** — `BRAIN_API_TOKEN` and
+  `ATTIO_API_KEY` — derived by removing each in turn rather than read off the
+  file. **All seven other workflows pass both**; this was the only one that did
+  not, so one line is provably sufficient and there is no second missing key.
+- Fixed in the workflow, not in `env.ts`: narrowing the schema per-routine is a
+  change to config seven workflows depend on.
+- **The artifact warning was downstream, confirmed not assumed.** Reproduced
+  with the key unset: same error, no report file, CLI exit code 1. The job goes
+  red at the run step, so `if-no-files-found: warn` is not masking anything.
+- **New `tests/workflows.test.ts`** derives the required set from `loadEnv`
+  itself and asserts every workflow passes it — mutation-checked both
+  directions. This would have caught the failure before dispatch.
+
 ## 2026-09-05 — Index maintenance wired to GitHub Actions
 
 - **`.github/workflows/index-maintenance.yml`.** Triggers are Dev log §089.4's,

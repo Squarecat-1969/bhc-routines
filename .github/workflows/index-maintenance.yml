@@ -107,6 +107,20 @@ jobs:
       - name: Run index maintenance
         env:
           BRAIN_API_TOKEN: ${{ secrets.BRAIN_API_TOKEN }}
+          # ⚠ PASSED THOUGH THIS ROUTINE NEVER TOUCHES ATTIO. `loadEnv`
+          # validates the WHOLE shared schema up front, before any routine
+          # runs, and BRAIN_API_TOKEN and ATTIO_API_KEY are its only two
+          # required keys — so an index run that reads Google Docs and calls
+          # Anthropic still fails at startup without this one. It failed on
+          # exactly that on its first dispatch, 2026-09-05.
+          #
+          # Fixed here rather than by narrowing the schema per-routine: that is
+          # shared config seven other workflows depend on. Every one of those
+          # seven passes this key; this was the only workflow that did not.
+          ATTIO_API_KEY: ${{ secrets.ATTIO_API_KEY }}
+          # Optional in the schema, but the CLI hard-requires it unless
+          # --no-llm is passed — a requirement that lives outside env.ts and
+          # would be missed by auditing the schema alone.
           ANTHROPIC_BHC_ROUTINES_API: ${{ secrets.ANTHROPIC_BHC_ROUTINES_API }}
           RUN_TIMEZONE: UTC
         run: |
