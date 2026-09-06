@@ -3,6 +3,32 @@
 All dates are the routine-config install date. Newest first.
 
 <<<<<<< HEAD
+## 2026-09-06 — The index routine writes LINKED references
+
+- **New entries are now clickable.** `read` gains `includeHeadings`, and
+  references are written as three runs — `· ` + linked `§NNN · DATE · Log` +
+  ` “excerpt”` — matching the 610 migrated lines exactly.
+- ⚠ **The URL comes from the route, not from string concatenation here.** The
+  route returns a pre-built `url` per heading; assembling it a second time
+  would be the same string built in two places, and a wrong anchor links to the
+  top of the document while every verification passes.
+- ⚠ **Three runs inserted in REVERSE at one fixed index** — no index arithmetic
+  (document indices count structural positions) and no style inheritance
+  (inserting forward would put the excerpt after the linked run, where Docs
+  would absorb it into the link).
+- ⚠ **Both verification dimensions checked separately.** `contentVerified` is
+  as true for a plain run as a linked one; `linkVerified` is what proves the
+  link. The run counts links confirmed, not writes confirmed.
+- **Live: §128-§133, 16 of 16 links confirmed on both dimensions, 34 of 34
+  writes confirmed, 0 plain fallbacks.** Verified through the TNB-Docs-Bridge's
+  markdown with a migrated line as control, because `/api/brain/docs` strips
+  link markup and reports zero across every link in the document.
+- **The 90 plain lines from 2026-09-05 were deliberately NOT retrofitted.**
+  Backfill is a separate pass.
+- Noted for bhc-aida: `health.writeNote` still says "no styling" while
+  `writeActions` lists `insertLink` — a stale point-in-time fact in the one
+  place a caller checks capability.
+
 ## 2026-09-06 — Index maintenance workflow: the missing shared env key
 
 - **`index-maintenance.yml` now passes `ATTIO_API_KEY`.** Its first dispatch

@@ -216,6 +216,110 @@ records the same trap. The fix was the harness, not the routine.)*
 
 ---
 
-## 6. Deliberately not built
+## 6. Linked references (2026-09-06)
+
+Both prerequisites shipped in `bhc-aida`, and both were verified live rather
+than taken on description:
+
+- `read` accepts **`includeHeadings: true`** and returns `headings[]` with
+  `headingId`, `level`, `text`, `startIndex`/`endIndex`, `plainTextStartIndex`,
+  `linkable`, **and a pre-built `url`**, plus `headingCount` and
+  `unlinkableHeadingCount`.
+- **`insertLink`** is in `writeActions` and `validActions`, taking
+  `action, documentId, tabId, index, text, url`.
+
+⚠ **THE ROUTE BUILDS THE URL; THE ROUTINE DOES NOT.** The brief describes
+constructing `…/edit?tab=<tabId>#heading=<headingId>`, and the route hands that
+string over already assembled. Concatenating it a second time here would be the
+same string built in two places — the shape that drifts — and a wrong anchor
+writes a link that resolves to the top of the document while every verification
+still passes. `heading.url` is used verbatim.
+
+⚠ **ANCHORS ARE KEYED BY LOCATOR, NEVER BY ARRAY POSITION.** The headings array
+and the parsed entries are two independent walks of the same tab, and the tab
+title is itself a heading; pairing them by index would mis-link every entry
+after the first non-entry heading. `linkable: false` means the reference is
+written PLAIN rather than linked to the wrong place.
+
+### Three runs, inserted in reverse at one fixed index
+
+The 610 migrated references link the `§NNN · DATE · Log` prefix only, leaving
+the bullet and the quotation outside the link, so a line is three runs:
+`· ` + **linked locator** + ` “excerpt”`.
+
+They are inserted **in reverse order at a single fixed index**, which removes
+two failure modes at once:
+
+1. **No index arithmetic.** Every insert goes at exactly `at` and pushes what
+   was already inserted rightward, so no run's position is derived from another
+   run's length. Document indices count structural positions as well as
+   characters, so that arithmetic is exactly the kind that drifts.
+2. **No style inheritance.** Google Docs inherits formatting from the text
+   immediately BEFORE an insertion point, and `at` always sits at the end of
+   the plain anchor line. Inserting forward would place the excerpt directly
+   after the linked run, where it would inherit the link and swallow the
+   quotation into it.
+
+### ⚠ Both verification dimensions, checked separately
+
+`contentVerified` is the byte comparison — **exactly as true for a plain
+unlinked run as for a linked one, because the text is identical either way.**
+`linkVerified` re-reads and confirms the stored link resolves. The state that
+matters is `contentVerified: true, linkVerified: false`: a reference that reads
+correctly and is not clickable, which is the whole defect this removes.
+`assertLinkVerified` requires both explicitly rather than delegating to the
+route's outer `verified`, and the run counts **links confirmed**, not writes
+confirmed.
+
+### Live results, 2026-09-06 — §128 to §133
+
+| | |
+|---|---|
+| entries indexed | **6** — §128 §129 §130 §131 §132 §133 |
+| references planned LINKED / plain | **16 / 0** |
+| links CONFIRMED on both dimensions | **16 of 16** |
+| writes confirmed | **34 of 34** |
+
+Sample outcome: `linked · content=true link=true · deltas 3/23/147`.
+
+**Verified through the BRIDGE's markdown, with a control.** `/api/brain/docs`
+strips link markup and reports zero across every link in the document, so a
+zero result there is indistinguishable from a real absence — a migrated line is
+used as the control that proves the renderer works. All three generations are
+visible in one term block:
+
+```
+· [Ch 11 · Plan](…1Hx1gXee…#heading=h.knelq9wzlctn) “never landed in the CRM's…”   <- control, migrated
+· §106 · 2026-09-01 · Log “Task reconciliation needed calendar as an evidence…”     <- 2026-09-05, plain
+· [§128 · 2026-09-05 · Log](…1Qa3cHgE…?tab=t.jknmiezen1ga#heading=h.81qozxqtdz99)
+    “The routine the Docs route was built for, three weeks after that route…”       <- LINKED
+```
+
+The bullet and the quotation sit outside the link, matching the migrated shape
+exactly — the reverse-insert ordering held.
+
+**The 90 plain lines from 2026-09-05 were NOT retrofitted**, confirmed in the
+same read: §106, §108, §109, §111, §115-§124 are all still plain. Backfill is a
+separate pass; mixing it in would have given one failure two possible causes.
+
+### Two things this run surfaced
+
+**§133 hit the response schema's 12-term cap on the dry run** (`terms: Array
+must contain at most 12 element(s)`) and produced no assignment, though it
+succeeded on the live run. Session-close entries summarise everything and are
+the natural outlier — measured range elsewhere is 2-6 terms per entry. Left as
+is: the cap is doing its job, the failure is visible, and the watermark retries
+the entry. Raising it is tuning, and should follow evidence rather than one
+outlier.
+
+**`health.writeNote` is stale and now self-contradictory.** It still reads
+*"Writing is insertText and replaceRange only … no styling"* while
+`writeActions` lists `insertLink`, and `measuredAt` is `2026-08-31`. That is a
+point-in-time fact standing as a rule (Contract Rule 8) in the one place a
+caller checks capability. `bhc-aida` owns it.
+
+---
+
+## 7. Deliberately not built
 
 **No wholesale replacement, expressible nowhere.** **No Plan indexing** (§2). **No backlog run** — 68 older entries remain unindexed, including §002 and §005; the first live run was September alone by instruction, and the backlog is a separate, larger decision. **No schedule** — `workflow_dispatch` plus §089.4's weekly safety net still to be wired.

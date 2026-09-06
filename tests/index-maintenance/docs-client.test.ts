@@ -8,7 +8,7 @@
 import { createServer, type Server } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { DocsClient, DocsWriteUnverified, assertVerified } from '../../src/lib/docs.js';
+import { DocsClient, DocsWriteUnverified, assertLinkVerified, assertVerified } from '../../src/lib/docs.js';
 
 interface Recorded { readonly body: Record<string, unknown>; }
 
@@ -127,5 +127,50 @@ describe('guards', () => {
       json: { ok: false, error: 'Unrecognised action "x".', validActions: ['health', 'read'] },
     }));
     await expect(client.listTabs('d')).rejects.toThrow(/valid actions: health, read/);
+  });
+});
+
+describe('insertLink — BOTH verification dimensions', () => {
+  const linked = { ...okWrite, contentVerified: true, linkVerified: true };
+
+  it('accepts only when contentVerified AND linkVerified are both true', () => {
+    expect(assertLinkVerified(linked as never, 'x').verified).toBe(true);
+  });
+
+  // ⚠⚠ THE STATE THIS WHOLE CHANGE EXISTS TO CATCH.
+  it('REJECTS text that landed without its link', () => {
+    // contentVerified true, linkVerified false = the characters are right and
+    // the line is not clickable. The byte comparison cannot tell the
+    // difference, because the bytes are identical either way.
+    expect(() =>
+      assertLinkVerified({ ...linked, linkVerified: false } as never, 'x'),
+    ).toThrow(/THE TEXT LANDED BUT THE LINK DID NOT/);
+  });
+
+  it('rejects a missing linkVerified rather than treating absence as success', () => {
+    expect(() => assertLinkVerified({ ...okWrite } as never, 'x')).toThrow(DocsWriteUnverified);
+  });
+
+  it('rejects contentVerified false', () => {
+    expect(() => assertLinkVerified({ ...linked, contentVerified: false } as never, 'x')).toThrow(/contentVerified/);
+  });
+
+  it('still requires the outer envelope — deltaVariance must be 0', () => {
+    expect(() => assertLinkVerified({ ...linked, deltaVariance: 4 } as never, 'x')).toThrow(DocsWriteUnverified);
+  });
+
+  it('sends tabId, index, text and url, and never repairs the url', async () => {
+    const { seen, client } = await fake(() => ({ status: 200, json: linked }));
+    await client.insertLink({ documentId: 'd', tabId: 't.9', index: 12, text: '§128 · 2026-09-05 · Log', url: 'https://docs.google.com/x#heading=h.a' });
+    expect(seen[0]!.body).toMatchObject({
+      action: 'insertLink', documentId: 'd', tabId: 't.9', index: 12,
+      text: '§128 · 2026-09-05 · Log', url: 'https://docs.google.com/x#heading=h.a',
+    });
+  });
+
+  it('sends the link write exactly once, even on a 503 (Rule 11)', async () => {
+    const { seen, client } = await fake(() => ({ status: 503, json: { ok: false, error: 'upstream' } }));
+    await expect(client.insertLink({ documentId: 'd', tabId: 't', index: 1, text: 'a', url: 'https://e' })).rejects.toThrow();
+    expect(seen).toHaveLength(1);
   });
 });

@@ -80,6 +80,14 @@ export type PlannedWrite =
       readonly text: string;
       /** The existing line this one goes after — the anchor `find` will locate. */
       readonly afterLine: string;
+      /**
+       * When present the reference is written as THREE RUNS — plain prefix,
+       * LINKED locator, plain excerpt — matching the 610 migrated lines, which
+       * link the `§NNN · DATE · Log` prefix only and leave the bullet and the
+       * quotation outside the link. Absent means a plain line, which is what
+       * an entry with no linkable heading still gets.
+       */
+      readonly link: { readonly prefix: string; readonly linkText: string; readonly url: string; readonly suffix: string } | null;
     }
   | {
       readonly kind: 'update-count';
@@ -99,11 +107,23 @@ export type PlannedWrite =
       readonly afterLine: string;
     };
 
-export function referenceLine(entry: SourceEntry, excerptChars?: number): string {
+/**
+ * The three runs of a reference line, split exactly where the migrated lines
+ * split: `· ` + [linked `§NNN · DATE · Log`] + ` “excerpt”`.
+ */
+export function referenceRuns(
+  entry: SourceEntry,
+  excerptChars?: number,
+): { prefix: string; linkText: string; suffix: string } {
   const excerpt = excerptFor(entry, excerptChars);
   const dated = entry.date ? `${entry.locator} · ${entry.date}` : entry.locator;
   // Curly quotes, matching every existing line in the index.
-  return `· ${dated} · Log “${excerpt}”`;
+  return { prefix: '· ', linkText: `${dated} · Log`, suffix: ` “${excerpt}”` };
+}
+
+export function referenceLine(entry: SourceEntry, excerptChars?: number): string {
+  const r = referenceRuns(entry, excerptChars);
+  return `${r.prefix}${r.linkText}${r.suffix}`;
 }
 
 export function countLine(term: string, count: number): string {
@@ -233,6 +253,7 @@ export function planWrites(args: {
       const anchor = uniqueAnchor(lines, at);
       lines.splice(at + 1, 0, line);
 
+      const runs = referenceRuns(entry, args.excerptChars);
       writes.push({
         kind: 'insert-reference',
         tabId: existing.tab.tabId,
@@ -241,6 +262,7 @@ export function planWrites(args: {
         locator: entry.locator,
         text: line,
         afterLine: anchor,
+        link: entry.headingUrl ? { ...runs, url: entry.headingUrl } : null,
       });
       existing.refs.push(line);
       perTerm.set(term, (perTerm.get(term) ?? 0) + 1);

@@ -11,7 +11,12 @@
 import { describe, expect, it } from 'vitest';
 
 import { SOURCE_ALIASES, SOURCE_TABS, latestSourceLabel } from '../../src/passes/index-maintenance/constants.js';
-import { excerptFor, parseIndexTab, parseSourceTab } from '../../src/passes/index-maintenance/parse.js';
+import {
+  excerptFor,
+  headingUrlsByLocator,
+  parseIndexTab,
+  parseSourceTab,
+} from '../../src/passes/index-maintenance/parse.js';
 import {
   buildVocabulary,
   buildWatermark,
@@ -416,5 +421,68 @@ describe('the scheduled run\'s scope', () => {
     for (const [alias, label] of Object.entries(SOURCE_ALIASES)) {
       expect(SOURCE_TABS.some((s) => s.label === label), `alias "${alias}"`).toBe(true);
     }
+  });
+});
+
+describe('linked references', () => {
+  const HEADINGS = [
+    { text: 'September 2026', url: 'https://x/#heading=h.tab', linkable: true },
+    { text: '§106 — Calendar evidence: Google tried, abandoned, and why · 2026-09-01', url: 'https://docs.google.com/document/d/D/edit?tab=t.T#heading=h.aaa', linkable: true },
+    { text: '§117 — Suppression against prior human decisions · 2026-09-01', url: 'https://docs.google.com/document/d/D/edit?tab=t.T#heading=h.bbb', linkable: true },
+    { text: '§999 — No anchor · 2026-09-01', url: '', linkable: false },
+  ];
+
+  it('keys anchors by LOCATOR, never by array position', () => {
+    // The headings array and the parsed entries are two independent walks of
+    // the same tab, and the tab title is a heading too. Pairing by index would
+    // mis-link every entry after the first non-entry heading.
+    const m = headingUrlsByLocator(HEADINGS);
+    expect(m.get('§106')).toBe('https://docs.google.com/document/d/D/edit?tab=t.T#heading=h.aaa');
+    expect(m.get('§117')).toBe('https://docs.google.com/document/d/D/edit?tab=t.T#heading=h.bbb');
+    expect(m.has('September 2026')).toBe(false);
+  });
+
+  it('omits a heading Google gave no anchor, rather than inventing one', () => {
+    expect(headingUrlsByLocator(HEADINGS).has('§999')).toBe(false);
+  });
+
+  it('splits a reference exactly where the migrated lines split', () => {
+    // `· [§NNN · DATE · Log](url) “excerpt”` — the bullet and the quotation
+    // stay OUTSIDE the link, matching all 610 migrated references.
+    const entry = { ...parseSourceTab(SEPTEMBER)[0]!, headingUrl: 'https://e/#h' };
+    const plan = planWrites({
+      assignments: [{ entry, terms: ['dedup gap'], proposedTerms: [] }],
+      vocabulary: buildVocabulary([failure(), routines()]),
+      tabsById: new Map([failure(), routines(), additional()].map((t) => [t.tabId, t])),
+      additionalTermsTabId: 't.add',
+      today: '2026-09-05',
+    });
+    const ref = plan.writes.find((w) => w.kind === 'insert-reference')!;
+    const link = ref.kind === 'insert-reference' ? ref.link : null;
+    expect(link).not.toBeNull();
+    expect(link!.prefix).toBe('· ');
+    expect(link!.linkText).toBe('§106 · 2026-09-01 · Log');
+    expect(link!.suffix.startsWith(' “')).toBe(true);
+    expect(link!.suffix.endsWith('”')).toBe(true);
+    // The three runs reassemble into exactly the plain line.
+    expect(`${link!.prefix}${link!.linkText}${link!.suffix}`).toBe(
+      ref.kind === 'insert-reference' ? ref.text : '',
+    );
+    // ⚠ The link text must not swallow the quotation.
+    expect(link!.linkText).not.toContain('“');
+  });
+
+  it('falls back to a PLAIN reference when the entry has no anchor', () => {
+    // Written plain rather than linked to the wrong place.
+    const entry = parseSourceTab(SEPTEMBER)[0]!; // headingUrl null
+    const plan = planWrites({
+      assignments: [{ entry, terms: ['dedup gap'], proposedTerms: [] }],
+      vocabulary: buildVocabulary([failure(), routines()]),
+      tabsById: new Map([failure(), routines(), additional()].map((t) => [t.tabId, t])),
+      additionalTermsTabId: 't.add',
+      today: '2026-09-05',
+    });
+    const ref = plan.writes.find((w) => w.kind === 'insert-reference')!;
+    expect(ref.kind === 'insert-reference' && ref.link).toBeNull();
   });
 });

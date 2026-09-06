@@ -44,7 +44,13 @@ import {
   type SourceTab,
 } from './constants.js';
 import { assignTerms, type AssignmentOutcome } from './llm.js';
-import { parseIndexTab, parseSourceTab, type IndexTab, type SourceEntry } from './parse.js';
+import {
+  headingUrlsByLocator,
+  parseIndexTab,
+  parseSourceTab,
+  type IndexTab,
+  type SourceEntry,
+} from './parse.js';
 import {
   buildVocabulary,
   buildWatermark,
@@ -107,6 +113,16 @@ export interface IndexMaintenanceReport {
   /** CONFIRMED by the route's byte comparison, never the count we intended. */
   readonly writesConfirmed: number;
   readonly writesAttempted: number;
+  /** References planned as LINKED (the entry had a usable anchor). */
+  readonly linkedReferencesPlanned: number;
+  /** References planned as plain because no anchor was available. */
+  readonly plainReferencesPlanned: number;
+  /**
+   * Links whose BOTH dimensions came back true — contentVerified AND
+   * linkVerified. Counted separately from writes, because a write can confirm
+   * while its link does not.
+   */
+  readonly linksConfirmed: number;
   readonly outcomes: readonly WriteOutcome[];
   readonly warnings: readonly string[];
 }
@@ -143,6 +159,9 @@ export async function runIndexMaintenance(opts: IndexMaintenanceOptions): Promis
       plannedByTab: {},
       writesConfirmed: 0,
       writesAttempted: 0,
+      linkedReferencesPlanned: 0,
+      plainReferencesPlanned: 0,
+      linksConfirmed: 0,
       outcomes: [],
       warnings: [],
     };
@@ -217,8 +236,24 @@ async function runInner(
   const allEntries: SourceEntry[] = [];
 
   for (const src of selected) {
-    const read = await docs.read(src.documentId, src.tabId);
-    const entries = parseSourceTab(read.content);
+    // ⚠ HEADINGS ARE REQUESTED HERE because this is where a link's anchor
+    // comes from. The route reports Google's own headingId verbatim and never
+    // invents one, and hands back the full URL already assembled.
+    const read = await docs.read(src.documentId, src.tabId, true);
+    const headingUrls = headingUrlsByLocator(read.headings ?? []);
+    const entries = parseSourceTab(read.content, headingUrls);
+    const linkable = entries.filter((e) => e.headingUrl !== null).length;
+    if (linkable < entries.length) {
+      // Not an abort: a reference with no anchor is written PLAIN rather than
+      // linked to the wrong place. Reported so it is visible.
+      warnings.push(
+        `${src.label}: ${entries.length - linkable} of ${entries.length} entries have no linkable heading — ` +
+          'their references will be written as plain text',
+      );
+    }
+    if ((read.unlinkableHeadingCount ?? 0) > 0) {
+      warnings.push(`${src.label}: ${read.unlinkableHeadingCount} heading(s) carry no Google anchor`);
+    }
     allEntries.push(...entries);
     sourcesRead.push({ label: src.label, chars: read.charCount, preReadMs: read.preReadMs, entries: entries.length });
     const drift = read.preReadMs / Math.max(1, src.measuredPreReadMs);
@@ -321,15 +356,17 @@ async function runInner(
   // --- STEP 5 — write.
   const writeOutcomes: WriteOutcome[] = [];
   let writesConfirmed = 0;
+  let linksConfirmed = 0;
 
   if (dryRun) {
     logger.info(`  DRY RUN — nothing written. ${plan.writes.length} write(s) would be sent.`);
   } else {
     for (const w of plan.writes) {
       try {
-        const detail = await applyWrite(docs, w);
+        const applied = await applyWrite(docs, w);
         writesConfirmed += 1;
-        writeOutcomes.push({ write: w, verified: true, detail });
+        if (applied.linkConfirmed) linksConfirmed += 1;
+        writeOutcomes.push({ write: w, verified: true, detail: applied.detail });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         writeOutcomes.push({ write: w, verified: false, detail: message });
@@ -340,7 +377,9 @@ async function runInner(
         logger.warn(`  FAILED ${w.kind} ${w.term}: ${message}`);
       }
     }
+    const linkedPlanned = plan.writes.filter((w) => w.kind === 'insert-reference' && w.link !== null).length;
     logger.info(`  ${writesConfirmed} of ${plan.writes.length} write(s) CONFIRMED by byte comparison`);
+    logger.info(`  ${linksConfirmed} of ${linkedPlanned} link(s) CONFIRMED on BOTH dimensions (contentVerified AND linkVerified)`);
   }
 
   return {
@@ -364,6 +403,9 @@ async function runInner(
     plannedByTab,
     writesConfirmed,
     writesAttempted: dryRun ? 0 : plan.writes.length,
+    linkedReferencesPlanned: plan.writes.filter((w) => w.kind === 'insert-reference' && w.link !== null).length,
+    plainReferencesPlanned: plan.writes.filter((w) => w.kind === 'insert-reference' && w.link === null).length,
+    linksConfirmed,
     outcomes: writeOutcomes,
     warnings,
   };
@@ -393,7 +435,10 @@ function selectSources(labels: readonly string[] | undefined): readonly SourceTa
  * and `fromLine` on a PlannedWrite came out of `parseIndexTab`, so the curly
  * quotes in it are the document's own.
  */
-async function applyWrite(docs: DocsClient, w: PlannedWrite): Promise<string> {
+async function applyWrite(
+  docs: DocsClient,
+  w: PlannedWrite,
+): Promise<{ detail: string; linkConfirmed: boolean }> {
   if (w.kind === 'update-count') {
     const found = await docs.find(INDEX_DOC_ID, w.tabId, w.fromLine);
     if (found.matchCount !== 1) {
@@ -408,19 +453,63 @@ async function applyWrite(docs: DocsClient, w: PlannedWrite): Promise<string> {
       expectedStartsWith: w.fromLine.slice(0, 12),
       expectedEndsWith: w.fromLine.slice(-8),
     });
-    return `delta ${res.delta}/${res.expectedDelta}`;
+    return { detail: `delta ${res.delta}/${res.expectedDelta}`, linkConfirmed: false };
   }
 
   const found = await docs.find(INDEX_DOC_ID, w.tabId, w.afterLine);
   if (found.matchCount !== 1) {
     throw new Error(`anchor for "${w.term}" matched ${found.matchCount} times — refusing to write`);
   }
-  const res = await docs.insertText({
+  const at = found.endIndex;
+
+  if (w.kind === 'insert-term' || w.link === null) {
+    const res = await docs.insertText({
+      documentId: INDEX_DOC_ID,
+      tabId: w.tabId,
+      // Immediately after the anchor line, before its newline's successor.
+      index: at,
+      text: `\n${w.text}`,
+    });
+    return { detail: `delta ${res.delta}/${res.expectedDelta} (plain)`, linkConfirmed: false };
+  }
+
+  // ⚠ THREE RUNS, INSERTED IN REVERSE ORDER AT ONE FIXED INDEX.
+  //
+  // The migrated lines link the `§NNN · DATE · Log` prefix only, leaving the
+  // bullet and the quotation outside the link, so the line has to be built
+  // from three runs rather than one.
+  //
+  // Reverse order at a FIXED index buys two things at once, and both are
+  // failure modes rather than tidiness:
+  //
+  //  1. NO INDEX ARITHMETIC. Each insert goes at exactly `at` and pushes what
+  //     was already inserted to the right, so no run's position is computed
+  //     from another run's length. Document indices count structural
+  //     positions as well as characters, so that arithmetic is exactly the
+  //     kind that drifts.
+  //  2. NO STYLE INHERITANCE. Google Docs inherits formatting from the text
+  //     immediately BEFORE an insertion point, and `at` always sits at the end
+  //     of the plain anchor line. Inserting forward instead would place the
+  //     excerpt directly after the linked run, where it would inherit the link
+  //     and swallow the quotation into it.
+  const suffix = await docs.insertText({ documentId: INDEX_DOC_ID, tabId: w.tabId, index: at, text: w.link.suffix });
+  const link = await docs.insertLink({
     documentId: INDEX_DOC_ID,
     tabId: w.tabId,
-    // Immediately after the anchor line, before its newline's successor.
-    index: found.endIndex,
-    text: `\n${w.text}`,
+    index: at,
+    text: w.link.linkText,
+    url: w.link.url,
   });
-  return `delta ${res.delta}/${res.expectedDelta}`;
+  const prefix = await docs.insertText({
+    documentId: INDEX_DOC_ID,
+    tabId: w.tabId,
+    index: at,
+    text: `\n${w.link.prefix}`,
+  });
+  return {
+    detail:
+      `linked · content=${String(link.contentVerified)} link=${String(link.linkVerified)} · ` +
+      `deltas ${prefix.delta}/${link.delta}/${suffix.delta}`,
+    linkConfirmed: link.contentVerified !== false && link.linkVerified === true,
+  };
 }

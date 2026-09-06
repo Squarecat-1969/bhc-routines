@@ -41,6 +41,18 @@ export function renderReport(r: IndexMaintenanceReport): string {
     out.push(`  ⚠ no failure-class term (§089.4 makes one mandatory on an incident/bug/correction): ${r.missingFailureClass.join(', ')}`);
   }
 
+  out.push('', 'LINKS');
+  out.push(`  references planned LINKED : ${r.linkedReferencesPlanned}`);
+  out.push(`  references planned plain  : ${r.plainReferencesPlanned}${r.plainReferencesPlanned > 0 ? '  ⚠ no linkable heading' : ''}`);
+  if (!r.dryRun) {
+    // ⚠ BOTH DIMENSIONS. contentVerified true with linkVerified false is a
+    // line that reads right and is not clickable.
+    out.push(`  links CONFIRMED (content AND link) : ${r.linksConfirmed} of ${r.linkedReferencesPlanned}`);
+    if (r.linksConfirmed !== r.linkedReferencesPlanned) {
+      out.push(`  ⚠ ${r.linkedReferencesPlanned - r.linksConfirmed} link(s) did NOT confirm on both dimensions`);
+    }
+  }
+
   out.push('', `PLANNED WRITES — ${r.planned.length}${r.dryRun ? '  (NOTHING WAS WRITTEN)' : ''}`);
   for (const [tab, n] of Object.entries(r.plannedByTab)) out.push(`  ${String(n).padStart(4, ' ')}  ${tab}`);
   out.push('');
@@ -50,9 +62,14 @@ export function renderReport(r: IndexMaintenanceReport): string {
       out.push(`             ${JSON.stringify(w.fromLine)}`);
       out.push(`          -> ${JSON.stringify(w.toLine)}`);
     } else if (w.kind === 'insert-reference') {
-      out.push(`  [ref]    ${w.tabTitle} · ${w.term} · ${w.locator}`);
+      out.push(`  [${w.link ? 'LINK' : 'ref '}]   ${w.tabTitle} · ${w.term} · ${w.locator}`);
       out.push(`           after ${JSON.stringify(w.afterLine.slice(0, 90))}`);
-      out.push(`           +     ${JSON.stringify(w.text)}`);
+      if (w.link) {
+        out.push(`           runs  ${JSON.stringify(w.link.prefix)} + [${JSON.stringify(w.link.linkText)}](link) + ${JSON.stringify(w.link.suffix)}`);
+        out.push(`           url   ${w.link.url}`);
+      } else {
+        out.push(`           +     ${JSON.stringify(w.text)}`);
+      }
     } else {
       out.push(`  [term]   ${w.tabTitle} · PROPOSED "${w.term}" from ${w.locator}`);
       out.push(`           +     ${JSON.stringify(w.text.slice(0, 160))}`);

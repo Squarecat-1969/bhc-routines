@@ -188,9 +188,39 @@ export interface SourceEntry {
   readonly lineNo: number;
   /** The entry's body, for the LLM to read. Bounded by the next heading. */
   readonly body: string;
+  /**
+   * The Google Docs anchor for this entry's heading, as the ROUTE built it.
+   * Null when the source was read without headings, or when Google gave the
+   * heading no anchor (`linkable: false`) — in which case the reference is
+   * written plain rather than linked to the wrong place.
+   */
+  readonly headingUrl: string | null;
 }
 
-export function parseSourceTab(content: string): SourceEntry[] {
+/** headingId -> url, keyed by the heading TEXT the tab actually carries. */
+export type HeadingUrls = ReadonlyMap<string, string>;
+
+/**
+ * Index the route's headings by locator, so an entry can find its own anchor.
+ *
+ * ⚠ KEYED ON THE LOCATOR PARSED OUT OF THE HEADING TEXT, not on position.
+ * The headings array and the parsed entries are two independent walks of the
+ * same tab; pairing them by array index would silently mis-link every entry
+ * after the first non-entry heading (the tab title is one).
+ */
+export function headingUrlsByLocator(
+  headings: readonly { text: string; url: string; linkable: boolean }[],
+): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const h of headings) {
+    if (!h.linkable) continue;
+    const m = ENTRY_RE.exec(h.text);
+    if (m) out.set(m[1]!, h.url);
+  }
+  return out;
+}
+
+export function parseSourceTab(content: string, headingUrls?: HeadingUrls): SourceEntry[] {
   const lines = content.split('\n');
   const heads: { locator: string; title: string; lineNo: number }[] = [];
 
@@ -209,6 +239,7 @@ export function parseSourceTab(content: string): SourceEntry[] {
       date: dateMatch ? dateMatch[1]! : null,
       lineNo: h.lineNo,
       body,
+      headingUrl: headingUrls?.get(h.locator) ?? null,
     };
   });
 }

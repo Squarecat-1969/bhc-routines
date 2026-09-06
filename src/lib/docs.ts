@@ -68,6 +68,30 @@ export interface TabInfo {
   readonly charCountScope: string;
 }
 
+export interface DocHeading {
+  readonly headingId: string;
+  readonly level: number;
+  readonly text: string;
+  /** DOCUMENT index space. */
+  readonly startIndex: number;
+  readonly endIndex: number;
+  /** Offset into format "text". NEVER pass this to a write. */
+  readonly plainTextStartIndex: number;
+  /**
+   * False when Google gave the heading no anchor. The route lists it rather
+   * than omitting it, so an unlinkable entry is visible instead of missing.
+   */
+  readonly linkable: boolean;
+  /**
+   * ⚠ THE ROUTE BUILDS THIS. Prefer it over assembling
+   * `…/edit?tab=<tabId>#heading=<headingId>` by hand — the same string
+   * concatenated in two places is the shape that drifts, and a wrong anchor
+   * writes a link that resolves to the top of the document while every
+   * verification still passes.
+   */
+  readonly url: string;
+}
+
 export interface ReadResult {
   readonly tabId: string;
   readonly tabTitle: string;
@@ -77,6 +101,10 @@ export interface ReadResult {
   readonly returnedCharCount: number;
   readonly truncated: boolean;
   readonly preReadMs: number;
+  /** Present only when `includeHeadings` was requested. */
+  readonly headings?: readonly DocHeading[];
+  readonly headingCount?: number;
+  readonly unlinkableHeadingCount?: number;
 }
 
 export interface FindResult {
@@ -99,6 +127,22 @@ export interface WriteResult {
   readonly expectedDelta: number;
   readonly deltaVariance: number;
   readonly byteComparison?: string;
+  /**
+   * insertLink only — TWO INDEPENDENT DIMENSIONS, AND THE OUTER `verified` IS
+   * NOT A SUBSTITUTE FOR EITHER.
+   *
+   * `contentVerified` is the byte comparison: the characters landed. It is
+   * exactly as true for a plain unlinked run as for a linked one, because the
+   * text is identical either way.
+   *
+   * `linkVerified` re-reads and confirms the STORED LINK resolves. The state
+   * this catches — contentVerified true, linkVerified false — is a reference
+   * line that reads correctly and is not clickable, which is precisely the
+   * defect this whole change exists to remove. Checking only `verified` would
+   * let it through the moment the route's own AND ever loosened.
+   */
+  readonly contentVerified?: boolean;
+  readonly linkVerified?: boolean;
 }
 
 export class DocsWriteUnverified extends Error {
@@ -171,9 +215,12 @@ export class DocsClient {
   }
 
   /** ⚠ `tabId` is not optional. See the header note. */
-  async read(documentId: string, tabId: string): Promise<ReadResult> {
+  async read(documentId: string, tabId: string, includeHeadings = false): Promise<ReadResult> {
     const res = await this.call<ReadResult>(
-      { action: 'read', documentId, tabId },
+      // ⚠ OPT-IN. Heading extraction is only requested where a link is
+      // actually going to be built, so a source read that needs none does not
+      // pay for it.
+      { action: 'read', documentId, tabId, ...(includeHeadings ? { includeHeadings: true } : {}) },
       `docs:read ${documentId}/${tabId}`,
     );
     if (res.truncated) {
@@ -209,6 +256,35 @@ export class DocsClient {
       `docs:insertText ${args.documentId}/${args.tabId}@${args.index}`,
     );
     return assertVerified(res, `insertText @${args.index}`);
+  }
+
+  /**
+   * Insert a LINKED run of text at a DOCUMENT index.
+   *
+   * ⚠ THE URL IS PASSED THROUGH, NEVER REPAIRED. The route refuses a URL with
+   * no scheme rather than guessing one, and this client adds no normalisation
+   * of its own — a corrected URL is a guess about intent, and a wrong guess
+   * writes a link to the wrong place while reporting success.
+   */
+  async insertLink(args: {
+    readonly documentId: string;
+    readonly tabId: string;
+    readonly index: number;
+    readonly text: string;
+    readonly url: string;
+  }): Promise<WriteResult> {
+    const res = await this.callOnce<WriteResult>(
+      {
+        action: 'insertLink',
+        documentId: args.documentId,
+        tabId: args.tabId,
+        index: args.index,
+        text: args.text,
+        url: args.url,
+      },
+      `docs:insertLink ${args.documentId}/${args.tabId}@${args.index}`,
+    );
+    return assertLinkVerified(res, `insertLink @${args.index}`);
   }
 
   /**
@@ -256,6 +332,31 @@ export class DocsClient {
  * write. `verified` must be true AND `deltaVariance` must be 0 — a positive
  * but too-small delta is a truncated write reported as a success.
  */
+/**
+ * ⚠ BOTH DIMENSIONS, EXPLICITLY — not just the outer `verified`.
+ *
+ * `contentVerified: true, linkVerified: false` is a reachable state through
+ * the normal write path: the text lands as plain unlinked characters and the
+ * byte comparison passes, because the bytes are the same either way. Reading
+ * only `verified` delegates that check to the route's own AND, which is
+ * exactly the kind of second-hand assurance Rule 6's correction warns about.
+ */
+export function assertLinkVerified(res: WriteResult & Envelope, label: string): WriteResult {
+  assertVerified(res, label);
+  if (res.contentVerified === false) {
+    throw new DocsWriteUnverified(`${label}: contentVerified is false`, res, res.writeMayHaveLanded ?? true);
+  }
+  if (res.linkVerified !== true) {
+    throw new DocsWriteUnverified(
+      `${label}: THE TEXT LANDED BUT THE LINK DID NOT (linkVerified=${String(res.linkVerified)}) — ` +
+        'the reference reads correctly and is not clickable',
+      res,
+      res.writeMayHaveLanded ?? true,
+    );
+  }
+  return res;
+}
+
 export function assertVerified(res: WriteResult & Envelope, label: string): WriteResult {
   if (res.verified === true && res.deltaVariance === 0) return res;
   throw new DocsWriteUnverified(
