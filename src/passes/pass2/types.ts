@@ -7,7 +7,12 @@ export interface RawEmailMessage {
   readonly senderName: string;
   readonly senderEmail: string;
   readonly recipientName: string;
-  readonly recipientEmail: string;
+  /**
+   * Every address in `recipient_email`, split. Measured 2026-09-07: 54 of the
+   * 128 non-empty values across Brain_Complete hold two or more comma-joined
+   * addresses, so this is a list for exactly the reason ccEmails is.
+   */
+  readonly recipientEmails: readonly string[];
   /** Emails extracted from the cc_list field — see parseCcList's own comment for the real shape. */
   readonly ccEmails: readonly string[];
   readonly subject: string;

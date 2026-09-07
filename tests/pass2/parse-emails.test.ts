@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { isOwnedAddress, parseCcList, parseRawEmailsJson, stripOwned } from '../../src/passes/pass2/parse-emails.js';
+import {
+  isOwnedAddress,
+  parseAddressList,
+  parseCcList,
+  parseRawEmailsJson,
+  stripOwned,
+} from '../../src/passes/pass2/parse-emails.js';
 
 describe('parseCcList', () => {
   it('extracts addresses from the real observed shape (Python-dict-repr, not JSON)', () => {
@@ -25,6 +31,57 @@ describe('parseCcList', () => {
 
   it('does not crash on garbage input', () => {
     expect(parseCcList('not an address list at all')).toEqual([]);
+  });
+});
+
+describe('parseAddressList', () => {
+  it('splits the real comma-joined value that broke row 356', () => {
+    // ⚠ THE LIVE DEFECT, verbatim from Brain_Complete row 356. Read as one
+    // string this matched nothing anywhere, even though Chris Martin has been
+    // bridged as BHC-00715 since 2026-04-13.
+    expect(parseAddressList('chris.martin@dcsg.com,rachel.norris@dcsg.com')).toEqual([
+      'chris.martin@dcsg.com',
+      'rachel.norris@dcsg.com',
+    ]);
+  });
+
+  it('splits the three-address value from row 261', () => {
+    expect(parseAddressList('jhughes@hmlglaw.com,sholmes@hmlglaw.com,sevrin@thenewblank.com')).toEqual([
+      'jhughes@hmlglaw.com',
+      'sholmes@hmlglaw.com',
+      'sevrin@thenewblank.com',
+    ]);
+  });
+
+  it('leaves a single plain address completely unchanged', () => {
+    // ⚠ THE OTHER HALF OF THE MUTATION. 74 of the 128 live recipient_email
+    // values hold exactly one address; a splitter that disturbed them would
+    // trade one broken case for seventy-four.
+    expect(parseAddressList('alice@example.com')).toEqual(['alice@example.com']);
+  });
+
+  it('trims surrounding whitespace and lowercases, as the old scalar path did', () => {
+    expect(parseAddressList(' Chris.Martin@DCSG.com , rachel.norris@dcsg.com ')).toEqual([
+      'chris.martin@dcsg.com',
+      'rachel.norris@dcsg.com',
+    ]);
+  });
+
+  it('returns [] for empty or separator-only input rather than an empty address', () => {
+    // A '' entry would look like a real participant to everything downstream.
+    expect(parseAddressList('')).toEqual([]);
+    expect(parseAddressList('   ')).toEqual([]);
+    expect(parseAddressList(',,')).toEqual([]);
+    expect(parseAddressList('a@x.com,,b@y.com')).toEqual(['a@x.com', 'b@y.com']);
+  });
+
+  it('does NOT split on a semicolon, because no live value contains one', () => {
+    // ⚠ DELIBERATE, NOT AN OVERSIGHT. Measured 2026-09-07: zero semicolons and
+    // zero display-name forms across all 516 messages. This test pins the
+    // narrowness so that widening it is a decision someone makes on evidence,
+    // rather than something that drifts in. If real data ever carries a
+    // semicolon, change parseAddressList and change this test with it.
+    expect(parseAddressList('a@x.com;b@y.com')).toEqual(['a@x.com;b@y.com']);
   });
 });
 
@@ -76,6 +133,26 @@ describe('parseRawEmailsJson', () => {
   it('returns [] for malformed JSON rather than throwing', () => {
     expect(parseRawEmailsJson('not json')).toEqual([]);
     expect(parseRawEmailsJson('{}')).toEqual([]); // valid JSON but not an array
+  });
+
+  it('splits a multi-address recipient_email into separate addresses', () => {
+    const raw = JSON.stringify([
+      {
+        email_msg_id: 'm1',
+        direction: 'Outbound',
+        sender_email: 'Bobby@thenewblank.com',
+        recipient_email: 'Chris.Martin@dcsg.com,Rachel.Norris@dcsg.com',
+        cc_list: '',
+      },
+    ]);
+    expect(parseRawEmailsJson(raw)[0]!.recipientEmails).toEqual([
+      'chris.martin@dcsg.com',
+      'rachel.norris@dcsg.com',
+    ]);
+  });
+
+  it('gives a blank recipient_email an empty list, not a list holding ""', () => {
+    expect(parseRawEmailsJson(sample)[0]!.recipientEmails).toEqual([]);
   });
 
   it('skips items with no email_msg_id', () => {

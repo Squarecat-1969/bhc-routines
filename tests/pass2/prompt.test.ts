@@ -7,7 +7,7 @@ import type { RawEmailMessage } from '../../src/passes/pass2/types.js';
 function msg(opts: Partial<RawEmailMessage>): RawEmailMessage {
   return {
     recordId: '', emailMsgId: '1', receivedAt: '2026-07-18T00:00:00Z', sourceMailbox: '', direction: 'Inbound',
-    senderName: 'Alice', senderEmail: 'alice@x.com', recipientName: '', recipientEmail: '', ccEmails: [],
+    senderName: 'Alice', senderEmail: 'alice@x.com', recipientName: '', recipientEmails: [], ccEmails: [],
     subject: 'Hello', body: 'Hey there', threadId: '',
     ...opts,
   };

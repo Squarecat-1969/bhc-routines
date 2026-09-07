@@ -1,8 +1,9 @@
 /**
  * Raw_Emails_JSON parsing.
  *
- * Two things below are real findings from a live Thread_Staging read
- * (2026-07-18, checking PASS 0/1's dry-run numbers), not guesses:
+ * The three things below are real findings from live data, not guesses.
+ * 1 and 2 come from a Thread_Staging read (2026-07-18, checking PASS 0/1's
+ * dry-run numbers); 3 from a scan of all 394 Brain_Complete rows (2026-09-07):
  *
  *   1. `recipient_email` was blank on every inbound sample message seen. The
  *      spec's resolution cascade ("primary = sender if inbound, principal
@@ -14,6 +15,16 @@
  *      Single-quoted, Python-dict-repr-style, multiple entries newline-joined.
  *      `parseCcList` extracts via regex rather than JSON.parse, and tries
  *      JSON.parse first as a defensive fallback in case some rows differ.
+ *
+ *   3. `recipient_email` holds MULTIPLE comma-joined addresses on real
+ *      outbound threads — e.g. "chris.martin@dcsg.com,rachel.norris@dcsg.com".
+ *      Until 2026-09-07 it was read as one string, so PASS 2 handed
+ *      identifyPrimaryAndSecondary a single "address" that could never match
+ *      anything: Brain_Complete row 356 resolved to no contact at all even
+ *      though Chris Martin has been bridged as BHC-00715 since 2026-04-13.
+ *      The same string also defeated stripOwned on the SECONDARY path, because
+ *      a joined string containing sevrin@thenewblank.com is not itself an
+ *      owned address. See parseAddressList for the measured separator set.
  */
 
 import { OWNED_DOMAINS, OWNED_EMAILS } from '../../config/constants.js';
@@ -46,6 +57,34 @@ export function parseCcList(raw: string): readonly string[] {
     if (match[1]) emails.push(match[1]);
   }
   return emails;
+}
+
+/**
+ * Split an address-list field into individual addresses.
+ *
+ * ⚠ THE SEPARATOR SET IS MEASURED, NOT IMAGINED. Scanned 2026-09-07 across all
+ * 394 Brain_Complete rows / 516 messages:
+ *
+ *   sender_email     516 non-empty values, ZERO holding more than one address
+ *   recipient_email  128 non-empty values, 54 holding two or more — and every
+ *                    single one of those 54 is comma-joined
+ *
+ * No semicolons, no `Name <addr@x.com>` display-name forms, no pipes, no
+ * newlines, no whitespace-joined pairs — in either field. Those shapes are
+ * common in other mail clients and are the obvious things to defend against.
+ * They are not in THIS data, and handling them would be untested code wearing
+ * the appearance of a guarantee. ⚠ IF A SEMICOLON OR AN ANGLE BRACKET EVER
+ * APPEARS HERE, this function and its test are the two places to change; the
+ * splitter is deliberately narrow so that day is a visible edit, not a silent
+ * near-miss.
+ *
+ * `sender_email` is left a scalar for the same reason: measured, never plural.
+ */
+export function parseAddressList(raw: string): readonly string[] {
+  return raw
+    .split(',')
+    .map((e) => e.trim().toLowerCase())
+    .filter((e) => e !== '');
 }
 
 function str(v: unknown): string {
@@ -85,7 +124,7 @@ export function parseRawEmailsJson(raw: string): readonly RawEmailMessage[] {
       senderName: str(m['sender_name']),
       senderEmail: str(m['sender_email']).toLowerCase(),
       recipientName: str(m['recipient_name']),
-      recipientEmail: str(m['recipient_email']).toLowerCase(),
+      recipientEmails: parseAddressList(str(m['recipient_email'])),
       ccEmails: parseCcList(str(m['cc_list'])).map((e) => e.toLowerCase()),
       subject: str(m['subject']),
       body: str(m['body']),

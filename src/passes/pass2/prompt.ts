@@ -57,7 +57,7 @@ function formatMessage(m: RawEmailMessage, index: number): string {
   return [
     `--- Message ${index + 1} (${m.direction}, ${m.receivedAt}) ---`,
     `From: ${m.senderName} <${m.senderEmail}>`,
-    m.recipientEmail ? `To: ${m.recipientName} <${m.recipientEmail}>` : null,
+    m.recipientEmails.length > 0 ? `To: ${m.recipientName} <${m.recipientEmails.join(', ')}>` : null,
     m.ccEmails.length > 0 ? `Cc: ${m.ccEmails.join(', ')}` : null,
     `Subject: ${m.subject}`,
     '',

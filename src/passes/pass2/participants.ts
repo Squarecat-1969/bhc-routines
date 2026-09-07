@@ -15,7 +15,11 @@ export interface PrimarySecondary {
  * Fallback chain for "principal recipient" on an outbound thread, since real
  * data shows `recipient_email` is often blank (see parse-emails.ts's header
  * comment) — not spec'd, an inferred design choice:
- *   1. The most recent outbound message's recipient_email, if populated.
+ *   1. The first EXTERNAL address in the most recent outbound message's
+ *      recipient_email. That field is an address LIST, not one address (54 of
+ *      128 live values hold two or more), so "is the recipient owned?" is a
+ *      per-address question — a thread addressed to Bobby AND to a client must
+ *      resolve to the client, not fall through to cc.
  *   2. That same message's first external cc_email.
  *   3. The most-frequently-appearing external email across the whole thread
  *      (any role) — a last-resort heuristic, not a confident signal.
@@ -25,9 +29,8 @@ function principalRecipient(messages: readonly RawEmailMessage[]): string | null
   const mostRecentOutbound = outbound[outbound.length - 1];
 
   if (mostRecentOutbound) {
-    if (mostRecentOutbound.recipientEmail !== '' && !isOwnedAddress(mostRecentOutbound.recipientEmail)) {
-      return mostRecentOutbound.recipientEmail;
-    }
+    const externalRecipients = stripOwned(mostRecentOutbound.recipientEmails);
+    if (externalRecipients.length > 0) return externalRecipients[0]!;
     const externalCc = stripOwned(mostRecentOutbound.ccEmails);
     if (externalCc.length > 0) return externalCc[0]!;
   }
@@ -35,7 +38,7 @@ function principalRecipient(messages: readonly RawEmailMessage[]): string | null
   // Last resort: most frequent external address across all messages/roles.
   const counts = new Map<string, number>();
   for (const m of messages) {
-    for (const e of stripOwned([m.senderEmail, m.recipientEmail, ...m.ccEmails])) {
+    for (const e of stripOwned([m.senderEmail, ...m.recipientEmails, ...m.ccEmails])) {
       if (e === '') continue;
       counts.set(e, (counts.get(e) ?? 0) + 1);
     }
@@ -66,9 +69,17 @@ export function identifyPrimaryAndSecondary(
     primaryEmail = !isOwnedAddress(last.senderEmail) && last.senderEmail !== '' ? last.senderEmail : null;
   }
 
+  // ⚠ THE SECONDARY PATH HAD THE SAME BUG AS THE PRIMARY ONE. Spreading
+  // recipientEmails rather than passing one joined string does two things at
+  // once: each address becomes its own participant, and stripOwned can finally
+  // see the owned ones. Before 2026-09-07 a value like
+  // "jhughes@hmlglaw.com,sholmes@hmlglaw.com,sevrin@thenewblank.com" arrived as
+  // a single "address" that was not itself owned, so it survived stripOwned
+  // whole — smuggling an internal address into the participant list while
+  // hiding two real contacts inside it. Brain_Complete row 261 is that row.
   const allExternal = new Set<string>();
   for (const m of messages) {
-    for (const e of stripOwned([m.senderEmail, m.recipientEmail, ...m.ccEmails])) {
+    for (const e of stripOwned([m.senderEmail, ...m.recipientEmails, ...m.ccEmails])) {
       if (e !== '') allExternal.add(e);
     }
   }

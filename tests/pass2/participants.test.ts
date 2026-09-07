@@ -12,7 +12,7 @@ function msg(opts: Partial<RawEmailMessage> & { emailMsgId: string }): RawEmailM
     senderName: '',
     senderEmail: '',
     recipientName: '',
-    recipientEmail: '',
+    recipientEmails: [],
     ccEmails: [],
     subject: '',
     body: '',
@@ -32,14 +32,14 @@ describe('identifyPrimaryAndSecondary', () => {
   });
 
   it('outbound: primary is recipient_email when populated', () => {
-    const messages = [msg({ emailMsgId: '1', direction: 'Outbound', senderEmail: 'bobby@thenewblank.com', recipientEmail: 'alice@x.com' })];
+    const messages = [msg({ emailMsgId: '1', direction: 'Outbound', senderEmail: 'bobby@thenewblank.com', recipientEmails: ['alice@x.com'] })];
     const result = identifyPrimaryAndSecondary(messages, 'Outbound');
     expect(result.primaryEmail).toBe('alice@x.com');
   });
 
   it('outbound: falls back to cc when recipient_email is blank (real-data gap)', () => {
     const messages = [
-      msg({ emailMsgId: '1', direction: 'Outbound', senderEmail: 'bobby@thenewblank.com', recipientEmail: '', ccEmails: ['alice@x.com'] }),
+      msg({ emailMsgId: '1', direction: 'Outbound', senderEmail: 'bobby@thenewblank.com', recipientEmails: [], ccEmails: ['alice@x.com'] }),
     ];
     const result = identifyPrimaryAndSecondary(messages, 'Outbound');
     expect(result.primaryEmail).toBe('alice@x.com');
@@ -49,7 +49,7 @@ describe('identifyPrimaryAndSecondary', () => {
     const messages = [
       msg({ emailMsgId: '1', direction: 'Inbound', senderEmail: 'alice@x.com' }),
       msg({ emailMsgId: '2', direction: 'Inbound', senderEmail: 'alice@x.com' }),
-      msg({ emailMsgId: '3', direction: 'Outbound', senderEmail: 'bobby@thenewblank.com', recipientEmail: '', ccEmails: [] }),
+      msg({ emailMsgId: '3', direction: 'Outbound', senderEmail: 'bobby@thenewblank.com', recipientEmails: [], ccEmails: [] }),
     ];
     const result = identifyPrimaryAndSecondary(messages, 'Outbound');
     expect(result.primaryEmail).toBe('alice@x.com'); // appears twice, most frequent
@@ -94,10 +94,96 @@ describe('isTestOrPlaceholder', () => {
   });
 });
 
+describe('a multi-address recipient_email — the row 356 defect', () => {
+  it('picks the first EXTERNAL recipient, not the whole joined string', () => {
+    // ⚠ THE LIVE ROW. Before 2026-09-07 the primary came out as the literal
+    // "chris.martin@dcsg.com,rachel.norris@dcsg.com", which matched nothing in
+    // the Contacts map, nothing in Attio and nothing in Master_ID — so
+    // Brain_Complete row 356 got an empty Contact_ID while Chris Martin had
+    // been bridged as BHC-00715 since 2026-04-13.
+    const messages = [
+      msg({ emailMsgId: '1', direction: 'Inbound', senderEmail: 'chris.martin@dcsg.com' }),
+      msg({
+        emailMsgId: '2',
+        direction: 'Outbound',
+        senderEmail: 'bobby@thenewblank.com',
+        recipientEmails: ['chris.martin@dcsg.com', 'rachel.norris@dcsg.com'],
+      }),
+      msg({ emailMsgId: '3', direction: 'Inbound', senderEmail: 'chris.martin@dcsg.com' }),
+    ];
+    const result = identifyPrimaryAndSecondary(messages, 'Outbound');
+    expect(result.primaryEmail).toBe('chris.martin@dcsg.com');
+  });
+
+  it('keeps the OTHER address as a secondary instead of losing it', () => {
+    // The secondary path was built from the same parse, so row 356 lost Rachel
+    // Norris entirely — she was neither the primary nor a participant.
+    const messages = [
+      msg({
+        emailMsgId: '1',
+        direction: 'Outbound',
+        senderEmail: 'bobby@thenewblank.com',
+        recipientEmails: ['chris.martin@dcsg.com', 'rachel.norris@dcsg.com'],
+      }),
+    ];
+    const result = identifyPrimaryAndSecondary(messages, 'Outbound');
+    expect(result.secondaryEmails).toEqual(['rachel.norris@dcsg.com']);
+  });
+
+  it('skips an owned address inside the list and takes the client', () => {
+    // ⚠ A JOINED STRING IS NEVER ITSELF AN OWNED ADDRESS, so the old code could
+    // not see an internal recipient hiding in one. Per-address is the point.
+    const messages = [
+      msg({
+        emailMsgId: '1',
+        direction: 'Outbound',
+        senderEmail: 'bobby@thenewblank.com',
+        recipientEmails: ['sevrin@thenewblank.com', 'alice@client.com'],
+      }),
+    ];
+    const result = identifyPrimaryAndSecondary(messages, 'Outbound');
+    expect(result.primaryEmail).toBe('alice@client.com');
+    expect(result.secondaryEmails).not.toContain('sevrin@thenewblank.com');
+  });
+
+  it('does not smuggle an owned address into the participant list — row 261', () => {
+    // Live value: "jhughes@hmlglaw.com,sholmes@hmlglaw.com,sevrin@thenewblank.com".
+    // As one string it passed stripOwned untouched and became a "participant"
+    // that was really three people, one of them internal.
+    const messages = [
+      msg({
+        emailMsgId: '1',
+        direction: 'Outbound',
+        senderEmail: 'bobby@thenewblank.com',
+        recipientEmails: ['jhughes@hmlglaw.com', 'sholmes@hmlglaw.com', 'sevrin@thenewblank.com'],
+      }),
+    ];
+    const result = identifyPrimaryAndSecondary(messages, 'Outbound');
+    const everyone = [result.primaryEmail, ...result.secondaryEmails];
+    expect(everyone).toEqual(['jhughes@hmlglaw.com', 'sholmes@hmlglaw.com']);
+    expect(everyone.some((e) => e !== null && e.includes(','))).toBe(false);
+  });
+
+  it('still falls through to cc when EVERY recipient is owned', () => {
+    // ⚠ THE PRE-EXISTING BEHAVIOUR MUST SURVIVE. This is the case the old
+    // scalar check handled correctly, and the list version has to keep it.
+    const messages = [
+      msg({
+        emailMsgId: '1',
+        direction: 'Outbound',
+        senderEmail: 'bobby@thenewblank.com',
+        recipientEmails: ['lana@thenewblank.com', 'sevrin@thenewblank.com'],
+        ccEmails: ['alice@client.com'],
+      }),
+    ];
+    expect(identifyPrimaryAndSecondary(messages, 'Outbound').primaryEmail).toBe('alice@client.com');
+  });
+});
+
 describe('isFullyInternal', () => {
   it('is true when every participant is an owned address — the real Sevrin/loan-billing case found in production', () => {
     const messages = [
-      msg({ emailMsgId: '1', direction: 'Outbound', senderEmail: 'bobby@thenewblank.com', recipientEmail: 'sevrin@thenewblank.com' }),
+      msg({ emailMsgId: '1', direction: 'Outbound', senderEmail: 'bobby@thenewblank.com', recipientEmails: ['sevrin@thenewblank.com'] }),
     ];
     const result = identifyPrimaryAndSecondary(messages, 'Outbound');
     expect(isFullyInternal(result)).toBe(true);
@@ -111,7 +197,7 @@ describe('isFullyInternal', () => {
 
   it('is false when the external party is only a secondary (cc), not the primary', () => {
     const messages = [
-      msg({ emailMsgId: '1', direction: 'Outbound', senderEmail: 'bobby@thenewblank.com', recipientEmail: '', ccEmails: ['alice@x.com'] }),
+      msg({ emailMsgId: '1', direction: 'Outbound', senderEmail: 'bobby@thenewblank.com', recipientEmails: [], ccEmails: ['alice@x.com'] }),
     ];
     const result = identifyPrimaryAndSecondary(messages, 'Outbound');
     // alice ends up as primary via the cc fallback here, but either way there's an external party.
