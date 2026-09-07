@@ -12,6 +12,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { DocsClient } from '../../src/lib/docs.js';
 import { silentLogger } from '../../src/lib/logger.js';
 import { runIndexMaintenance } from '../../src/passes/index-maintenance/index.js';
+import { renderReport } from '../../src/passes/index-maintenance/report.js';
+import { PROMPT_VERSION } from '../../src/passes/index-maintenance/failure-state.js';
 
 const servers: Server[] = [];
 afterEach(async () => {
@@ -98,6 +100,22 @@ const anthropic = {
 
 const SOURCES = ['log-003 · September 2026'];
 
+/** A minimal Sheets stand-in holding the failure-state tab. */
+function fakeSheets(rows: unknown[][], opts: { missing?: boolean } = {}) {
+  const written: unknown[][] = [];
+  return {
+    written,
+    client: {
+      async read() {
+        if (opts.missing) throw new Error('Unable to parse range: Index_Maintenance_State!A2:G');
+        return rows;
+      },
+      async update(_range: string, values: unknown[][]) { written.push(...values); },
+      async append() { return { updatedRows: 0, updatesBlockPresent: false, updatedRowsFieldPresent: false }; },
+    } as never,
+  };
+}
+
 describe('the dry-run guarantee', () => {
   it('issues ZERO writes in dry run, and still plans the full change set', async () => {
     const { writes, docs } = await fake();
@@ -160,5 +178,67 @@ describe('source selection', () => {
     const r = await runIndexMaintenance({ dryRun: true, docs, anthropic, logger: silentLogger, sourceLabels: ['nope'] });
     expect(r.aborted).toBe(true);
     expect(r.abortReason).toContain('Valid labels:');
+  });
+});
+
+describe('blocked entries', () => {
+  const blockedRow = (locator: string, failures: number, blocked: string, prompt: string, vocab: number) =>
+    [locator, failures, blocked, 'terms: Array must contain at most 12 element(s)', '2026-09-07', prompt, vocab];
+
+  it('SKIPS a blocked entry and names it in the report, with count and last error', async () => {
+    const { docs } = await fake();
+    // The vocabulary in this fixture is 1 term ("Contacts Triage").
+    const sheets = fakeSheets([blockedRow('§130', 3, 'TRUE', PROMPT_VERSION, 1)]);
+    const r = await runIndexMaintenance({
+      dryRun: true, docs, sheets: sheets.client, anthropic, logger: silentLogger, sourceLabels: SOURCES,
+    });
+    expect(r.blockingActive).toBe(true);
+    // Not attempted — that is the whole point: no LLM call is spent on it.
+    expect(r.llmCallsMade).toBe(0);
+    expect(r.planned).toEqual([]);
+    // ⚠ AND IT IS VISIBLE, BY NAME, WITH ITS EVIDENCE.
+    expect(r.blocked).toHaveLength(1);
+    expect(r.blocked[0]!.locator).toBe('§130');
+    expect(r.blocked[0]!.failures).toBe(3);
+    expect(r.blocked[0]!.lastError).toContain('at most 12 element(s)');
+    const text = renderReport(r);
+    expect(text).toContain('BLOCKED ENTRIES');
+    expect(text).toContain('§130');
+    expect(text).toContain('3 consecutive failure(s)');
+    expect(text).toContain('at most 12 element(s)');
+  });
+
+  it('RE-ATTEMPTS a blocked entry once the prompt version has moved', async () => {
+    const { docs } = await fake();
+    const sheets = fakeSheets([blockedRow('§130', 3, 'TRUE', 'an-older-prompt', 1)]);
+    const r = await runIndexMaintenance({
+      dryRun: true, docs, sheets: sheets.client, anthropic, logger: silentLogger, sourceLabels: SOURCES,
+    });
+    expect(r.llmCallsMade).toBe(1);
+    expect(r.blocked).toHaveLength(0);
+  });
+
+  it('⚠ DEGRADES LOUDLY when the state tab is absent — never silently', async () => {
+    // Without the tab the routine still indexes, but a repeatedly-failing
+    // entry is retried forever. That must not be invisible.
+    const { docs } = await fake();
+    const sheets = fakeSheets([], { missing: true });
+    const r = await runIndexMaintenance({
+      dryRun: true, docs, sheets: sheets.client, anthropic, logger: silentLogger, sourceLabels: SOURCES,
+    });
+    expect(r.blockingActive).toBe(false);
+    expect(r.warnings.join(' ')).toContain('BLOCKING IS OFF');
+    expect(renderReport(r)).toContain('BLOCKING IS OFF');
+  });
+
+  it('reports the blocked section on every run, even when nothing is blocked', async () => {
+    const { docs } = await fake();
+    const r = await runIndexMaintenance({
+      dryRun: true, docs, sheets: fakeSheets([]).client, anthropic, logger: silentLogger, sourceLabels: SOURCES,
+    });
+    const text = renderReport(r);
+    expect(text).toContain('BLOCKED ENTRIES');
+    expect(text).toContain('none');
+    expect(text).toContain(PROMPT_VERSION);
   });
 });

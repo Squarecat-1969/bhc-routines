@@ -30,6 +30,28 @@ export function renderReport(r: IndexMaintenanceReport): string {
   out.push(`  already indexed : ${r.watermarkSize} locator(s)`);
   out.push(`  unindexed       : ${r.unindexed.length}  ${r.unindexed.slice(0, 30).join(' ')}${r.unindexed.length > 30 ? ' …' : ''}`);
 
+  // ⚠ BLOCKED ENTRIES ARE REPORTED BY NAME ON EVERY RUN, whether or not
+  // anything else happened. A blocked entry that vanishes from the report
+  // makes the backlog look closed, which is the same defect in a new costume.
+  out.push('', 'BLOCKED ENTRIES');
+  out.push(`  prompt version : ${r.promptVersion}`);
+  if (!r.blockingActive) {
+    out.push('  ⚠ BLOCKING IS OFF — no failure state available, so a repeatedly-failing entry is retried every run.');
+  }
+  if (r.blocked.length === 0) {
+    out.push('  none');
+  } else {
+    out.push(`  ${r.blocked.length} entry(ies) blocked after ${3} consecutive failures — NOT attempted this run:`);
+    for (const b of r.blocked) {
+      out.push(`    ${b.locator}  (${b.failures} consecutive failure(s))`);
+      out.push(`       last error: ${b.lastError || '(none recorded)'}`);
+    }
+    out.push('  These will stay blocked until the prompt version or the vocabulary changes.');
+  }
+  if (r.newlyBlocked.length > 0) {
+    out.push(`  ⚠ NEWLY BLOCKED THIS RUN: ${r.newlyBlocked.join(', ')}`);
+  }
+
   out.push('', 'TERM ASSIGNMENT');
   out.push(`  LLM calls made : ${r.llmCallsMade}`);
   out.push(`  failures       : ${r.llmFailures}`);

@@ -85,9 +85,27 @@ export function parseAssignment(raw: string): AssignmentParseResult {
     : { ok: false, error: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') };
 }
 
+/**
+ * ⚠ THE CAP IS STATED TO THE MODEL, NOT JUST ENFORCED AFTER THE FACT.
+ *
+ * The schema has capped `terms` at 12 since this shipped, and NOTHING TOLD THE
+ * MODEL. So it returned what the entry deserved — 20, 15 and 20 terms on
+ * §092, §096 and §102 — and every one failed validation, produced nothing, and
+ * was retried at full cost on the next run. §092 and §096 failed three
+ * consecutive runs; §102 two. The run reported green each time.
+ *
+ * The fix is instruction, not a bigger cap. Raising it would be fitting the
+ * rule to its outliers, and the cap exists to stop unbounded assignment — a
+ * dense investigation entry legitimately touches twenty concepts, and indexing
+ * it under all twenty is how an index becomes unscannable. Told to prioritise,
+ * the model loses its MARGINAL terms instead of the whole entry.
+ */
+const MAX_TERMS = 12;
+
 const SYSTEM = [
   'You assign keywords to one developer-log entry against a CONTROLLED vocabulary.',
-  'Reply with JSON only: {"terms": [...], "proposedTerms": [...], "reason": "..."}.',
+  `Reply with JSON only: {"terms": [...at most ${MAX_TERMS}...], "proposedTerms": [...], "reason": "..."}.`,
+  `NEVER return more than ${MAX_TERMS} terms — a longer array is rejected outright and the entry goes unindexed.`,
   'No prose, no code fence.',
 ].join(' ');
 
@@ -108,6 +126,16 @@ export function buildPrompt(entry: SourceEntry, vocabulary: Vocabulary, groupTit
     '',
     'A FAILURE-CLASS TERM IS MANDATORY if this entry describes an incident, a bug, a correction, or',
     'something that went wrong. Those terms are in the "GROUP: Failure classes" list.',
+    '',
+    `⚠ RETURN AT MOST ${MAX_TERMS} TERMS. A longer array is REJECTED and the entry is then indexed under`,
+    'NOTHING AT ALL — so returning twenty good terms is strictly worse than returning twelve.',
+    '',
+    `IF MORE THAN ${MAX_TERMS} APPLY, PRIORITISE. Keep, in this order:`,
+    '  1. the mandatory failure-class term, if this entry describes something that went wrong;',
+    '  2. the terms a reader SEARCHING FOR THIS ENTRY would actually type — what it is chiefly about;',
+    '  3. terms specific to this entry over terms that would match hundreds of others.',
+    'Drop the marginal ones. A dense entry legitimately touches twenty concepts; indexing it under the',
+    'twelve that identify it is the goal, and losing the marginal ones costs far less than losing the entry.',
     '',
     '=== CONTROLLED VOCABULARY ===',
     groups.join('\n\n'),

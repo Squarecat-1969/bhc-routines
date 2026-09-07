@@ -28,6 +28,18 @@
 
 import type { AnthropicClient } from '../../lib/anthropic.js';
 import type { DocsClient } from '../../lib/docs.js';
+import type { SheetsClient } from '../../lib/sheets.js';
+import {
+  PROMPT_VERSION,
+  STATE_HEADER,
+  STATE_RANGES,
+  STATE_TAB_NAME,
+  blockDecision,
+  nextState,
+  parseFailureRow,
+  serializeFailureRow,
+  type EntryFailureState,
+} from './failure-state.js';
 import type { Logger } from '../../lib/logger.js';
 import { sleep } from '../../lib/http.js';
 import {
@@ -65,6 +77,12 @@ export interface IndexMaintenanceOptions {
   readonly docs: DocsClient;
   readonly anthropic?: AnthropicClient;
   readonly logger: Logger;
+  /**
+   * Optional. Without it the routine still runs, but CANNOT block a repeatedly
+   * failing entry — the state has nowhere to live. Reported loudly rather than
+   * silently degraded.
+   */
+  readonly sheets?: SheetsClient;
   /** Restrict to one source tab. The first live run indexes ONE tab, not the backlog. */
   readonly sourceLabels?: readonly string[];
   readonly maxLlmCalls?: number;
@@ -105,6 +123,11 @@ export interface IndexMaintenanceReport {
   readonly unindexed: readonly string[];
   readonly llmCallsMade: number;
   readonly llmFailures: number;
+  /** ⚠ Reported BY NAME on every run, whether or not anything else happened. */
+  readonly blocked: readonly { locator: string; failures: number; lastError: string }[];
+  readonly newlyBlocked: readonly string[];
+  readonly blockingActive: boolean;
+  readonly promptVersion: string;
   readonly missingFailureClass: readonly string[];
   readonly rejectedTerms: readonly string[];
 
@@ -153,6 +176,10 @@ export async function runIndexMaintenance(opts: IndexMaintenanceOptions): Promis
       unindexed: [],
       llmCallsMade: 0,
       llmFailures: 0,
+      blocked: [],
+      newlyBlocked: [],
+      blockingActive: false,
+      promptVersion: PROMPT_VERSION,
       missingFailureClass: [],
       rejectedTerms: [],
       planned: [],
@@ -288,10 +315,51 @@ async function runInner(
   const failureClassTerms = new Set(
     (indexTabs.find((t) => t.tabId === FAILURE_CLASSES_TAB)?.terms ?? []).map((t) => t.term),
   );
+  // --- blocked entries ------------------------------------------------------
+  const vocabularySize = vocabulary.owner.size;
+  let priorState = new Map<string, EntryFailureState>();
+  let blockingActive = false;
+  if (opts.sheets) {
+    try {
+      const rows = await opts.sheets.read(STATE_RANGES.data);
+      for (const r of rows) {
+        const st = parseFailureRow(r);
+        if (st) priorState.set(st.locator, st);
+      }
+      blockingActive = true;
+      logger.info(`  failure state: ${priorState.size} entry(ies) tracked`);
+    } catch (error) {
+      // ⚠ DEGRADE LOUDLY. Without the tab the routine still indexes, but a
+      // repeatedly-failing entry is retried forever — the defect this exists
+      // to close. Never silent.
+      const msg =
+        `${STATE_TAB_NAME} is unreadable (${error instanceof Error ? error.message : String(error)}) — ` +
+        `BLOCKING IS OFF this run, so a repeatedly-failing entry will be retried at full cost. ` +
+        `Create the tab with header: ${STATE_HEADER.join(', ')}`;
+      logger.warn(`  ${msg}`);
+      warnings.push(msg);
+    }
+  } else {
+    warnings.push('no Sheets client supplied — BLOCKING IS OFF; a repeatedly-failing entry will be retried every run');
+  }
+
+  const blockedNow: { locator: string; failures: number; lastError: string }[] = [];
+  const eligible = pending.filter((e) => {
+    const d = blockDecision(priorState.get(e.locator), PROMPT_VERSION, vocabularySize);
+    if (d.blocked) {
+      blockedNow.push({ locator: e.locator, failures: d.failures, lastError: d.lastError });
+      return false;
+    }
+    return true;
+  });
+  if (blockedNow.length > 0) {
+    logger.warn(`  ${blockedNow.length} entry(ies) BLOCKED and skipped — see the report`);
+  }
+
   const cap = opts.maxLlmCalls ?? MAX_LLM_CALLS;
-  const toCall = pending.slice(0, cap);
-  if (pending.length > toCall.length) {
-    warnings.push(`LLM cap of ${cap} hit — ${pending.length - toCall.length} entry(ies) left for the next run`);
+  const toCall = eligible.slice(0, cap);
+  if (eligible.length > toCall.length) {
+    warnings.push(`LLM cap of ${cap} hit — ${eligible.length - toCall.length} entry(ies) left for the next run`);
   }
 
   const outcomes: AssignmentOutcome[] = [];
@@ -313,6 +381,40 @@ async function runInner(
         else logger.info(`  ${r.locator} → ${r.verdict!.terms.join(', ') || '(none)'}${r.verdict!.proposedTerms.length ? ` · proposed: ${r.verdict!.proposedTerms.join(', ')}` : ''}`);
       }
       if (i + LLM_CONCURRENCY < toCall.length) await sleep(LLM_WAVE_PAUSE_MS);
+    }
+  }
+
+  // ⚠ RECORD EVERY ATTEMPT'S OUTCOME. A failure that leaves no trace is a
+  // failure that gets paid for again next run.
+  const newlyBlocked: string[] = [];
+  if (blockingActive && opts.sheets && outcomes.length > 0) {
+    const updated = new Map(priorState);
+    for (const o of outcomes) {
+      const next = nextState({
+        locator: o.locator,
+        prior: priorState.get(o.locator),
+        succeeded: o.verdict !== null,
+        error: o.error,
+        today,
+        promptVersion: PROMPT_VERSION,
+        vocabularySize,
+      });
+      const wasBlocked = priorState.get(o.locator)?.blocked ?? false;
+      if (next.blocked && !wasBlocked) newlyBlocked.push(o.locator);
+      updated.set(o.locator, next);
+    }
+    if (!dryRun) {
+      const rows = [...updated.values()].map(serializeFailureRow);
+      const lastRow = 1 + rows.length;
+      if (rows.length > 0) await opts.sheets.update(`${STATE_TAB_NAME}!A2:G${lastRow}`, rows);
+      logger.info(`  failure state: ${rows.length} row(s) written`);
+    } else {
+      logger.info(`  DRY RUN — would write ${updated.size} failure-state row(s)`);
+    }
+    for (const [, st] of updated) {
+      if (st.blocked && !blockedNow.some((b) => b.locator === st.locator)) {
+        blockedNow.push({ locator: st.locator, failures: st.consecutiveFailures, lastError: st.lastError });
+      }
     }
   }
 
@@ -397,6 +499,10 @@ async function runInner(
     unindexed: pending.map((e) => e.locator),
     llmCallsMade: outcomes.length,
     llmFailures: outcomes.filter((o) => o.error !== null).length,
+    blocked: blockedNow.sort((a, b) => a.locator.localeCompare(b.locator)),
+    newlyBlocked,
+    blockingActive,
+    promptVersion: PROMPT_VERSION,
     missingFailureClass,
     rejectedTerms: [...new Set(outcomes.flatMap((o) => o.rejected))],
     planned: plan.writes,

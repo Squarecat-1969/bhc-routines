@@ -320,6 +320,89 @@ caller checks capability. `bhc-aida` owns it.
 
 ---
 
-## 7. Deliberately not built
+## 7. The 12-term cap, and the entries it blocked (2026-09-08)
+
+### The defect: a cap the model was never told about
+
+`AssignmentSchema` has capped `terms` at 12 since this shipped. **Nothing in the
+prompt or the system message mentioned it.** So the model returned what a dense
+investigation entry deserves and every one failed validation:
+
+| entry | terms returned | consecutive failed runs |
+|---|---|---|
+| §092 — Zoom DISCOVERY port | **20** | 3 |
+| §096 — write-verification sweep | **15** | 3 |
+| §102 — intended-not-confirmed counters | **20** | 2 |
+
+Each produced nothing, was retried at full cost on the next run because the
+watermark cannot distinguish a failed entry from a new one, and **the run
+reported GREEN** with a warning that scrolled past. That is the exact shape
+this routine exists to prevent.
+
+### The fix is instruction, NOT a bigger cap
+
+⚠ **Raising the cap would be fitting the rule to its outliers.** The cap exists
+to stop unbounded assignment — a dense entry legitimately touches twenty
+concepts, and indexing it under all twenty is how an index becomes unscannable.
+
+The prompt now states the limit and says what to do when more apply: prioritise
+in a stated order — the mandatory failure-class term first, then the terms a
+reader searching for this entry would type, then terms specific to this entry
+over terms matching hundreds of others — and drop the marginal ones. **What is
+lost is marginal terms rather than the whole entry.**
+
+**Verified against the three real entries, not a fixture.** All three now index,
+each returning exactly 12, each carrying a failure-class term:
+
+- **§092** → `stale spec`, `BHC Zoom`, `DISCOVERY`, `Zoom_Staging`,
+  `Meeting triage`, `Fathom`, `phased by risk`, `PASS 1`, `PASS 2`, `STEP 0`,
+  `Claude Code`, `capture loss`
+- **§096** → `stale spec`, `read-back verification`, `PASS 0`, `PASS 1`,
+  `PASS 2`, `Reconciler`, `Reconciler_Report`, `Brain_Complete`, `Activity_Log`,
+  `Thread_Staging`, `Part D`, `lib/sheetsProxy.ts`
+- **§102** → `false positive`, `read-back verification`, `Part D`, `PASS 2`,
+  `PASS 3`, `PASS 4.5`, `PASS 5`, `Reconciler`, `Contacts Triage`, `Tasks_Log`,
+  `Name_Conflicts`, `Attio`
+
+(A dry run against the live index plans 8, 4 and 5 *reference lines*
+respectively — fewer than 12 because Rule A/Rule B terms take a count update and
+no reference line.)
+
+### Blocking, and why N is three
+
+`Index_Maintenance_State` (Sheets, 7 columns) records consecutive failures per
+entry. **After three, the entry is BLOCKED and not attempted.**
+
+Two consecutive failures can still be two transient faults — a 429, a timeout,
+a truncated response. Three identical rejections on the same entry is a
+pattern, and §092 and §096 reaching exactly three is what made this visible.
+The asymmetry sets the threshold: one extra attempt costs one LLM call, while
+blocking too early costs an entry that would have indexed and is now silently
+absent — the failure this routine exists to prevent. So it sits one attempt
+past "could plausibly be transient", not at it.
+
+⚠ **A block is a conclusion from a version of the prompt, not a fact about the
+entry.** `PROMPT_VERSION` and the vocabulary size are both recorded, and either
+changing re-opens every block exactly once, automatically. Without that,
+§092/§096/§102 would have stayed blocked forever under a prompt that never
+judged them, and someone would have had to remember to clear the tab by hand.
+Same lesson as the re-resolution pass's derivation version.
+
+⚠ **Blocked entries are reported BY NAME on every run**, with failure count and
+last error, whether or not anything else happened — a blocked entry that
+vanished from the report would make the backlog look closed, which is the same
+defect in a new costume.
+
+⚠ **Without the state tab the routine still runs but CANNOT block**, and says
+so loudly in the report and the warnings. Degraded, never silent. The tab needs
+creating by hand — the Sheets proxy cannot create tabs — with header:
+`locator, consecutive_failures, blocked, last_error, last_attempt_date,
+prompt_version, vocabulary_size`.
+
+10 mutation checks, all caught.
+
+---
+
+## 8. Deliberately not built
 
 **No wholesale replacement, expressible nowhere.** **No Plan indexing** (§2). **No backlog run** — 68 older entries remain unindexed, including §002 and §005; the first live run was September alone by instruction, and the backlog is a separate, larger decision. **No schedule** — `workflow_dispatch` plus §089.4's weekly safety net still to be wired.

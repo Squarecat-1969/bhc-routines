@@ -3,6 +3,30 @@
 All dates are the routine-config install date. Newest first.
 
 <<<<<<< HEAD
+## 2026-09-08 — The 12-term cap: three permanently-blocked entries fixed
+
+- ⚠ **The cap was never told to the model.** `AssignmentSchema` has capped
+  `terms` at 12 since this shipped and nothing in the prompt said so,, so §092
+  returned 20 terms, §096 15 and §102 20 — every one rejected, producing
+  nothing, retried at full cost every run, with the run reporting GREEN.
+- **Fixed by instruction, NOT by raising the cap.** Raising it would fit the
+  rule to its outliers. The prompt now states the limit and a priority order —
+  mandatory failure-class term, then what a reader would search for, then
+  specific over generic — so what is lost is marginal terms, not the entry.
+- **Verified against the three real entries. All three index, 12 terms each,
+  every one carrying a failure-class term.**
+- **New `Index_Maintenance_State`**: consecutive failures per entry, BLOCKED
+  after **3**. Two failures can still be two transient faults; three identical
+  rejections is a pattern, and one extra attempt costs one LLM call while
+  blocking early costs a silently-absent entry.
+- ⚠ **A block is a conclusion from a prompt version, not a fact.**
+  `PROMPT_VERSION` and vocabulary size are recorded; either changing re-opens
+  every block exactly once, with no manual clearing step to forget.
+- ⚠ **Blocked entries are reported by name on every run** with count and last
+  error. Without the state tab the routine still runs but cannot block, and
+  says so loudly rather than degrading silently.
+- 10 mutation checks, all caught. 1,465 tests pass.
+
 ## 2026-09-07 — Identity re-resolution pass built and run live
 
 - **New: `src/passes/re-resolution/`.** Revisits Brain_Complete rows written

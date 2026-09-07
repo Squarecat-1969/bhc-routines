@@ -20,6 +20,7 @@ import { dirname } from 'node:path';
 import { loadEnv } from '../config/env.js';
 import { AnthropicClient } from '../lib/anthropic.js';
 import { DocsClient } from '../lib/docs.js';
+import { SheetsClient } from '../lib/sheets.js';
 import { createLogger } from '../lib/logger.js';
 import { SOURCE_ALIASES, SOURCE_TABS, latestSourceLabel } from '../passes/index-maintenance/constants.js';
 import { runIndexMaintenance } from '../passes/index-maintenance/index.js';
@@ -101,9 +102,18 @@ async function main(): Promise<void> {
           onRetry: ({ attempt, delayMs }) => logger.warn(`  anthropic retry ${attempt} in ${delayMs}ms`),
         });
 
+  // Failure state lives in Sheets; without it the routine still runs but
+  // cannot block a repeatedly-failing entry, and says so loudly.
+  const sheets = new SheetsClient({
+    token: env.BRAIN_API_TOKEN,
+    url: env.SHEETS_PROXY_URL,
+    onRetry: ({ attempt, delayMs }) => logger.warn(`  sheets retry ${attempt} in ${delayMs}ms`),
+  });
+
   const report = await runIndexMaintenance({
     dryRun: args.dryRun,
     docs,
+    sheets,
     logger,
     ...(anthropic ? { anthropic } : {}),
     ...(args.sources.length > 0 ? { sourceLabels: args.sources } : {}),
