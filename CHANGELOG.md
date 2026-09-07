@@ -3,6 +3,38 @@
 All dates are the routine-config install date. Newest first.
 
 <<<<<<< HEAD
+## 2026-09-07 — Identity re-resolution pass built and run live
+
+- **New: `src/passes/re-resolution/`.** Revisits Brain_Complete rows written
+  without an identity. `resolveContact` had exactly one caller — the thread
+  being processed that night — so a row written unresolved stayed unresolved
+  even when its contact was bridged days later.
+- **34 column-B writes, all confirmed by read-back**, across 21 BHC_IDs.
+  315 state rows written. 1 withheld (row 283).
+- ⚠ **The gate is `checkDrift`, not `verifyName`.** Column C is a
+  Thread_Staging display-name field — 5 of 5 name MISMATCHes are false alarms,
+  four of them column C holding a raw address. All five wrote correctly here.
+- ⚠ **Part D's reach is unchanged, MEASURED against the sheet**: 34 cells
+  changed, all column B; columns V and AB show 0 changed cells; no other column
+  moved. Re-stamping AB would sweep months of historical interactions into a
+  live Part D run.
+- **Terminal markers carry a derivation version.** 83 `NO_PRIMARY_EMAIL` rows
+  marked terminal; bumping `DERIVATION_VERSION` re-opens them exactly once,
+  with no manual clearing step to forget. The version is checked BEFORE
+  terminal, deliberately.
+- **The retry gate engages, verified by re-parsing the written sheet**:
+  unchanged corpus → 315 skipped / 0 attempted; corpus moved → 83 skipped
+  (terminal) / 232 attempted.
+- **Two defects found by the first live attempt, both fixed:**
+  a Sheets **429** killed the write loop partway (read→update→read per row =
+  102 calls against a 60/min quota) — now one batched freshness read, paced
+  writes, one batched read-back; and the aborted-report path **hardcoded
+  `writesConfirmed: 0`**, which printed as "Nothing was written" while 32
+  writes had in fact landed. It now reports `writesMayHaveLanded` and tells the
+  caller to re-read before re-running.
+- 7 mutation checks on the retry gate, both directions, all caught.
+  1,451 tests pass.
+
 ## 2026-09-06 — QC rule narrowed: `toc-no-log-entry-ref` → `toc-no-log-entry-range`
 
 - **The rule was broader than the incident that earned it.** It fired on any
