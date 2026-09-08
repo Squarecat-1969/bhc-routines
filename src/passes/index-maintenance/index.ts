@@ -44,6 +44,7 @@ import type { Logger } from '../../lib/logger.js';
 import { sleep } from '../../lib/http.js';
 import {
   ADDITIONAL_TERMS_TAB,
+  PLAN_SOURCE_LABEL,
   EXCERPT_CHARS,
   FAILURE_CLASSES_TAB,
   INDEX_DOC_ID,
@@ -55,14 +56,27 @@ import {
   makeIndexRunId,
   type SourceTab,
 } from './constants.js';
-import { assignTerms, type AssignmentOutcome } from './llm.js';
+import { PLAN_UNIT_CHARS_IN_PROMPT, assignTerms, type AssignmentOutcome } from './llm.js';
 import {
   headingUrlsByLocator,
   parseIndexTab,
+  parsePlanSections,
   parseSourceTab,
+  planLocatorMatches,
   type IndexTab,
   type SourceEntry,
 } from './parse.js';
+import {
+  PLAN_STATE_HEADER,
+  PLAN_STATE_RANGES,
+  PLAN_STATE_TAB,
+  contentHash,
+  driftOf,
+  parsePlanStateRow,
+  serializePlanStateRow,
+  type DriftVerdict,
+  type PlanSectionState,
+} from './plan-state.js';
 import {
   buildVocabulary,
   buildWatermark,
@@ -124,6 +138,12 @@ export interface IndexMaintenanceReport {
   readonly llmCallsMade: number;
   readonly llmFailures: number;
   /** ⚠ Reported BY NAME on every run, whether or not anything else happened. */
+  /** ⚠ Units the prompt did not see in full, by name and with both lengths. */
+  readonly truncated: readonly { locator: string; fullLength: number; readChars: number }[];
+  readonly planSections: number;
+  readonly planAlreadyReferenced: number;
+  readonly planDrift: readonly { locator: string; verdict: string; indexedBy: string; chars: number }[];
+  readonly planStateActive: boolean;
   readonly blocked: readonly { locator: string; failures: number; lastError: string }[];
   readonly newlyBlocked: readonly string[];
   readonly blockingActive: boolean;
@@ -176,6 +196,11 @@ export async function runIndexMaintenance(opts: IndexMaintenanceOptions): Promis
       unindexed: [],
       llmCallsMade: 0,
       llmFailures: 0,
+      truncated: [],
+      planSections: 0,
+      planAlreadyReferenced: 0,
+      planDrift: [],
+      planStateActive: false,
       blocked: [],
       newlyBlocked: [],
       blockingActive: false,
@@ -261,6 +286,7 @@ async function runInner(
   logger.info(`STEP 2 — reading ${selected.length} source tab(s)`);
   const sourcesRead: { label: string; chars: number; preReadMs: number; entries: number }[] = [];
   const allEntries: SourceEntry[] = [];
+  const truncated: { locator: string; fullLength: number; readChars: number }[] = [];
 
   for (const src of selected) {
     // ⚠ HEADINGS ARE REQUESTED HERE because this is where a link's anchor
@@ -268,7 +294,19 @@ async function runInner(
     // invents one, and hands back the full URL already assembled.
     const read = await docs.read(src.documentId, src.tabId, true);
     const headingUrls = headingUrlsByLocator(read.headings ?? []);
-    const entries = parseSourceTab(read.content, headingUrls);
+    // ⚠ THE PLAN IS PARSED BY HEADING, NOT BY §NNN. `parseSourceTab` returns
+    // zero for it and always has — which is why the routine has contributed
+    // nothing to Plan coverage.
+    const entries =
+      src.label === PLAN_SOURCE_LABEL
+        ? parsePlanSections(read.content, read.headings ?? [], { maxChars: PLAN_UNIT_CHARS_IN_PROMPT })
+        : parseSourceTab(read.content, headingUrls);
+    // ⚠ A PARTIALLY-READ UNIT IS REPORTED BY NAME, never inferred. An index
+    // entry built from the first N characters of a section is
+    // byte-indistinguishable from one built on the whole of it.
+    for (const e of entries.filter((x) => x.truncatedTo !== undefined)) {
+      truncated.push({ locator: e.locator, fullLength: e.fullLength ?? 0, readChars: e.truncatedTo! });
+    }
     const linkable = entries.filter((e) => e.headingUrl !== null).length;
     if (linkable < entries.length) {
       // Not an abort: a reference with no anchor is written PLAIN rather than
@@ -298,7 +336,91 @@ async function runInner(
     }
   }
 
-  const pending = opts.ignoreWatermark ? [...allEntries] : unindexedEntries(allEntries, watermark);
+  // --- Plan sections: provenance, hashes and the additive-only gate ---------
+  //
+  // ⚠ THE WATERMARK FOR THE PLAN IS NOT THE LOG'S. A log entry is appended and
+  // never changes, so "referenced once" means "done forever". A Plan section is
+  // REWRITTEN IN PLACE, so the same test answers a different question — it
+  // says whether the section has EVER been indexed, not whether the index is
+  // still right about it. Both answers are recorded: the first gates the write,
+  // the second is reported as drift.
+  const planEntries = allEntries.filter((e) => e.sourceKind === 'Plan');
+  const planDrift: { locator: string; verdict: DriftVerdict; indexedBy: string; chars: number }[] = [];
+  const planStateRows: PlanSectionState[] = [];
+  const priorPlanState = new Map<string, PlanSectionState>();
+  let planStateActive = false;
+
+  if (planEntries.length > 0) {
+    if (opts.sheets) {
+      try {
+        for (const r of await opts.sheets.read(PLAN_STATE_RANGES.data)) {
+          const st = parsePlanStateRow(r);
+          if (st) priorPlanState.set(st.locator, st);
+        }
+        planStateActive = true;
+        logger.info(`  Plan state: ${priorPlanState.size} section(s) tracked`);
+      } catch (error) {
+        const msg =
+          `${PLAN_STATE_TAB} is unreadable (${error instanceof Error ? error.message : String(error)}) — ` +
+          `content hashes cannot be recorded, so NO DRIFT CAN BE REPORTED this run. ` +
+          `Create the tab with header: ${PLAN_STATE_HEADER.join(', ')}`;
+        logger.warn(`  ${msg}`);
+        warnings.push(msg);
+      }
+    } else {
+      warnings.push('no Sheets client supplied — Plan content hashes cannot be recorded and no drift can be reported');
+    }
+  }
+
+  // Every Plan locator the index already carries, from ANY hand. These sections
+  // are already indexed; the routine records their hash and adds nothing.
+  const existingPlanLocators = indexTabs
+    .flatMap((t) => t.terms.flatMap((x) => x.references))
+    .filter((r) => r.source === 'Plan')
+    .map((r) => r.locator);
+
+  const alreadyReferenced = new Set<string>();
+  for (const e of planEntries) {
+    // ⚠ PREFIX MATCHING, NOT EQUALITY. The 69 hand-written locators truncate
+    // long heading text by eye, between 48 and 64 characters; a generated
+    // locator can differ only in where it was cut. Comparing exactly would add
+    // a second reference for a section that is already indexed — the one thing
+    // the additive design must not do.
+    if (existingPlanLocators.some((l) => planLocatorMatches(l, e.locator))) alreadyReferenced.add(e.locator);
+  }
+
+  for (const e of planEntries) {
+    const hash = contentHash(e.fullBody ?? e.body);
+    const prior = priorPlanState.get(e.locator);
+    const verdict = driftOf(prior, hash);
+    // ⚠ PROVENANCE IS DECIDED ONCE, ON FIRST SIGHT, AND NEVER UPGRADED.
+    // A section already referenced when the routine first saw it was indexed
+    // by a human — the routine cannot prove otherwise and must never claim it.
+    const indexedBy = prior ? prior.indexedBy : alreadyReferenced.has(e.locator) ? 'hand' : 'routine';
+    planDrift.push({ locator: e.locator, verdict, indexedBy, chars: e.fullLength ?? e.body.length });
+    planStateRows.push({
+      locator: e.locator,
+      headingId: e.headingUrl?.split('#heading=')[1] ?? '',
+      contentHash: hash,
+      unitChars: e.fullLength ?? e.body.length,
+      truncatedTo: e.truncatedTo ?? 0,
+      indexedBy,
+      firstSeen: prior?.firstSeen || today,
+      lastSeen: today,
+    });
+  }
+
+  const pendingRaw = opts.ignoreWatermark ? [...allEntries] : unindexedEntries(allEntries, watermark);
+  // ⚠ ADDITIVE HALF ONLY. A Plan section the index already references is never
+  // re-indexed, whoever wrote those references — its hash is recorded so the
+  // drift is visible, and nothing is written for it.
+  const pending = pendingRaw.filter((e) => !(e.sourceKind === 'Plan' && alreadyReferenced.has(e.locator)));
+  if (planEntries.length > 0) {
+    logger.info(
+      `  Plan: ${planEntries.length} section(s), ${alreadyReferenced.size} already referenced (untouched), ` +
+        `${planEntries.length - alreadyReferenced.size} never indexed`,
+    );
+  }
   if (opts.ignoreWatermark) {
     warnings.push(
       'RECOVERY MODE: the watermark was ignored, so every entry in the selected source was re-judged at full ' +
@@ -418,6 +540,16 @@ async function runInner(
     }
   }
 
+  if (planStateActive && opts.sheets && planStateRows.length > 0) {
+    if (!dryRun) {
+      const rows = planStateRows.map(serializePlanStateRow);
+      await opts.sheets.update(`${PLAN_STATE_TAB}!A2:H${1 + rows.length}`, rows);
+      logger.info(`  Plan state: ${rows.length} row(s) written`);
+    } else {
+      logger.info(`  DRY RUN — would write ${planStateRows.length} Plan state row(s)`);
+    }
+  }
+
   const byLocator = new Map(toCall.map((e) => [e.locator, e]));
   const assignments = outcomes
     .filter((o) => o.verdict !== null)
@@ -499,6 +631,11 @@ async function runInner(
     unindexed: pending.map((e) => e.locator),
     llmCallsMade: outcomes.length,
     llmFailures: outcomes.filter((o) => o.error !== null).length,
+    truncated,
+    planSections: planEntries.length,
+    planAlreadyReferenced: alreadyReferenced.size,
+    planDrift,
+    planStateActive,
     blocked: blockedNow.sort((a, b) => a.locator.localeCompare(b.locator)),
     newlyBlocked,
     blockingActive,
@@ -517,8 +654,17 @@ async function runInner(
   };
 }
 
+/**
+ * ⚠ THE PLAN IS NOT IN THE DEFAULT SET, AND THAT IS THE WHOLE SCOPE RULE.
+ *
+ * `--source plan` is the only way to reach it. Neither the weekly safety net
+ * (`--latest-source`) nor the backlog opt-in (no `--source` at all) selects
+ * it, so a schedule cannot acquire 89 units of new LLM spend on a corpus
+ * nobody dispatched. Excluded HERE rather than in the CLI because the CLI is
+ * one of two callers and a workflow flag is not a guard.
+ */
 function selectSources(labels: readonly string[] | undefined): readonly SourceTab[] {
-  if (!labels || labels.length === 0) return SOURCE_TABS;
+  if (!labels || labels.length === 0) return SOURCE_TABS.filter((s) => s.label !== PLAN_SOURCE_LABEL);
   const chosen = SOURCE_TABS.filter((s) => labels.includes(s.label));
   if (chosen.length !== labels.length) {
     // Rule 3: an unrecognised identifier enumerates the valid ones.

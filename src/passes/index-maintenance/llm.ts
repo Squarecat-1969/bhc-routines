@@ -34,8 +34,27 @@ export const INDEX_MODEL = 'claude-sonnet-5';
  */
 export const INDEX_MAX_TOKENS = 4000;
 
-/** How much of an entry reaches the prompt. Entries run to a few thousand chars. */
+/** How much of a LOG entry reaches the prompt. Entries run to a few thousand chars. */
 export const ENTRY_CHARS_IN_PROMPT = 3500;
+
+/**
+ * ⚠ PLAN UNITS GET THEIR OWN, MUCH LARGER BUDGET, AND THE NUMBER IS MEASURED.
+ *
+ * A log entry is a session note; a Plan unit is a chapter section. Measured
+ * 2026-09-08 across the 89 L2/L3 units: median 1,184, p90 2,734, p95 4,022 —
+ * but max 17,184. At the log cap of 3,500, FIVE units would be truncated and
+ * 18.9% of all unit text would go unread, and the resulting index entry is
+ * byte-indistinguishable from one built on the whole section.
+ *
+ * At 20,000 nothing truncates today. The alternative — 12,000, leaving one
+ * unit clipped — was rejected: the marginal token cost of the larger budget is
+ * trivial next to a chapter silently indexed from 70% of itself.
+ *
+ * This does NOT make truncation impossible, only currently absent. Any unit
+ * that does exceed it is reported by name with both lengths, because a
+ * partially-read section must be visible rather than inferred.
+ */
+export const PLAN_UNIT_CHARS_IN_PROMPT = 20000;
 
 export interface AssignmentVerdict {
   readonly terms: readonly string[];
@@ -140,8 +159,10 @@ export function buildPrompt(entry: SourceEntry, vocabulary: Vocabulary, groupTit
     '=== CONTROLLED VOCABULARY ===',
     groups.join('\n\n'),
     '',
-    '=== THE ENTRY ===',
-    entry.body.slice(0, ENTRY_CHARS_IN_PROMPT),
+    entry.sourceKind === 'Plan' ? '=== THE PLAN SECTION ===' : '=== THE ENTRY ===',
+    // Already sliced by the parser, which is also what records `truncatedTo`.
+    // Slicing again here would truncate silently and in a second place.
+    entry.body,
   ].join('\n');
 }
 

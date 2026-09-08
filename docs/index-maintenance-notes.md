@@ -403,6 +403,127 @@ prompt_version, vocabulary_size`.
 
 ---
 
-## 8. Deliberately not built
+## 8. Plan indexing — the additive half (2026-09-08)
+
+Built per `docs/plan-indexing-spec.md` §0: **additive only.** The routine adds
+references for Plan sections the index does not yet mention, and never removes
+or rewrites one. Reached by `--source plan` alone.
+
+### The truncation, fixed before anything else
+
+`ENTRY_CHARS_IN_PROMPT` is 3,500 — sized for a log entry. A Plan unit is a
+chapter section. Measured live across all 89 L2/L3 units: median 1,184, p90
+2,734, p95 4,022, **max 17,184**.
+
+At 3,500, five units truncate and **27,145 characters — 18.9% of all unit text
+— never reaches the prompt**, while the reference lines built from the 14% that
+did are byte-indistinguishable from complete ones. Plan units now have their
+own budget, `PLAN_UNIT_CHARS_IN_PROMPT = 20000`, at which **nothing truncates
+today**. 12,000 was rejected: it leaves one unit clipped, and the marginal token
+cost of the larger budget is trivial against a chapter silently indexed from 70%
+of itself.
+
+That does not make truncation impossible, only currently absent — so a
+partially-read unit is a **named, top-level report section** (`PARTIALLY READ`)
+carrying the locator and both lengths. It is never a warning and never inferred
+from a character count. `buildPrompt` also stopped re-slicing the body: the
+parser slices, and the parser is what records `truncatedTo`, so there was a
+second place that could truncate without saying so.
+
+The five that would have truncated at 3,500 are all already-referenced, so
+under add-only none of them would have been indexed anyway. The fix still
+matters: it removes a silent failure that was one provenance decision away from
+firing, and it keeps the prompt cap out of the hash (below).
+
+### The content hash — built although nothing consumes it yet
+
+`Plan_Index_State`, eight columns, one row per section. This is the real
+deliverable of the exercise and the reason it was built ahead of any consumer.
+
+A log entry is appended and never changes, so "referenced once" means "done
+forever". **A Plan chapter is rewritten in place** — Chapters 1, 3, 4, 5.3 and
+11 were substantially rewritten between 2026-08-25 and 08-27 while their index
+references predate every one of those edits, and nothing noticed. The watermark
+answers "has this ever been indexed"; the hash answers "is the index still right
+about it", and only the second question catches that.
+
+Two decisions inside it:
+
+- **The hash covers the whole unit body, whitespace-normalised — never the
+  truncated prompt slice.** A hash of what the model saw would miss every change
+  in the part it did not. This is also why the prompt cap and the hash are kept
+  apart.
+- **A heading-only hash was rejected.** It never fires when a body is rewritten,
+  which is exactly the August case. A whole-body hash over-triggers on a typo
+  fix; that is the failure worth having here, because nothing is repaired
+  automatically — a false positive costs a glance, a false negative costs a
+  chapter silently misdescribed.
+
+`indexedBy` is decided on first sight and never upgraded. Anything unrecognised
+in that column parses as `hand`, never `routine`: the permissive direction would
+let the routine believe it owns references a human wrote, and **all 291 existing
+Plan references are human**.
+
+### Dedup is prefix matching, and the guard that could not be tested
+
+The 69 hand-written locators truncate long heading text by eye at between 48 and
+64 characters, so a generated locator can differ from a hand-written one only in
+where it was cut. Comparing exactly would add a second reference for a section
+already indexed — the one thing add-only must not do. `planLocatorMatches`
+therefore prefix-matches above a 12-character floor. On live data it resolves
+**56 of 89 sections as already referenced**.
+
+An earlier version carried a second, explicit branch in front of the floor: *a
+numeric locator is exact or nothing*, so that `5.1` could never match `5.10`.
+**Mutation testing killed the branch's justification rather than the branch.**
+Removing it changed no test result, because every numeric locator this file
+produces is a bare token of at most six characters and the floor already decides
+every numeric comparison. No input can distinguish the two rules. Paired guards
+masking each other is now the third time this repo has found that pattern; the
+branch was deleted, the floor's numeric consequence is documented on the floor
+itself, and the `5.1` / `5.10` test kills a mutation of the floor.
+
+### Scope: the schedule cannot reach the Plan
+
+`plan` is a third explicit scope, excluded in `selectSources` rather than only
+in the CLI — the CLI is one of two callers and a workflow flag is not a guard.
+Neither the weekly safety net (`--latest-source`) nor the log-backlog opt-in (no
+`--source` at all) selects it. The Plan is 89 units against the September tab's
+22, and acquiring that by default is the same failure as the log backlog: real
+spend on a corpus nobody dispatched.
+
+### Filing order differs by source kind
+
+A term's Log references run in date order and its Plan references follow them —
+visible in exactly one place, the document itself. `insertionIndexFor` files a
+Log entry after the last **Log** line and a Plan unit after the last line of
+**any** kind. Reusing the Log rule for Plan units would file every new section
+above the hand-written ones, so the additive half would visibly disorder a block
+it is forbidden to rewrite.
+
+### ⚠ OPEN — the unit granularity is wrong for one chapter, and no rule fixes it
+
+The spec's unit is "an L2/L3 heading and its text to the next heading". On live
+data that is correct for 88 sections and wrong for one writeup.
+
+**INCIDENT 7's detail is twelve consecutive paragraphs, each styled Heading 2.**
+Read live 2026-09-08: `DISCOVERED 2026-08-28…`, `src/part-d/write-row.ts:69
+declares…`, `ROOT CAUSE — …`, `WHY IT SURVIVED…`, `DAMAGE ALREADY DONE…`,
+`REPAIR…`, `CODE FIXED 2026-08-28…`, `ONE MORE INSTANCE…`, `confirm.ts's
+counts.tasks…`, `STILL TO VERIFY LIVE…`, `HOW IT WAS NEARLY MISSED…` are all
+level 2, the same level as `5.3 BHC Zoom`. Indexing them as written files one
+incident under eleven separate reference lines.
+
+**Every candidate exclusion rule is contradicted by the human precedent.** A
+"prose-shaped heading" rule — heading text over 64 characters, or ending in a
+full stop — catches all eleven, and also catches eight sections a human chose to
+index by hand: `INCIDENT 1`, `INCIDENT 2`, `3a`, `3b`, `8.6 STAGING TABS`,
+`OPERATIONAL BACKLOGS`, `STATUS AT A GLANCE`, and `(KEPT FOR REFERENCE…`.
+`INCIDENT 3`–`INCIDENT 7` have the identical shape to `INCIDENT 1` and
+`INCIDENT 2`, which are indexed. The document encodes no signal separating a
+section title from a headed paragraph, so this is **flagged, not resolved** —
+picking a rule here would quietly overrule a human's own filing.
+
+## 9. Deliberately not built
 
 **No wholesale replacement, expressible nowhere.** **No Plan indexing** (§2). **No backlog run** — 68 older entries remain unindexed, including §002 and §005; the first live run was September alone by instruction, and the backlog is a separate, larger decision. **No schedule** — `workflow_dispatch` plus §089.4's weekly safety net still to be wired.

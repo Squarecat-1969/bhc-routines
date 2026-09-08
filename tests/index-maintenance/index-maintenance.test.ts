@@ -12,15 +12,27 @@ import { describe, expect, it } from 'vitest';
 
 import { SOURCE_ALIASES, SOURCE_TABS, latestSourceLabel } from '../../src/passes/index-maintenance/constants.js';
 import {
+  PLAN_LOCATOR_MAX,
   excerptFor,
   headingUrlsByLocator,
   parseIndexTab,
+  parsePlanSections,
   parseSourceTab,
+  planLocator,
+  planLocatorMatches,
 } from '../../src/passes/index-maintenance/parse.js';
+import {
+  PLAN_STATE_HEADER,
+  contentHash,
+  driftOf,
+  parsePlanStateRow,
+  serializePlanStateRow,
+} from '../../src/passes/index-maintenance/plan-state.js';
 import {
   buildVocabulary,
   buildWatermark,
   countLine,
+  insertionIndexFor,
   planWrites,
   recount,
   referenceLine,
@@ -484,5 +496,190 @@ describe('linked references', () => {
     });
     const ref = plan.writes.find((w) => w.kind === 'insert-reference')!;
     expect(ref.kind === 'insert-reference' && ref.link).toBeNull();
+  });
+});
+
+// --- Plan indexing ----------------------------------------------------------
+
+/**
+ * ⚠ THE HEADING SHAPES ARE THE REAL ONES, read live 2026-09-08: numeric-token
+ * headings (`5.3`, `8.11`), a lettered one (`3a`), a chapter-level L1 that is
+ * NOT a unit, a blank page-break heading, and a paragraph-length L3 whose
+ * heading text IS its body.
+ */
+function planFixture() {
+  const body = (h: string, n: number) => `${h}\n${'x'.repeat(n)}\n`;
+  const parts = [
+    body('Ch 5 — Routines', 40), // L1, not a unit
+    body('5.3 BHC Zoom', 300),
+    body('5.10 Reconciler', 120),
+    body('', 10), // blank page-break heading, skipped
+    body('OPERATIONAL BACKLOGS AND THE THINGS THAT ARE NOT DONE YET', 250),
+  ];
+  const content = parts.join('');
+  const headings: {
+    headingId: string;
+    level: number;
+    text: string;
+    plainTextStartIndex: number;
+    linkable: boolean;
+    url: string;
+  }[] = [];
+  let at = 0;
+  const levels = [1, 2, 2, 2, 2];
+  const texts = ['Ch 5 — Routines', '5.3 BHC Zoom', '5.10 Reconciler', '', 'OPERATIONAL BACKLOGS AND THE THINGS THAT ARE NOT DONE YET'];
+  parts.forEach((p, i) => {
+    headings.push({
+      headingId: `h.${i}`,
+      level: levels[i]!,
+      text: texts[i]!,
+      plainTextStartIndex: at,
+      linkable: true,
+      url: `https://docs.google.com/document/d/PLAN/edit#heading=h.${i}`,
+    });
+    at += p.length;
+  });
+  return { content, headings };
+}
+
+describe('planLocator', () => {
+  it('reproduces the numeric-token convention exactly', () => {
+    expect(planLocator('5.3 BHC Zoom')).toBe('5.3');
+    expect(planLocator('8.11 Attio — object & field schema')).toBe('8.11');
+    expect(planLocator('3a Something')).toBe('3a');
+  });
+
+  it('truncates a text heading at a word boundary, within the measured 64', () => {
+    const loc = planLocator('OPERATIONAL BACKLOGS AND THE THINGS THAT ARE NOT DONE YET AND MORE BESIDES');
+    expect(loc.length).toBeLessThanOrEqual(PLAN_LOCATOR_MAX);
+    expect(loc.endsWith(' ')).toBe(false);
+    expect('OPERATIONAL BACKLOGS AND THE THINGS THAT ARE NOT DONE YET AND MORE BESIDES'.startsWith(loc)).toBe(true);
+  });
+});
+
+describe('planLocatorMatches', () => {
+  it('⚠ matches two DIFFERENT truncations of the same heading', () => {
+    // This is the whole reason dedup is not equality: the 69 hand-written
+    // locators were cut by eye at 48-64 characters.
+    const hand = 'OPERATIONAL BACKLOGS AND THE THINGS THAT ARE NOT';
+    const generated = 'OPERATIONAL BACKLOGS AND THE THINGS THAT ARE NOT DONE YET';
+    expect(planLocatorMatches(hand, generated)).toBe(true);
+  });
+
+  it('⚠ NEVER conflates 5.1 with 5.10 — the length floor is what holds this shut', () => {
+    expect(planLocatorMatches('5.1', '5.10')).toBe(false);
+    expect(planLocatorMatches('8.1', '8.11')).toBe(false);
+    expect(planLocatorMatches('5.3', '5.3')).toBe(true);
+  });
+
+  it('refuses a prefix match too short to identify a section', () => {
+    expect(planLocatorMatches('Backlogs', 'Backlogs and other things')).toBe(false);
+  });
+});
+
+describe('parsePlanSections', () => {
+  const { content, headings } = planFixture();
+  const units = () => parsePlanSections(content, headings, { maxChars: 20000 });
+
+  it('takes L2/L3 headings only — a chapter is its sub-sections', () => {
+    expect(units().map((u) => u.locator)).toEqual(['5.3', '5.10', 'OPERATIONAL BACKLOGS AND THE THINGS THAT ARE NOT DONE YET']);
+  });
+
+  it('skips the blank page-break heading', () => {
+    expect(units().some((u) => u.locator === '')).toBe(false);
+  });
+
+  it('runs a unit to the next heading of ANY level, and marks it Plan', () => {
+    const u = units()[0]!;
+    expect(u.sourceKind).toBe('Plan');
+    expect(u.body).toContain('5.3 BHC Zoom');
+    expect(u.body).not.toContain('5.10 Reconciler');
+  });
+
+  it('⚠ FLAGS A TRUNCATED UNIT AND KEEPS ITS TRUE LENGTH — a partial read is never silent', () => {
+    const small = parsePlanSections(content, headings, { maxChars: 50 });
+    const u = small.find((x) => x.locator === '5.3')!;
+    expect(u.truncatedTo).toBe(50);
+    expect(u.body.length).toBe(50);
+    expect(u.fullLength).toBeGreaterThan(50);
+    // The hash is taken from the WHOLE unit, never the slice the model saw.
+    expect(u.fullBody!.length).toBe(u.fullLength);
+  });
+
+  it('leaves truncatedTo undefined when the whole unit was read', () => {
+    for (const u of units()) expect(u.truncatedTo).toBeUndefined();
+  });
+});
+
+describe('the Plan reference line', () => {
+  it("says `Plan`, not `Log`, and carries no date", () => {
+    const u = parsePlanSections(planFixture().content, planFixture().headings, { maxChars: 20000 })[0]!;
+    const line = referenceLine(u, 40);
+    expect(line.startsWith('· 5.3 · Plan “')).toBe(true);
+    expect(line).not.toContain('· Log ');
+  });
+});
+
+describe('insertionIndexFor', () => {
+  const tab = parseIndexTab('t.fail', 'GROUP: Failure classes', FAILURE_TAB);
+  const lines = FAILURE_TAB.split('\n');
+  const dedup = tab.terms.find((t) => t.term === 'dedup gap')!;
+
+  it('files a LOG reference after the last Log line, above the Plan block', () => {
+    const at = insertionIndexFor(lines, dedup, 'Log');
+    expect(lines[at]).toContain('· §008 ');
+  });
+
+  it('⚠ files a PLAN reference at the END of the block, never above the hand-written ones', () => {
+    const at = insertionIndexFor(lines, dedup, 'Plan');
+    expect(lines[at]).toContain('· 5.9 · Plan ');
+  });
+});
+
+describe('contentHash and drift', () => {
+  it('is stable under a reflow, and moves when the text does', () => {
+    expect(contentHash('one two\nthree')).toBe(contentHash('one  two   three'));
+    expect(contentHash('one two three')).not.toBe(contentHash('one two four'));
+  });
+
+  it('classifies unseen / unchanged / CHANGED', () => {
+    const prior = {
+      locator: '5.3',
+      headingId: 'h.1',
+      contentHash: 'aaaa',
+      unitChars: 10,
+      truncatedTo: 0,
+      indexedBy: 'hand' as const,
+      firstSeen: '2026-09-08',
+      lastSeen: '2026-09-08',
+    };
+    expect(driftOf(undefined, 'aaaa')).toBe('unseen');
+    expect(driftOf(prior, 'aaaa')).toBe('unchanged');
+    expect(driftOf(prior, 'bbbb')).toBe('CHANGED');
+  });
+});
+
+describe('Plan_Index_State rows', () => {
+  it('⚠ reads an UNRECOGNISED provenance as `hand`, never as `routine`', () => {
+    // The permissive direction would let the routine believe it owns
+    // references a human wrote — and all 291 existing ones are human.
+    expect(parsePlanStateRow(['5.3', 'h.1', 'aaaa', '10', '0', '', '2026-09-08', '2026-09-08'])!.indexedBy).toBe('hand');
+    expect(parsePlanStateRow(['5.3', 'h.1', 'aaaa', '10', '0', 'ROUTINE?', '2026-09-08', '2026-09-08'])!.indexedBy).toBe('hand');
+    expect(parsePlanStateRow(['5.3', 'h.1', 'aaaa', '10', '0', 'routine', '2026-09-08', '2026-09-08'])!.indexedBy).toBe('routine');
+  });
+
+  it('round-trips through the header order', () => {
+    const row = serializePlanStateRow({
+      locator: '5.3',
+      headingId: 'h.1',
+      contentHash: 'abc',
+      unitChars: 300,
+      truncatedTo: 0,
+      indexedBy: 'routine',
+      firstSeen: '2026-09-08',
+      lastSeen: '2026-09-09',
+    });
+    expect(row).toHaveLength(PLAN_STATE_HEADER.length);
+    expect(parsePlanStateRow(row.map(String))!.unitChars).toBe(300);
   });
 });

@@ -26,6 +26,42 @@ export function renderReport(r: IndexMaintenanceReport): string {
   out.push(`  controlled vocabulary: ${r.vocabularySize} term(s)`);
   if (r.duplicateTerms.length > 0) out.push(`  ⚠ defined in more than one GROUP tab: ${r.duplicateTerms.join(', ')}`);
 
+  // ⚠ TRUNCATION IS A NAMED, TOP-LEVEL SECTION — NOT A WARNING AND NOT
+  // INFERRED FROM A CHARACTER COUNT. A section indexed from its first N
+  // characters produces reference lines byte-indistinguishable from one built
+  // on the whole of it, so if this does not print, nothing else says it.
+  out.push('', 'PARTIALLY READ');
+  if (r.truncated.length === 0) {
+    out.push('  none — every unit reached the prompt in full');
+  } else {
+    out.push(`  ⚠ ${r.truncated.length} unit(s) DID NOT reach the prompt in full:`);
+    for (const t of r.truncated) {
+      const pct = t.fullLength > 0 ? Math.round((t.readChars / t.fullLength) * 100) : 0;
+      out.push(`    ${t.locator}`);
+      out.push(`       read ${t.readChars} of ${t.fullLength} chars (${pct}%) — ${t.fullLength - t.readChars} unread`);
+    }
+    out.push('  Their index entries describe only the part that was read.');
+  }
+
+  if (r.planSections > 0) {
+    out.push('', "THE DEVELOPER'S PLAN");
+    out.push(`  sections found        : ${r.planSections}`);
+    out.push(`  already referenced    : ${r.planAlreadyReferenced}  (UNTOUCHED — provenance unknown, add-only)`);
+    out.push(`  never indexed         : ${r.planSections - r.planAlreadyReferenced}`);
+    if (!r.planStateActive) {
+      out.push('  ⚠ NO CONTENT HASHES RECORDED — drift cannot be reported for any section this run.');
+    }
+    const changed = r.planDrift.filter((d) => d.verdict === 'CHANGED');
+    const unseen = r.planDrift.filter((d) => d.verdict === 'unseen');
+    out.push(`  hashes: ${r.planDrift.length - changed.length - unseen.length} unchanged · ${changed.length} CHANGED · ${unseen.length} first seen`);
+    if (changed.length > 0) {
+      // The real deliverable: a stale index that says which parts are stale.
+      out.push(`  ⚠ ${changed.length} section(s) REWRITTEN since they were indexed — their references now describe older text:`);
+      for (const d of changed) out.push(`    ${d.locator}  (${d.chars} chars, indexed by ${d.indexedBy})`);
+      out.push('  Nothing is repaired automatically. Removing a superseded reference is a human act.');
+    }
+  }
+
   out.push('', 'WATERMARK');
   out.push(`  already indexed : ${r.watermarkSize} locator(s)`);
   out.push(`  unindexed       : ${r.unindexed.length}  ${r.unindexed.slice(0, 30).join(' ')}${r.unindexed.length > 30 ? ' …' : ''}`);

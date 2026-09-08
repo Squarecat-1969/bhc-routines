@@ -57,13 +57,14 @@ on:
           - dry-run
           - live
       scope:
-        description: 'latest = the newest log tab only (what a session just wrote). all-sources = ALSO the 68-entry backlog — opt in deliberately, it is a large LLM spend.'
+        description: 'latest = the newest log tab only (what a session just wrote). all-sources = ALSO the 68-entry log backlog. plan = the Developer''s Plan ONLY (89 sections, tens of minutes, add-only). All three are LOG-or-PLAN, never both.'
         required: true
         default: 'latest'
         type: choice
         options:
           - latest
           - all-sources
+          - plan
       max_entries:
         description: 'Cap on entries assigned in one run (blank = the built-in 40). The second bound on the backlog: it is processed over several runs, never in one.'
         required: false
@@ -146,10 +147,19 @@ jobs:
             # seven sources and the 68 older unindexed entries — a real
             # Anthropic spend on a corpus nobody is waiting on, which must be
             # a decision rather than a default.
-            if [ "${{ inputs.scope }}" != "all-sources" ]; then
+            # ⚠ `plan` IS A THIRD EXPLICIT SCOPE AND THE SCHEDULE CANNOT REACH
+            # IT. The branch above already returned for `schedule`, and
+            # `selectSources` drops the Plan from the default set, so the Plan
+            # is indexed only when someone dispatches this option by name. It
+            # is 89 units against the September tab's 22, and every one is a
+            # paid call on a corpus nobody is waiting on.
+            if [ "${{ inputs.scope }}" = "plan" ]; then
+              FLAGS="$FLAGS --source plan"
+              echo "PLAN OPT-IN: the Developer's Plan only. Additive — existing references are never rewritten."
+            elif [ "${{ inputs.scope }}" != "all-sources" ]; then
               FLAGS="$FLAGS --latest-source"
             else
-              echo "BACKLOG OPT-IN: all seven sources selected."
+              echo "BACKLOG OPT-IN: all log sources selected (the Plan is NOT included)."
             fi
             if [ -n "${{ inputs.max_entries }}" ]; then FLAGS="$FLAGS --max-llm-calls ${{ inputs.max_entries }}"; fi
             if [ "${{ inputs.ignore_watermark }}" = "true" ]; then FLAGS="$FLAGS --ignore-watermark"; fi

@@ -181,9 +181,22 @@ const ENTRY_RE = /^(§\d+(?:\.\d+)?) — (.+)$/;
 const ENTRY_DATE_RE = /(\d{4}-\d{2}-\d{2})/;
 
 export interface SourceEntry {
+  /** Which document this came from — decides the reference line's `Log`/`Plan` word. */
+  readonly sourceKind: 'Log' | 'Plan';
+  /**
+   * ⚠ TRUE WHEN THE PROMPT DID NOT SEE THE WHOLE UNIT. Carried on the entry so
+   * a partially-read section is REPORTED rather than inferred: a unit indexed
+   * from its first N characters is byte-indistinguishable in the index from one
+   * indexed in full.
+   */
+  readonly truncatedTo?: number;
   readonly locator: string;
   readonly title: string;
   readonly date: string | null;
+  /** Plan units only: the unit's TRUE length, before any prompt truncation. */
+  readonly fullLength?: number;
+  /** Plan units only: the unit's whole text. Hashed; never sent to the model. */
+  readonly fullBody?: string;
   /** 0-based line number of the heading within the tab. */
   readonly lineNo: number;
   /** The entry's body, for the LLM to read. Bounded by the next heading. */
@@ -237,6 +250,7 @@ export function parseSourceTab(content: string, headingUrls?: HeadingUrls): Sour
       locator: h.locator,
       title: h.title,
       date: dateMatch ? dateMatch[1]! : null,
+      sourceKind: 'Log',
       lineNo: h.lineNo,
       body,
       headingUrl: headingUrls?.get(h.locator) ?? null,
@@ -259,4 +273,132 @@ export function excerptFor(entry: SourceEntry, maxChars = 150): string {
   const cut = flattened.slice(0, maxChars);
   const lastSpace = cut.lastIndexOf(' ');
   return lastSpace > maxChars * 0.6 ? cut.slice(0, lastSpace) : cut;
+}
+
+
+// --- The Developer's Plan --------------------------------------------------
+
+/**
+ * THE PLAN HAS NO §NNN STRUCTURE, so `parseSourceTab` returns zero for it and
+ * always has. Its 291 index references were written by hand.
+ *
+ * ⚠ THE UNIT IS THE LEVEL-2/3 HEADING AND ITS TEXT TO THE NEXT HEADING OF ANY
+ * LEVEL — and that is not a design choice, it is the granularity the index
+ * already uses. Measured 2026-09-08, the 291 references resolve 202 to L2
+ * headings, 55 to L3 and 34 to nothing. Choosing a different unit would produce
+ * a second scheme sitting inside one list.
+ *
+ * Level 1 headings are NOT units: a chapter is its sub-sections, and indexing
+ * it separately double-counts. Blank headings (15 of them, page-break
+ * artifacts) are skipped — the ToC omits them deliberately and says so.
+ */
+const PLAN_UNIT_LEVELS = new Set([2, 3]);
+
+/**
+ * The locator, reproducing the convention the 69 hand-written ones already use.
+ *
+ * Measured: 29 are a leading numeric token (`5.1`, `8.10`, `3a`, `3b`), the
+ * rest are heading text truncated by eye to between 48 and 64 characters.
+ * The numeric form is reproduced exactly; the text form is truncated
+ * consistently at a word boundary, which is the one place this cannot match a
+ * hand-written locator character for character.
+ *
+ * ⚠ THAT MISMATCH IS WHY DEDUPLICATION USES PREFIX MATCHING, NOT EQUALITY —
+ * see `planLocatorMatches`. Generating "…These are t" where a human wrote
+ * "…These a" would otherwise add a second reference for a section already
+ * indexed, which is the one thing the additive design must not do.
+ */
+export const PLAN_LOCATOR_MAX = 64;
+const NUMERIC_LOCATOR_RE = /^(\d+(?:\.\d+)?[a-z]?)\s+\S/;
+
+export function planLocator(headingText: string): string {
+  const flat = headingText.replace(/\s+/g, ' ').trim();
+  const numeric = NUMERIC_LOCATOR_RE.exec(flat);
+  if (numeric) return numeric[1]!;
+  if (flat.length <= PLAN_LOCATOR_MAX) return flat;
+  const cut = flat.slice(0, PLAN_LOCATOR_MAX);
+  const lastSpace = cut.lastIndexOf(' ');
+  return (lastSpace > PLAN_LOCATOR_MAX * 0.6 ? cut.slice(0, lastSpace) : cut).trim();
+}
+
+/**
+ * Does a generated locator refer to the same section as an existing one?
+ *
+ * ⚠ PREFIX MATCHING, DELIBERATELY, AND ONLY ABOVE A LENGTH FLOOR. A text
+ * locator may differ only in where it was truncated — 48 characters by one
+ * hand, 64 by another — so either being a prefix of the other is the same
+ * section.
+ *
+ * ⚠ THE FLOOR IS THE ONLY GUARD, AND IT IS THE ONE THAT KEEPS `5.1` AWAY FROM
+ * `5.10`. An earlier version carried a second, explicit "a numeric locator is
+ * exact or nothing" branch in front of it. Mutation testing killed that
+ * branch's justification rather than the branch: every numeric locator this
+ * file produces is a bare token of at most six characters, so the floor
+ * already decides every numeric comparison and NO INPUT COULD DISTINGUISH THE
+ * TWO RULES. A guard no test can kill is a guard nobody is maintaining, so
+ * there is now one rule and the floor's numeric consequence is stated here
+ * instead of duplicated below.
+ *
+ * Lowering this floor below the length of a numeric token re-opens exactly
+ * that conflation — the test named for `5.1` / `5.10` is what holds it shut.
+ */
+export const PLAN_LOCATOR_PREFIX_MIN = 12;
+
+export function planLocatorMatches(a: string, b: string): boolean {
+  const x = a.replace(/\s+/g, ' ').trim().toLowerCase();
+  const y = b.replace(/\s+/g, ' ').trim().toLowerCase();
+  if (x === y) return true;
+  const shorter = x.length < y.length ? x : y;
+  if (shorter.length < PLAN_LOCATOR_PREFIX_MIN) return false;
+  return x.startsWith(y) || y.startsWith(x);
+}
+
+export interface PlanHeadingLike {
+  readonly headingId: string;
+  readonly level: number;
+  readonly text: string;
+  readonly plainTextStartIndex: number;
+  readonly linkable: boolean;
+  readonly url: string;
+}
+
+/**
+ * Split the Plan tab into indexable units.
+ *
+ * ⚠ THE 17 PARAGRAPH-HEADINGS ARE NOT A SPECIAL CASE HERE, AND THAT IS WHY
+ * THIS WORKS. For `INCIDENT 2 — …` (1,285 characters of heading) the heading
+ * text IS the body, and since the body is taken as "from this heading to the
+ * next", it already contains the heading. Nothing needs to detect them.
+ */
+export function parsePlanSections(
+  content: string,
+  headings: readonly PlanHeadingLike[],
+  opts: { readonly maxChars: number },
+): SourceEntry[] {
+  const ordered = [...headings].sort((a, b) => a.plainTextStartIndex - b.plainTextStartIndex);
+  const out: SourceEntry[] = [];
+
+  ordered.forEach((h, i) => {
+    if (!PLAN_UNIT_LEVELS.has(h.level)) return;
+    if (h.text.trim() === '') return; // blank page-break heading
+    const end = i + 1 < ordered.length ? ordered[i + 1]!.plainTextStartIndex : content.length;
+    const full = content.slice(h.plainTextStartIndex, end);
+    const truncated = full.length > opts.maxChars;
+    out.push({
+      sourceKind: 'Plan',
+      locator: planLocator(h.text),
+      title: h.text.replace(/\s+/g, ' ').trim().slice(0, 200),
+      date: null,
+      lineNo: content.slice(0, h.plainTextStartIndex).split('\n').length,
+      body: truncated ? full.slice(0, opts.maxChars) : full,
+      headingUrl: h.linkable ? h.url : null,
+      ...(truncated ? { truncatedTo: opts.maxChars } : {}),
+      // ⚠ HASHED FROM THE WHOLE UNIT, NEVER THE TRUNCATED PROMPT SLICE. A hash
+      // of what the model saw would miss every change in the part it did not.
+      fullLength: full.length,
+      fullBody: full,
+    });
+  });
+
+  return out;
 }

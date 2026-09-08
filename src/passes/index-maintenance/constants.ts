@@ -78,6 +78,14 @@ export function latestSourceLabel(): string {
   return SOURCE_TABS[SOURCE_TABS.length - 1]!.label;
 }
 
+/**
+ * ⚠ `plan` IS A THIRD EXPLICIT SCOPE AND IS NEVER REACHABLE FROM THE WEEKLY
+ * SCHEDULE. The Plan is 89 indexable units against the September run's 22, and
+ * a first pass is measured in tens of minutes — acquiring it by default is the
+ * same failure as the log backlog: real spend on a corpus nobody is waiting on.
+ */
+export const PLAN_SOURCE_LABEL = "Developer's Plan";
+
 /** `--source september` etc. The first live run indexes ONE tab, not the backlog. */
 export const SOURCE_ALIASES: Readonly<Record<string, string>> = {
   september: 'log-003 · September 2026',

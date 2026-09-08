@@ -117,8 +117,9 @@ export function referenceRuns(
 ): { prefix: string; linkText: string; suffix: string } {
   const excerpt = excerptFor(entry, excerptChars);
   const dated = entry.date ? `${entry.locator} · ${entry.date}` : entry.locator;
-  // Curly quotes, matching every existing line in the index.
-  return { prefix: '· ', linkText: `${dated} · Log`, suffix: ` “${excerpt}”` };
+  // ⚠ `Log` or `Plan`, matching the two shapes the index already carries:
+  // `· §008 · 2026-06-02 · Log “…”` and `· 5.9 · Plan “…”`.
+  return { prefix: '· ', linkText: `${dated} · ${entry.sourceKind}`, suffix: ` “${excerpt}”` };
 }
 
 export function referenceLine(entry: SourceEntry, excerptChars?: number): string {
@@ -249,7 +250,7 @@ export function planWrites(args: {
       // first alphabetically — so planning for "beta" anchored inside "alpha"
       // and both inserts landed in one block. Term HEADERS are unique; the
       // block is walked forward from there.
-      const at = insertionIndexFor(lines, existing.term);
+      const at = insertionIndexFor(lines, existing.term, entry.sourceKind);
       const anchor = uniqueAnchor(lines, at);
       lines.splice(at + 1, 0, line);
 
@@ -343,22 +344,33 @@ function tabLines(tab: IndexTab): string[] {
 }
 
 /**
- * The line index a new reference goes AFTER: the term's last `Log` reference,
- * or its header when it has none.
+ * The line index a new reference goes AFTER.
  *
- * ⚠ AFTER THE LAST **Log** REFERENCE, not the last reference of any kind. The
- * document orders Log references by date and then Plan references; appending
- * at the very end would file a September Log entry after a Plan section, which
- * is the only place that convention is visible.
+ * ⚠ THE ANSWER DIFFERS BY SOURCE KIND, because the index has a filing order
+ * and it is visible in exactly one place: a term's Log references run in date
+ * order, and its Plan references follow them.
+ *
+ *   Log  entry -> after the term's last **Log** reference. Appending at the
+ *                 very end would file a September log entry after a Plan
+ *                 section, breaking that convention.
+ *   Plan unit  -> after the term's last reference of ANY kind, i.e. the end of
+ *                 the block. Reusing the Log rule here would file every new
+ *                 Plan section ABOVE the hand-written ones, so the additive
+ *                 half would visibly disorder a block it is forbidden to
+ *                 rewrite.
  */
-export function insertionIndexFor(lines: readonly string[], term: IndexTerm): number {
+export function insertionIndexFor(
+  lines: readonly string[],
+  term: IndexTerm,
+  sourceKind: 'Log' | 'Plan' = 'Log',
+): number {
   const header = lines.indexOf(term.headerLine);
   if (header === -1) return Math.max(0, lines.length - 1);
   let at = header;
   for (let i = header + 1; i < lines.length; i++) {
     const line = lines[i]!;
     if (!line.startsWith('· ')) break; // the next term header, or a Rule B note
-    if (/ · Log /.test(line)) at = i;
+    if (sourceKind === 'Plan' || / · Log /.test(line)) at = i;
   }
   return at;
 }
