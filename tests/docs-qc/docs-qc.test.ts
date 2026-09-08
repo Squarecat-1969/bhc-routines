@@ -14,6 +14,8 @@
 
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { renderQcReport } from '../../src/passes/docs-qc/report.js';
+import { buildRuleResult } from '../../src/passes/docs-qc/index.js';
 
 import type { DocHeading } from '../../src/lib/docs.js';
 import {
@@ -292,5 +294,66 @@ describe('hygiene and coverage', () => {
     const gaps = missingByName(['§128', '§129'], new Set(['§128']), 'r');
     expect(gaps).toHaveLength(1);
     expect(gaps[0]!.detail).toBe('§129');
+  });
+});
+
+describe('NOT RUN is a third state, not a pass', () => {
+  const base = {
+    ruleId: 'toc-blank-heading-count',
+    statement: 's',
+    earnedBy: 'e',
+    severity: 'finding' as const,
+    document: "Plan's ToC",
+    findings: [],
+    measured: 'm',
+  };
+  const render = (notRun: string | null) =>
+    renderQcReport({
+      runId: 'r', startedAt: '', finishedAt: '', aborted: false, abortReason: null,
+      documentsRead: [], writesIssued: 0, warnings: [],
+      results: [{ ...base, fired: false, notRun }],
+    } as never);
+
+  it('⚠ renders NOT RUN rather than a green PASS', () => {
+    const t = render('the ToC no longer states a blank-heading count');
+    expect(t).toContain('⊘ NOT RUN');
+    expect(t).not.toContain('✓ PASS');
+    expect(t).toContain('DID NOT RUN — the ToC no longer states a blank-heading count');
+  });
+
+  it('still renders PASS when the rule actually ran', () => {
+    const t = render(null);
+    expect(t).toContain('✓ PASS');
+    expect(t).not.toContain('⊘ NOT RUN');
+  });
+
+  it('⚠ always prints the NOT RUN section, with a none line', () => {
+    expect(render(null)).toContain('none — every rule had the input it needs');
+    expect(render('x')).toMatch(/RULES THAT DID NOT RUN — 1/);
+  });
+});
+
+describe('buildRuleResult — a rule that did not run reports nothing', () => {
+  const rule = { id: 'log-001-tab-inventory', statement: 's', earnedBy: 'e', severity: 'finding' as const, document: 'log-001' };
+  const findings = [
+    { ruleId: 'log-001-tab-inventory', detail: 'missing tab: May 2026' },
+    { ruleId: 'log-001-tab-inventory', detail: 'missing tab: June 2026' },
+    { ruleId: 'log-001-tab-inventory', detail: 'missing tab: July 2026' },
+  ];
+
+  it('⚠ DISCARDS findings computed before the precondition failed', () => {
+    // Reachable, not defensive: when listTabs returns nothing this rule
+    // computes three "missing tab" findings AND cannot run. Reporting them
+    // turns a transport failure into three claims about the document.
+    const r = buildRuleResult(rule, findings, 'm', 'listTabs returned no tabs for log-001');
+    expect(r.fired).toBe(false);
+    expect(r.findings).toHaveLength(0);
+    expect(r.notRun).toContain('listTabs returned no tabs');
+  });
+
+  it('keeps them when the rule did run', () => {
+    const r = buildRuleResult(rule, findings, 'm', null);
+    expect(r.fired).toBe(true);
+    expect(r.findings).toHaveLength(3);
   });
 });

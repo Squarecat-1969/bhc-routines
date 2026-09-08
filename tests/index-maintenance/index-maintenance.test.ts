@@ -882,3 +882,42 @@ describe('parsePlanStateRow — three values', () => {
     expect(row('unindexed?')).toBe('hand');
   });
 });
+
+describe('nextStateFor — the derived repair', () => {
+  const anchorChanged = {
+    cls: 'ANCHOR_CHANGED' as const,
+    prior: st({ locator: 'INCIDENT 2', headingId: 'h.dead', liveAnchor: 'h.new' }),
+    live: live({ locator: 'INCIDENT 2', headingId: 'h.new', contentHash: 'NEW' }),
+    drift: 'unchanged' as const,
+  };
+
+  it('⚠ RESOLVES when the index no longer points at the dead anchor and does point at the live one', () => {
+    const out = nextStateFor(anchorChanged, '2026-09-08', new Set(['h.new', 'h.other']));
+    expect(out.headingId).toBe('h.new');
+    expect(out.liveAnchor).toBe('');
+  });
+
+  it('⚠ does NOT resolve while the index still points at the dead anchor', () => {
+    const out = nextStateFor(anchorChanged, '2026-09-08', new Set(['h.dead', 'h.new']));
+    expect(out.headingId).toBe('h.dead');
+    expect(out.liveAnchor).toBe('h.new');
+  });
+
+  it('does not resolve when the index points at neither — the repair was not observed', () => {
+    const out = nextStateFor(anchorChanged, '2026-09-08', new Set(['h.unrelated']));
+    expect(out.headingId).toBe('h.dead');
+  });
+
+  it('⚠ NEVER resolves on a null anchor set — an unread index is not evidence of repair', () => {
+    // Passing null means the index was read without links. Closing the row
+    // there would be declaring the repair rather than observing it.
+    const out = nextStateFor(anchorChanged, '2026-09-08', null);
+    expect(out.headingId).toBe('h.dead');
+    expect(out.liveAnchor).toBe('h.new');
+  });
+
+  it('leaves a non-ANCHOR_CHANGED row alone even when the anchors would satisfy it', () => {
+    const alive = { cls: 'ALIVE' as const, prior: st({ headingId: 'h.x' }), live: live({ headingId: 'h.x' }), drift: 'unchanged' as const };
+    expect(nextStateFor(alive, '2026-09-08', new Set(['h.x'])).liveAnchor).toBe('');
+  });
+});

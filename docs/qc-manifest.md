@@ -156,19 +156,27 @@ These belong here as guidance for a human. Writing them as tests would produce f
 
 ⚠ **`hand` is never demoted.** A hand row with no references stays `hand`, because demoting it would open a path back up to `routine` on a later run, letting the routine claim ownership of references a human wrote. The "nothing points at this" condition is reported from the index instead, by `plan-section-unindexed`.
 
-⚠ **KNOWN LIMITATION — a RENAMED section can be wrongly demoted, and it is latent rather than fixed.**
-
-`index-maintenance` decides `referencedInIndex` from **reference-line text only**, because it reads the index tabs without `includeLinks`. A section whose heading has been reworded keeps its OLD wording in every index reference line, so the text no longer matches and the routine concludes nothing points at it. **A section in that state carrying `routine` would be demoted to `unindexed` while its references exist and work.**
-
-Observed 2026-09-08 on `OPERATIONAL BACKLOGS`: indexed as *"…only time. These a"*, tracked as *"…only time. This is"*, no prefix match. It did **not** misreport, but only because that row is `hand` and `hand` is never demoted — the asymmetry masked the bug rather than preventing it.
-
-**`plan-section-unindexed` does not share the defect.** QC matches **by anchor first**, falling back to text, using the index links it already reads for `index-link-targets-resolve`; reference lines are linked, so their anchor identifies the section through any amount of rewording. Reading text alone made the rule report `OPERATIONAL BACKLOGS` as unreferenced on its first live run — a false positive fixed before it shipped.
-
-**The blast radius is a wrong report line, not a false provenance claim,** and the recovery path is safe: a demoted row returns as `hand`, never as `routine`. The fix is to give `index-maintenance` the same anchor matching, which means reading index tabs with `includeLinks`.
+⚠ **Anchor first, text as fallback — and this was a real defect, now closed.** `index-maintenance` used to decide `referencedInIndex` from reference-line *text* only, because it read the index without `includeLinks`. A section whose heading was reworded keeps its OLD wording in every index reference, so text stopped matching and a `routine` row would have been demoted to `unindexed` while its links worked. Observed on `OPERATIONAL BACKLOGS` (indexed as *"…These a"*, tracked as *"…This is"*); it did not misreport only because that row was `hand`, and `hand` is never demoted — the asymmetry masked the bug rather than preventing it. Both surfaces now read `includeLinks` and match by anchor first. **If the index ever returns zero link anchors the run says so and degrades to text matching, rather than treating a wrong zero as truth.**
 
 ⚠ **An unrecognised value still reads as `hand`.** `unindexed` is recognised explicitly; everything else is treated as human work, because the permissive direction must never be `routine`.
 
+### The repair is derived, never declared
+
+An `ANCHOR CHANGED` row resolves — `heading_id ← live_anchor`, `live_anchor ← ''` — **only when the index itself shows the repair happened**: the old anchor no longer appears among its link anchors and the live one does. Same observe-what-happened rule as `routine`. A row is never closed because someone said the work was finished, and **an index read without links resolves nothing**, because an unread index is not evidence of repair.
+
+Leaving the dead anchor in `heading_id` after the references have moved would make the report lie in the other direction — claiming an outstanding repair that is done — which is the same defect as a green report over a real one.
+
 **On `ANCHOR CHANGED` the hash moves and `heading_id` does not.** `heading_id` records the anchor the index's reference lines *actually point at*; the new live anchor goes to `superseded_anchor` as the outstanding repair. Writing the new anchor straight into `heading_id` would make the next report clean while 65 reference lines still point nowhere — **a green report over a real defect, which is the exact shape this system exists to catch. The report must stay truthful about the INDEX, not about the document.**
+
+## ⚠ NOT RUN is a third state, and every rule can reach it
+
+A rule whose input is absent computes nothing, finds nothing, and **renders as a pass**. `toc-blank-heading-count` did exactly that on 2026-09-08: the ToC no longer states a count, so there was nothing to compare, and the rule line showed a green tick while a warning elsewhere said it could not run. **The manifest's own stated failure mode, happening to a rule inside the manifest.**
+
+Every rule now declares the input it needs and reports `⊘ NOT RUN` with a reason when it is absent. The report always prints a `RULES THAT DID NOT RUN` section, with a `none` line.
+
+**A rule that did not run reports no findings, even if it computed some.** This is reachable, not defensive: `log-001-tab-inventory` derives its findings by subtracting the tabs it saw from the tabs it expects, so when `listTabs` returns nothing it computes three "missing tab" findings *and* fails its precondition at the same moment. Reporting them would turn a transport failure into three confident claims about the document.
+
+Audited 2026-09-08, the inputs that can be absent: **Plan headings** (`plan-no-log-entries`, `toc-covers-plan-headings`, `toc-entry-resolves-to-heading`, `toc-blank-heading-count`, `index-covers-plan-headings`, `plan-paragraph-headings`), **ToC content** (the three placement rules, `toc-entry-resolves-to-heading`, `toc-covers-plan-headings`), **index content** (`index-no-self-reference`, `index-covers-log-entries`, `index-covers-plan-headings`), **index links** (`index-link-targets-resolve` — a zero there is the wrong zero this route has produced twice), **log locators** (`index-covers-log-entries`), **the tab list** (`log-001-tab-inventory`), and **the tracked set in Sheets** (`plan-section-unindexed`).
 
 ## ⚠ Nothing here is ever repaired automatically
 

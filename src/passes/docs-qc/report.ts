@@ -20,11 +20,14 @@ export function renderQcReport(r: QcReport): string {
     if (group.length === 0) continue;
     out.push('', sev === 'finding' ? 'RULES — findings' : sev === 'hygiene' ? 'RULES — hygiene (surfaced, not defects)' : 'RULES — coverage gaps (expected, reported by name)');
     for (const res of group) {
-      const mark = !res.fired ? '✓ PASS' : sev === 'finding' ? '✗ FIRED' : '· ' + String(res.findings.length);
+      // ⚠ NOT RUN IS NOT PASS. A rule whose input was absent renders as its
+      // own state; rendering it green says the opposite of what happened.
+      const mark = res.notRun ? '⊘ NOT RUN' : !res.fired ? '✓ PASS' : sev === 'finding' ? '✗ FIRED' : '· ' + String(res.findings.length);
       out.push('', `  ${mark}  ${res.ruleId}   [${res.document}]`);
       out.push(`         ${res.statement}`);
       // A passing rule says what it measured — silence is not evidence.
       out.push(`         measured: ${res.measured}`);
+      if (res.notRun) out.push(`         ⚠ DID NOT RUN — ${res.notRun}`);
       if (res.fired) {
         // ⚠ NAMES, NOT TOTALS. A truncated list turns the tail into a count,
         // which is the thing these rules exist to avoid reporting.
@@ -35,6 +38,11 @@ export function renderQcReport(r: QcReport): string {
       }
     }
   }
+
+  const notRun = r.results.filter((x) => x.notRun);
+  out.push('', `RULES THAT DID NOT RUN — ${notRun.length}`);
+  if (notRun.length === 0) out.push('  none — every rule had the input it needs');
+  else for (const x of notRun) out.push(`  ⊘ ${x.ruleId}: ${x.notRun}`);
 
   if (r.warnings.length > 0) {
     out.push('', 'WARNINGS:');

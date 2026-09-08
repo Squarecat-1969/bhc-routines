@@ -290,7 +290,17 @@ export function reconcilePlanState(
  * ⚠ A GONE ROW IS RETURNED UNCHANGED, `last_seen` INCLUDED. Bumping it would
  * assert the section was seen on a day it was already absent.
  */
-export function nextStateFor(rec: ReconciledSection, today: string): PlanSectionState {
+export function nextStateFor(
+  rec: ReconciledSection,
+  today: string,
+  /**
+   * ⚠ EVERY ANCHOR THE INDEX'S LINKS ACTUALLY POINT AT. Supplying it is what
+   * lets an ANCHOR_CHANGED row RESOLVE — see below. Pass null when the index
+   * was read without links: the repair then cannot be observed, and the row
+   * correctly keeps re-reporting rather than being closed on an assumption.
+   */
+  indexAnchors: ReadonlySet<string> | null = null,
+): PlanSectionState {
   // ⚠ `live === null` IS the GONE test, and is deliberately the ONLY one here.
   // An earlier version also checked `cls === 'GONE'`; mutation testing showed
   // no input could distinguish the two, because reconcilePlanState leaves
@@ -298,6 +308,42 @@ export function nextStateFor(rec: ReconciledSection, today: string): PlanSection
   // A guard no test can kill is a guard nobody is maintaining, so there is one.
   if (rec.live === null) return rec.prior;
   const { prior, live } = rec;
+
+  // ⚠ THE REPAIR IS DERIVED, NEVER DECLARED.
+  //
+  // An ANCHOR_CHANGED row keeps the dead anchor in `heading_id` so the report
+  // stays truthful about the INDEX. Once the reference lines are actually
+  // re-anchored, the opposite becomes true: keeping the dead anchor makes the
+  // report lie in the other direction, claiming an outstanding repair that is
+  // done.
+  //
+  // The condition is observable, so it is observed: the old anchor no longer
+  // appears among the index's link anchors, and the live one does. Same
+  // observe-what-happened rule as `provenanceFor`. A row is never closed
+  // because someone said the work was finished.
+  //
+  // ⚠ THE ANCHOR CONDITION ALONE DECIDES IT — there is deliberately no
+  // `cls === 'ANCHOR_CHANGED'` test in front. Mutation testing showed no input
+  // could distinguish the two: for every other class the two keys matched by
+  // ID, so `prior.headingId === live.headingId` and "old absent, new present"
+  // is unsatisfiable. A guard no test can kill is a guard nobody maintains.
+  const repaired =
+    indexAnchors !== null &&
+    !indexAnchors.has(prior.headingId) &&
+    indexAnchors.has(live.headingId);
+  if (repaired) {
+    return {
+      locator: live.locator,
+      headingId: live.headingId,
+      contentHash: live.contentHash,
+      unitChars: live.unitChars,
+      truncatedTo: live.truncatedTo,
+      indexedBy: prior.indexedBy,
+      firstSeen: prior.firstSeen || today,
+      lastSeen: today,
+      liveAnchor: '',
+    };
+  }
   return {
     locator: rec.cls === 'ANCHOR_CHANGED' ? prior.locator : live.locator,
     headingId: rec.cls === 'ANCHOR_CHANGED' ? prior.headingId : live.headingId,

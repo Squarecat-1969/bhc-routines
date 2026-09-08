@@ -27,7 +27,7 @@
  */
 
 import type { AnthropicClient } from '../../lib/anthropic.js';
-import type { DocsClient } from '../../lib/docs.js';
+import { anchorOf, type DocsClient } from '../../lib/docs.js';
 import type { SheetsClient } from '../../lib/sheets.js';
 import {
   PROMPT_VERSION,
@@ -266,10 +266,19 @@ async function runInner(
   const tabs = await docs.listTabs(INDEX_DOC_ID);
   const indexTabs: IndexTab[] = [];
   const indexTabsRead: { title: string; chars: number; terms: number; references: number }[] = [];
+  // ⚠ THE ANCHORS THE INDEX ACTUALLY POINTS AT, not the text of its reference
+  // lines. Reading text alone is why a RENAMED section could be wrongly
+  // demoted to `unindexed` (documented in docs/qc-manifest.md) and why a
+  // completed re-anchoring could never be observed. Both close here.
+  const indexAnchors = new Set<string>();
 
   for (const tab of tabs) {
     if (tab.tabId === SOURCES_INDEXED_TAB) continue; // not a term tab
-    const read = await docs.read(INDEX_DOC_ID, tab.tabId);
+    const read = await docs.read(INDEX_DOC_ID, tab.tabId, false, true);
+    for (const l of read.links ?? []) {
+      const a = anchorOf(l);
+      if (a) indexAnchors.add(a.headingId);
+    }
     const parsed = parseIndexTab(tab.tabId, tab.title, read.content);
     indexTabs.push(parsed);
     const refs = parsed.terms.reduce((a, t) => a + t.references.length, 0);
@@ -289,6 +298,15 @@ async function runInner(
     );
   }
   logger.info(`  controlled vocabulary: ${vocabulary.owner.size} term(s) across ${groupTabs.length} GROUP tab(s)`);
+  logger.info(`  index link anchors: ${indexAnchors.size} distinct`);
+  if (indexAnchors.size === 0) {
+    // ⚠ THE WRONG ZERO. If includeLinks returns nothing, every anchor test
+    // below resolves vacuously: no repair is ever observed and every linked
+    // section looks unreferenced. Reported rather than assumed to be true.
+    warnings.push(
+      'the index returned NO link anchors — anchor-based checks (repair detection, provenance) degrade to text matching this run',
+    );
+  }
   if (vocabulary.duplicates.length > 0) {
     warnings.push(`term(s) defined in more than one GROUP tab: ${vocabulary.duplicates.join(', ')}`);
   }
@@ -418,7 +436,9 @@ async function runInner(
   // lines still exist in the index pointing at headings that do not; a row that
   // vanished from the state tab would take the only record of that with it.
   const planStateRows: PlanSectionState[] = [
-    ...[...recon.alive, ...recon.renamed, ...recon.anchorChanged, ...recon.gone].map((r) => nextStateFor(r, today)),
+    ...[...recon.alive, ...recon.renamed, ...recon.anchorChanged, ...recon.gone].map((r) =>
+      nextStateFor(r, today, indexAnchors.size > 0 ? indexAnchors : null),
+    ),
   ];
   for (const l of recon.fresh) {
     // ⚠ PROVENANCE IS DECIDED ONCE, ON FIRST SIGHT, AND NEVER UPGRADED.
@@ -648,13 +668,20 @@ async function runInner(
   // marked all 17 GONE sections `unindexed` — while 65 reference lines point
   // at them. "Nothing points at it" is a claim about the INDEX, and a section
   // can be gone from the document and still be referenced.
-  const referencedInIndex = (locator: string): boolean =>
-    existingPlanLocators.some((l) => planLocatorMatches(l, locator)) || wroteThisRun.has(locator);
+  // ⚠ ANCHOR FIRST, TEXT AS FALLBACK — the documented limitation, now closed.
+  // A RENAMED section's reference lines keep the OLD wording, so text matching
+  // alone called it unreferenced and would have demoted a `routine` row to
+  // `unindexed` while its links worked. The anchor survives any rewording.
+  const referencedInIndex = (row: PlanSectionState): boolean =>
+    (row.headingId !== '' && indexAnchors.has(row.headingId)) ||
+    (row.liveAnchor !== '' && indexAnchors.has(row.liveAnchor)) ||
+    existingPlanLocators.some((l) => planLocatorMatches(l, row.locator)) ||
+    wroteThisRun.has(row.locator);
   const settled = planStateRows.map((r) => ({
     ...r,
     indexedBy: provenanceFor({
       prior: r.indexedBy,
-      referencedInIndex: referencedInIndex(r.locator),
+      referencedInIndex: referencedInIndex(r),
       wroteThisRun: wroteThisRun.has(r.locator),
     }),
   }));

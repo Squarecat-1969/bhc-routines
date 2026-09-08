@@ -30,7 +30,7 @@ import {
   tocEntriesWithoutHeading,
   type Finding,
 } from './checks.js';
-import { RULES, ruleById, type RuleSeverity } from './manifest.js';
+import { RULES, ruleById, type Rule, type RuleSeverity } from './manifest.js';
 
 export const PLAN_DOC_ID = '1Hx1gXee4cltomMJbb2Z54etg4P1EO8VtRXURiYULDOI';
 export const PLAN_TOC_TAB = 't.nkk18fsz2qqi';
@@ -57,6 +57,16 @@ export interface RuleResult {
   readonly findings: readonly Finding[];
   /** What the check actually measured, so a passing rule is not just silence. */
   readonly measured: string;
+  /**
+   * ⚠ WHY A RULE PASSED — SET WHEN IT DID NOT RUN AT ALL.
+   *
+   * `toc-blank-heading-count` rendered a green PASS on 2026-09-08 because the
+   * ToC no longer states a count, so there was nothing to compare. A warning
+   * was emitted, but the rule's own line said the opposite of what happened:
+   * the manifest's stated failure mode, happening to a rule inside the
+   * manifest. A rule that cannot run is NOT a rule that passed.
+   */
+  readonly notRun: string | null;
 }
 
 export interface QcReport {
@@ -167,45 +177,57 @@ async function runInner(opts: QcOptions, runId: string, startedAt: string): Prom
 
   // --- run the rules ---------------------------------------------------------
   const results: RuleResult[] = [];
-  const emit = (ruleId: string, findings: readonly Finding[], measured: string): void => {
-    const rule = ruleById(ruleId);
-    results.push({
-      ruleId: rule.id,
-      statement: rule.statement,
-      earnedBy: rule.earnedBy,
-      severity: rule.severity,
-      document: rule.document,
-      fired: findings.length > 0,
-      findings,
-      measured,
-    });
+  /**
+   * ⚠ `notRun` IS A REASON STRING, NOT A BOOLEAN, and every rule whose input
+   * can be absent passes one. Audited 2026-09-08: every rule below reads
+   * something that a transport change could return empty — Plan headings, ToC
+   * lines, index links, log locators, the tracked set — and in every case an
+   * empty input yields zero findings, which renders as a pass. That is the
+   * wrong-zero this codebase has now met four times.
+   */
+  const emit = (ruleId: string, findings: readonly Finding[], measured: string, notRun: string | null = null): void => {
+    if (notRun) warnings.push(`${ruleId} DID NOT RUN — ${notRun}`);
+    results.push(buildRuleResult(ruleById(ruleId), findings, measured, notRun));
   };
+
+  // --- preconditions, one per input a rule depends on ------------------------
+  const noPlanHeadings = planHeadings.length === 0 ? 'the Plan tab returned no headings — includeHeadings gave nothing to check' : null;
+  const tocLineCount = toc.content.split('\n').filter((l) => l.trim() !== '').length;
+  const noTocLines = tocLineCount === 0 ? 'the ToC returned no content' : null;
+  const noIndexContent = indexContent.trim() === '' ? 'no index tab returned any content' : null;
+  const noLogLocators = logLocators.length === 0 ? 'no §NNN entry was parsed from any log tab' : null;
+
 
   emit(
     'toc-no-log-doc-id',
     findStrings(toc.content, LOG_DOC_IDS, 'toc-no-log-doc-id'),
     `${LOG_DOC_IDS.length} log document ID(s) searched for across ${toc.content.split('\n').length} ToC lines`,
+    noTocLines,
   );
   emit(
     'toc-no-log-tab-name',
     findStrings(toc.content, LOG_TAB_NAMES, 'toc-no-log-tab-name'),
     `${LOG_TAB_NAMES.length} log tab name(s) searched for`,
+    noTocLines,
   );
   emit(
     'toc-no-log-entry-range',
     findLogEntryRanges(toc.content),
     `${toc.content.split('\n').length} ToC lines scanned for a §NNN range ` +
       '(a single §NNN citation is allowed — see the manifest for why)',
+    noTocLines,
   );
   emit(
     'plan-no-log-entries',
     findLogEntryHeadings(planHeadings),
     `${planHeadings.length} Plan headings scanned`,
+    noPlanHeadings,
   );
   emit(
     'index-no-self-reference',
     findStrings(indexContent, [INDEX_DOC_ID], 'index-no-self-reference'),
     `${indexTabs.length} index tabs scanned for the index's own document ID`,
+    indexTabs.length === 0 ? 'listTabs returned no index tabs' : noIndexContent,
   );
 
   const unexpectedTabs = log001Tabs.filter((t) => !LOG_001_EXPECTED_TABS.includes(t));
@@ -217,6 +239,7 @@ async function runInner(opts: QcOptions, runId: string, startedAt: string): Prom
       ...missingTabs.map((t) => ({ ruleId: 'log-001-tab-inventory', detail: `missing tab: ${t}` })),
     ],
     `log-001 holds: ${log001Tabs.join(', ')}`,
+    log001Tabs.length === 0 ? 'listTabs returned no tabs for log-001' : null,
   );
 
   const orphanEntries = tocEntriesWithoutHeading(toc.content, planHeadings);
@@ -233,6 +256,7 @@ async function runInner(opts: QcOptions, runId: string, startedAt: string): Prom
     `${generatedTocLines(toc.content).filter((l) => l.line.trim() !== '').length} generated ToC lines checked ` +
       `(${excluded} hand-appended line(s) excluded, per the ToC's own marker), ` +
       `${planHeadings.filter((h) => h.text.trim() !== '').length} non-blank Plan headings`,
+    noPlanHeadings ?? noTocLines,
   );
 
   // ⚠ BY ANCHOR, NEVER BY TEXT. See linksWithDeadAnchors — INCIDENT 2 passes
@@ -251,6 +275,12 @@ async function runInner(opts: QcOptions, runId: string, startedAt: string): Prom
     deadLinks,
     `${indexLinkTabs.reduce((n, t) => n + t.links.length, 0)} index link(s) resolved by anchor ID across ` +
       `${anchorsByDocument.size} document(s); link forms seen: ${JSON.stringify(linkForms)}`,
+    // ⚠ THE WRONG ZERO, GUARDED. If includeLinks ever stops returning links,
+    // every anchor resolves vacuously and this rule reports a clean pass over
+    // an unchecked index. A zero here has twice been read as a finding.
+    indexLinkTabs.reduce((n, t) => n + t.links.length, 0) === 0
+      ? 'no index tab returned any links — includeLinks gave nothing to resolve'
+      : null,
   );
 
   emit(
@@ -258,13 +288,19 @@ async function runInner(opts: QcOptions, runId: string, startedAt: string): Prom
     headingsMissingFromToc(toc.content, planHeadings),
     `${planHeadings.filter((h) => (h.level === 1 || h.level === 2) && h.text.trim() !== '').length} non-blank ` +
       'level-1/2 Plan headings compared against the ToC',
+    noPlanHeadings ?? noTocLines,
   );
 
   const stated = statedBlankHeadingCount(toc.content);
   const actualBlank = countBlankHeadings(planHeadings);
   if (stated === null) {
-    warnings.push("the ToC no longer states a blank-heading count — the recorded-figure check could not run");
-    emit('toc-blank-heading-count', [], 'the ToC states no blank-heading count');
+    // ⚠ THE RULE THAT EARNED `notRun`. This rendered a green PASS.
+    emit(
+      'toc-blank-heading-count',
+      [],
+      'nothing to compare — the ToC states no blank-heading count',
+      'the ToC no longer states a blank-heading count, so there is no recorded figure to check',
+    );
   } else {
     emit(
       'toc-blank-heading-count',
@@ -272,6 +308,7 @@ async function runInner(opts: QcOptions, runId: string, startedAt: string): Prom
         ? []
         : [{ ruleId: 'toc-blank-heading-count', detail: `ToC says ${stated.stated} ("${stated.sentence}"), Plan tab has ${actualBlank}` }],
       `ToC states ${stated.stated}; measured ${actualBlank}`,
+      noPlanHeadings,
     );
   }
 
@@ -280,6 +317,7 @@ async function runInner(opts: QcOptions, runId: string, startedAt: string): Prom
     'index-covers-log-entries',
     missingByName([...new Set(logLocators)].sort(), covered, 'index-covers-log-entries'),
     `${new Set(logLocators).size} log entries, ${covered.size} locators referenced by the index`,
+    noLogLocators ?? noIndexContent,
   );
 
   const planHeadingTexts = planHeadings.filter((h) => h.text.trim() !== '').map((h) => h.text.trim());
@@ -302,10 +340,8 @@ async function runInner(opts: QcOptions, runId: string, startedAt: string): Prom
       }
       planStateReadable = true;
     } catch (error) {
-      warnings.push(`Plan_Index_State unreadable (${error instanceof Error ? error.message : String(error)}) — plan-section-unindexed could NOT run`);
+      warnings.push(`Plan_Index_State unreadable: ${error instanceof Error ? error.message : String(error)}`);
     }
-  } else {
-    warnings.push('no Sheets client supplied — plan-section-unindexed could NOT run');
   }
   const planRefLocators = parsedIndexTabs
     .flatMap((t) => t.terms.flatMap((x) => x.references))
@@ -332,7 +368,8 @@ async function runInner(opts: QcOptions, runId: string, startedAt: string): Prom
       .map((row) => ({ ruleId: 'plan-section-unindexed', detail: row.locator })),
     planStateReadable
       ? `${tracked.length} tracked section(s) checked by ANCHOR against ${indexAnchors.size} distinct index link anchor(s), falling back to ${planRefLocators.length} text locator(s)`
-      : '⚠ NOT RUN — Plan_Index_State was unreadable',
+      : 'nothing to check — the tracked set was unavailable',
+    planStateReadable ? (tracked.length === 0 ? 'Plan_Index_State holds no rows' : null) : 'Plan_Index_State was unavailable — no Sheets client, or the tab could not be read',
   );
 
   emit(
@@ -341,12 +378,14 @@ async function runInner(opts: QcOptions, runId: string, startedAt: string): Prom
       .filter((t) => ![...indexPlanRefs].some((r) => t.startsWith(r) || t.toLowerCase().includes(r.toLowerCase())))
       .map((t) => ({ ruleId: 'index-covers-plan-headings', detail: t.slice(0, 110) })),
     `${planHeadingTexts.length} non-blank Plan headings, ${indexPlanRefs.size} distinct Plan locators in the index`,
+    noPlanHeadings ?? noIndexContent,
   );
 
   emit(
     'plan-paragraph-headings',
     paragraphHeadings(planHeadings),
     `${planHeadings.length} Plan headings measured against a 120-character threshold`,
+    noPlanHeadings,
   );
 
   // Every rule in the manifest must have produced a result — a rule that
@@ -367,5 +406,33 @@ async function runInner(opts: QcOptions, runId: string, startedAt: string): Prom
     warnings,
     // Read-only, counted rather than asserted: this pass never calls a write.
     writesIssued: 0,
+  };
+}
+
+/**
+ * ⚠ A RULE THAT DID NOT RUN REPORTS NOTHING, EVEN IF IT COMPUTED SOMETHING.
+ *
+ * This is reachable, not defensive. `log-001-tab-inventory` derives its
+ * findings by subtracting the tabs it saw from the tabs it expects — so when
+ * `listTabs` returns NOTHING, it computes three "missing tab" findings and its
+ * precondition fails at the same time. Reporting those would turn a transport
+ * failure into three confident claims about the document.
+ */
+export function buildRuleResult(
+  rule: Rule,
+  findings: readonly Finding[],
+  measured: string,
+  notRun: string | null,
+): RuleResult {
+  return {
+    ruleId: rule.id,
+    statement: rule.statement,
+    earnedBy: rule.earnedBy,
+    severity: rule.severity,
+    document: rule.document,
+    fired: notRun ? false : findings.length > 0,
+    findings: notRun ? [] : findings,
+    measured,
+    notRun,
   };
 }
