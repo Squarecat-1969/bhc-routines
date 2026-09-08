@@ -66,6 +66,16 @@ export interface IndexReference {
   readonly source: 'Log' | 'Plan';
   /** The line exactly as it appears. Never rewritten — only compared. */
   readonly line: string;
+  /**
+   * 0-based line number within the tab.
+   *
+   * The parser has always known this and used to discard it. The link audit
+   * needs it to build a disambiguating anchor out of PRECEDING lines, and
+   * re-deriving it by searching for `line` would be exactly the wrong move —
+   * 59 of the 91 unlinked reference lines have a byte-identical twin, so a
+   * search would find the wrong one.
+   */
+  readonly lineNo: number;
 }
 
 export interface IndexTerm {
@@ -154,6 +164,7 @@ export function parseIndexTab(tabId: string, title: string, content: string): In
     const refMatch = REF_RE.exec(line);
     if (refMatch && current) {
       current.references.push({
+        lineNo,
         locator: refMatch[1]!,
         date: refMatch[2] ?? null,
         source: refMatch[3] as 'Log' | 'Plan',

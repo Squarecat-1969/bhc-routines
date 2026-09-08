@@ -316,9 +316,20 @@ export class DocsClient {
     return res;
   }
 
-  async find(documentId: string, tabId: string, text: string): Promise<FindResult> {
+  /**
+   * @param precededBy Optional literal text that must sit IMMEDIATELY before the
+   * match, so one of several identical occurrences can be named.
+   *
+   * ⚠ THE POINT IS THAT THE CALLER DOES NO INDEX ARITHMETIC. An anchor names a
+   * position; a caller needs a range; deriving one from the other means adding
+   * lengths across a newline, and document indices count structural positions
+   * as well as characters. Handing the anchor to the route means the route
+   * returns the range from its own segment map. Omit it and the request is
+   * byte-identical to what this client sent before it existed.
+   */
+  async find(documentId: string, tabId: string, text: string, precededBy?: string): Promise<FindResult> {
     return this.call<FindResult>(
-      { action: 'find', documentId, tabId, text },
+      { action: 'find', documentId, tabId, text, ...(precededBy === undefined ? {} : { precededBy }) },
       `docs:find ${documentId}/${tabId}`,
     );
   }

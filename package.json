@@ -61,7 +61,8 @@
     "index:dry": "tsx src/cli/run-index-maintenance.ts --dry-run",
     "docs-qc": "tsx src/cli/run-docs-qc.ts",
     "re-resolve": "tsx src/cli/run-re-resolution.ts",
-    "re-resolve:dry": "tsx src/cli/run-re-resolution.ts --dry-run"
+    "re-resolve:dry": "tsx src/cli/run-re-resolution.ts --dry-run",
+    "link-audit": "tsx src/cli/run-link-audit.ts"
   },
   "dependencies": {
     "dotenv": "^17.4.2",
