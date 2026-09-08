@@ -9,6 +9,7 @@ import { dirname } from 'node:path';
 
 import { loadEnv } from '../config/env.js';
 import { DocsClient } from '../lib/docs.js';
+import { SheetsClient } from '../lib/sheets.js';
 import { createLogger } from '../lib/logger.js';
 import { runDocsQc } from '../passes/docs-qc/index.js';
 import { renderQcReport } from '../passes/docs-qc/report.js';
@@ -33,7 +34,14 @@ async function main(): Promise<void> {
     onRetry: ({ attempt, delayMs }) => logger.warn(`  docs retry ${attempt} in ${delayMs}ms`),
   });
 
-  const report = await runDocsQc({ docs, logger });
+  // Read-only. Supplies the tracked-section set for plan-section-unindexed.
+  const sheets = new SheetsClient({
+    token: env.BRAIN_API_TOKEN,
+    url: env.SHEETS_PROXY_URL,
+    onRetry: ({ attempt, delayMs }) => logger.warn(`  sheets retry ${attempt} in ${delayMs}ms`),
+  });
+
+  const report = await runDocsQc({ docs, sheets, logger });
   console.log(renderQcReport(report));
 
   if (jsonOut) {

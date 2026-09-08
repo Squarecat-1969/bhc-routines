@@ -8,10 +8,12 @@
  * than caution.
  */
 
-import { DocsClient, type DocHeading } from '../../lib/docs.js';
+import { DocsClient, anchorOf, type DocHeading, type DocLink } from '../../lib/docs.js';
+import type { SheetsClient } from '../../lib/sheets.js';
+import { PLAN_STATE_RANGES, parsePlanStateRow } from '../index-maintenance/plan-state.js';
 import type { Logger } from '../../lib/logger.js';
 import { INDEX_DOC_ID, SOURCE_TABS } from '../index-maintenance/constants.js';
-import { parseIndexTab, parseSourceTab } from '../index-maintenance/parse.js';
+import { parseIndexTab, parseSourceTab, planLocatorMatches } from '../index-maintenance/parse.js';
 import { buildWatermark } from '../index-maintenance/plan.js';
 import {
   countBlankHeadings,
@@ -24,6 +26,7 @@ import {
   missingByName,
   paragraphHeadings,
   statedBlankHeadingCount,
+  linksWithDeadAnchors,
   tocEntriesWithoutHeading,
   type Finding,
 } from './checks.js';
@@ -73,6 +76,14 @@ export interface QcOptions {
   readonly docs: DocsClient;
   readonly logger: Logger;
   readonly runId?: string;
+  /**
+   * ⚠ THE ONE CROSS-STORE DEPENDENCY IN AN OTHERWISE DOCS-ONLY PASS, and it is
+   * optional. Without it `plan-section-unindexed` cannot run, because the set
+   * of tracked sections lives in Sheets. That is REPORTED LOUDLY rather than
+   * silently skipped: a rule that vanishes when its dependency is missing is
+   * indistinguishable from a rule that passed.
+   */
+  readonly sheets?: SheetsClient;
 }
 
 export async function runDocsQc(opts: QcOptions): Promise<QcReport> {
@@ -102,9 +113,9 @@ async function runInner(opts: QcOptions, runId: string, startedAt: string): Prom
 
   logger.info('DOCUMENTS QC — read-only');
 
-  const read = async (label: string, documentId: string, tabId: string, headings = false) => {
+  const read = async (label: string, documentId: string, tabId: string, headings = false, links = false) => {
     // ⚠ tabId is REQUIRED. A read without one silently resolves to the first tab.
-    const r = await docs.read(documentId, tabId, headings);
+    const r = await docs.read(documentId, tabId, headings, links);
     documentsRead.push({ label, chars: r.charCount, headings: r.headingCount ?? 0, preReadMs: r.preReadMs });
     logger.info(`  ${label.padEnd(28)} ${String(r.charCount).padStart(7)} chars · ${r.headingCount ?? 0} headings · ${r.preReadMs}ms`);
     return r;
@@ -116,11 +127,30 @@ async function runInner(opts: QcOptions, runId: string, startedAt: string): Prom
 
   // Index tabs, for coverage and self-reference.
   const indexTabs = await docs.listTabs(INDEX_DOC_ID);
+  // ⚠ ANCHORS, NOT TEXT. Collected per source document so a link can be
+  // resolved against the document it actually points into.
+  const anchorsByDocument = new Map<string, Set<string>>();
+  const addAnchors = (documentId: string, hs: readonly DocHeading[]): void => {
+    const set = anchorsByDocument.get(documentId) ?? new Set<string>();
+    for (const h of hs) if (h.headingId) set.add(h.headingId);
+    anchorsByDocument.set(documentId, set);
+  };
+  addAnchors(PLAN_DOC_ID, planHeadings);
+  addAnchors(PLAN_DOC_ID, toc.headings ?? []);
+  const indexLinkTabs: { title: string; links: readonly DocLink[] }[] = [];
+  const linkForms: Record<string, number> = {};
   let indexContent = '';
   const parsedIndexTabs = [];
   for (const t of indexTabs) {
-    const r = await read(`Index · ${t.title}`, INDEX_DOC_ID, t.tabId);
+    // ⚠ HEADINGS TOO. The SOURCES INDEXED tab links into the index's own tabs,
+    // so the index is one of the documents an index link may legitimately
+    // resolve into. Omitting its anchors reported eight live links as pointing
+    // at an UNKNOWN DOCUMENT — the check being wrong, not the document.
+    const r = await read(`Index · ${t.title}`, INDEX_DOC_ID, t.tabId, true, true);
+    addAnchors(INDEX_DOC_ID, r.headings ?? []);
     indexContent += `\n${r.content}`;
+    indexLinkTabs.push({ title: t.title, links: r.links ?? [] });
+    for (const [form, n] of Object.entries(r.linkForms ?? {})) linkForms[form] = (linkForms[form] ?? 0) + n;
     if (t.title !== 'SOURCES INDEXED') parsedIndexTabs.push(parseIndexTab(t.tabId, t.title, r.content));
   }
 
@@ -128,7 +158,8 @@ async function runInner(opts: QcOptions, runId: string, startedAt: string): Prom
   const logLocators: string[] = [];
   for (const src of SOURCE_TABS) {
     if (src.label === "Developer's Plan") continue;
-    const r = await read(src.label, src.documentId, src.tabId);
+    const r = await read(src.label, src.documentId, src.tabId, true);
+    addAnchors(src.documentId, r.headings ?? []);
     for (const e of parseSourceTab(r.content)) logLocators.push(e.locator);
   }
 
@@ -204,6 +235,24 @@ async function runInner(opts: QcOptions, runId: string, startedAt: string): Prom
       `${planHeadings.filter((h) => h.text.trim() !== '').length} non-blank Plan headings`,
   );
 
+  // ⚠ BY ANCHOR, NEVER BY TEXT. See linksWithDeadAnchors — INCIDENT 2 passes
+  // the text-based rule above while its link points nowhere.
+  const deadLinks = indexLinkTabs.flatMap((t) =>
+    linksWithDeadAnchors({
+      tabTitle: t.title,
+      links: t.links,
+      anchorsByDocument,
+      ownDocumentId: INDEX_DOC_ID,
+      ruleId: 'index-link-targets-resolve',
+    }),
+  );
+  emit(
+    'index-link-targets-resolve',
+    deadLinks,
+    `${indexLinkTabs.reduce((n, t) => n + t.links.length, 0)} index link(s) resolved by anchor ID across ` +
+      `${anchorsByDocument.size} document(s); link forms seen: ${JSON.stringify(linkForms)}`,
+  );
+
   emit(
     'toc-covers-plan-headings',
     headingsMissingFromToc(toc.content, planHeadings),
@@ -240,6 +289,52 @@ async function runInner(opts: QcOptions, runId: string, startedAt: string): Prom
       .filter((r) => r.source === 'Plan')
       .map((r) => r.locator),
   );
+  // ⚠ TRACKED SECTIONS NOTHING POINTS AT. Derived from THE INDEX, never from
+  // the state tab's own indexed_by column — a column that says `unindexed` is
+  // reporting what it was told, not what is true.
+  const tracked: { locator: string; headingId: string; liveAnchor: string }[] = [];
+  let planStateReadable = false;
+  if (opts.sheets) {
+    try {
+      for (const row of await opts.sheets.read(PLAN_STATE_RANGES.data)) {
+        const st = parsePlanStateRow(row);
+        if (st) tracked.push({ locator: st.locator, headingId: st.headingId, liveAnchor: st.liveAnchor });
+      }
+      planStateReadable = true;
+    } catch (error) {
+      warnings.push(`Plan_Index_State unreadable (${error instanceof Error ? error.message : String(error)}) — plan-section-unindexed could NOT run`);
+    }
+  } else {
+    warnings.push('no Sheets client supplied — plan-section-unindexed could NOT run');
+  }
+  const planRefLocators = parsedIndexTabs
+    .flatMap((t) => t.terms.flatMap((x) => x.references))
+    .filter((r) => r.source === 'Plan')
+    .map((r) => r.locator);
+  // ⚠ BY ANCHOR FIRST, TEXT ONLY AS A FALLBACK — the same two keys the state
+  // reconciliation uses, for the same reason. A RENAMED section's index
+  // references still carry the OLD heading wording, so a text-only match calls
+  // it unreferenced: OPERATIONAL BACKLOGS is referenced as "…These a" while
+  // the tracked locator is now "…This is", and they do not prefix-match.
+  // The reference lines are LINKED, so their anchor still identifies the
+  // section after any amount of rewording.
+  const indexAnchors = new Set(
+    indexLinkTabs.flatMap((t) => t.links.map((l) => anchorOf(l)?.headingId).filter((x): x is string => !!x)),
+  );
+  const isReferenced = (row: { locator: string; headingId: string; liveAnchor: string }): boolean =>
+    (row.headingId !== '' && indexAnchors.has(row.headingId)) ||
+    (row.liveAnchor !== '' && indexAnchors.has(row.liveAnchor)) ||
+    planRefLocators.some((r) => planLocatorMatches(r, row.locator));
+  emit(
+    'plan-section-unindexed',
+    tracked
+      .filter((row) => !isReferenced(row))
+      .map((row) => ({ ruleId: 'plan-section-unindexed', detail: row.locator })),
+    planStateReadable
+      ? `${tracked.length} tracked section(s) checked by ANCHOR against ${indexAnchors.size} distinct index link anchor(s), falling back to ${planRefLocators.length} text locator(s)`
+      : '⚠ NOT RUN — Plan_Index_State was unreadable',
+  );
+
   emit(
     'index-covers-plan-headings',
     planHeadingTexts

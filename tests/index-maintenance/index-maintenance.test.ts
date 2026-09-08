@@ -25,9 +25,14 @@ import {
   PLAN_STATE_HEADER,
   contentHash,
   driftOf,
+  nextStateFor,
   parsePlanStateRow,
+  provenanceFor,
+  reconcilePlanState,
   serializePlanStateRow,
 } from '../../src/passes/index-maintenance/plan-state.js';
+import { anchorOf, type DocLink } from '../../src/lib/docs.js';
+import { linksWithDeadAnchors } from '../../src/passes/docs-qc/checks.js';
 import {
   buildVocabulary,
   buildWatermark,
@@ -652,6 +657,7 @@ describe('contentHash and drift', () => {
       indexedBy: 'hand' as const,
       firstSeen: '2026-09-08',
       lastSeen: '2026-09-08',
+      liveAnchor: '',
     };
     expect(driftOf(undefined, 'aaaa')).toBe('unseen');
     expect(driftOf(prior, 'aaaa')).toBe('unchanged');
@@ -678,8 +684,201 @@ describe('Plan_Index_State rows', () => {
       indexedBy: 'routine',
       firstSeen: '2026-09-08',
       lastSeen: '2026-09-09',
+      liveAnchor: '',
     });
     expect(row).toHaveLength(PLAN_STATE_HEADER.length);
     expect(parsePlanStateRow(row.map(String))!.unitChars).toBe(300);
+  });
+});
+
+// --- Reconciliation: four classes on two keys -------------------------------
+
+const st = (o: Partial<Parameters<typeof serializePlanStateRow>[0]>) => ({
+  locator: 'x', headingId: 'h.x', contentHash: 'aaaa', unitChars: 10, truncatedTo: 0,
+  indexedBy: 'routine' as const, firstSeen: '2026-09-07', lastSeen: '2026-09-07', liveAnchor: '', ...o,
+});
+const live = (o: Partial<{ locator: string; headingId: string; contentHash: string; unitChars: number; truncatedTo: number }>) => ({
+  locator: 'x', headingId: 'h.x', contentHash: 'aaaa', unitChars: 10, truncatedTo: 0, ...o,
+});
+
+describe('reconcilePlanState', () => {
+  it('ALIVE when both keys agree', () => {
+    const r = reconcilePlanState([st({})], [live({})], planLocatorMatches);
+    expect(r.alive.map((x) => x.prior.locator)).toEqual(['x']);
+    expect([r.renamed, r.anchorChanged, r.gone, r.fresh].every((a) => a.length === 0)).toBe(true);
+  });
+
+  it('RENAMED when the id holds and the locator moved', () => {
+    const r = reconcilePlanState(
+      [st({ locator: 'OPERATIONAL BACKLOGS — these are the two queues', headingId: 'h.ob' })],
+      [live({ locator: 'OPERATIONAL BACKLOGS — this is the only queue', headingId: 'h.ob' })],
+      planLocatorMatches,
+    );
+    expect(r.renamed).toHaveLength(1);
+    expect(r.gone).toHaveLength(0);
+    // ⚠ THE REGRESSION THAT MATTERS: locator-only matching reported this one
+    // section as GONE *and* NEW in the same run.
+    expect(r.fresh).toHaveLength(0);
+  });
+
+  it('⚠ ANCHOR CHANGED when the paragraph was retyped — same text, new id', () => {
+    // INCIDENT 2, 2026-09-07: h.lagfoh7a5rp3 -> h.cmytyawr14t8.
+    const r = reconcilePlanState(
+      [st({ locator: 'INCIDENT 2 — The gap-row deletion', headingId: 'h.lagfoh7a5rp3' })],
+      [live({ locator: 'INCIDENT 2 — The gap-row deletion', headingId: 'h.cmytyawr14t8' })],
+      planLocatorMatches,
+    );
+    expect(r.anchorChanged).toHaveLength(1);
+    expect(r.alive).toHaveLength(0);
+    expect(r.gone).toHaveLength(0);
+  });
+
+  it('GONE only when NEITHER key matches', () => {
+    const r = reconcilePlanState([st({ locator: 'ROOT CAUSE — a fragment', headingId: 'h.gone' })], [live({ locator: '5.3', headingId: 'h.53' })], planLocatorMatches);
+    expect(r.gone.map((x) => x.prior.locator)).toEqual(['ROOT CAUSE — a fragment']);
+    expect(r.fresh.map((x) => x.locator)).toEqual(['5.3']);
+  });
+
+  it('⚠ matches the strong key FIRST, so a prefix match cannot steal a section', () => {
+    const prior = [st({ locator: 'INCIDENT 7 — Part D wrote into Tasks_Open', headingId: 'h.i7' }), st({ locator: 'INCIDENT 7 — Part D', headingId: 'h.other' })];
+    const r = reconcilePlanState(prior, [live({ locator: 'INCIDENT 7 — Part D wrote into Tasks_Open', headingId: 'h.i7' })], planLocatorMatches);
+    expect(r.alive.map((x) => x.prior.headingId)).toEqual(['h.i7']);
+    expect(r.gone.map((x) => x.prior.headingId)).toEqual(['h.other']);
+  });
+
+  it('reports content drift on a live section', () => {
+    const r = reconcilePlanState([st({ contentHash: 'OLD' })], [live({ contentHash: 'NEW' })], planLocatorMatches);
+    expect(r.alive[0]!.drift).toBe('CHANGED');
+  });
+});
+
+describe('nextStateFor', () => {
+  const rec = (cls: 'ALIVE' | 'ANCHOR_CHANGED' | 'GONE', prior: ReturnType<typeof st>, liveS: ReturnType<typeof live> | null) =>
+    ({ cls, prior, live: liveS, drift: 'unchanged' as const });
+
+  it('⚠ on ANCHOR CHANGED keeps the OLD heading_id and records the new one as superseded', () => {
+    // The report must stay truthful about the INDEX: the reference lines still
+    // point at the dead anchor, so that is what the row must keep saying.
+    const out = nextStateFor(
+      rec('ANCHOR_CHANGED', st({ locator: 'INCIDENT 2', headingId: 'h.dead' }), live({ locator: 'INCIDENT 2', headingId: 'h.new', contentHash: 'NEW' })),
+      '2026-09-08',
+    );
+    expect(out.headingId).toBe('h.dead');
+    expect(out.liveAnchor).toBe('h.new');
+    expect(out.contentHash).toBe('NEW'); // the hash DOES move
+    expect(out.lastSeen).toBe('2026-09-08');
+  });
+
+  it('on ALIVE takes the live anchor and leaves superseded_anchor blank', () => {
+    const out = nextStateFor(rec('ALIVE', st({}), live({ contentHash: 'NEW' })), '2026-09-08');
+    expect(out.headingId).toBe('h.x');
+    expect(out.liveAnchor).toBe('');
+    expect(out.contentHash).toBe('NEW');
+  });
+
+  it('⚠ returns a GONE row UNCHANGED — last_seen is not bumped for a day it was absent', () => {
+    const prior = st({ lastSeen: '2026-09-07' });
+    expect(nextStateFor(rec('GONE', prior, null), '2026-09-08')).toEqual(prior);
+  });
+
+  it('preserves provenance across every class', () => {
+    const out = nextStateFor(rec('ANCHOR_CHANGED', st({ indexedBy: 'hand' }), live({ headingId: 'h.new' })), '2026-09-08');
+    expect(out.indexedBy).toBe('hand');
+  });
+});
+
+describe('anchorOf — both stored link forms', () => {
+  it('reads url form, with its document and tab', () => {
+    const a = anchorOf({
+      text: '§006', form: 'url', startIndex: 0, endIndex: 1, plainTextStartIndex: 0, plainTextEndIndex: 1,
+      link: { url: 'https://docs.google.com/document/d/DOC1/edit?tab=t.abc#heading=h.xq97war9gbqh' },
+    })!;
+    expect(a).toMatchObject({ headingId: 'h.xq97war9gbqh', tabId: 't.abc', documentId: 'DOC1' });
+  });
+
+  it('⚠ reads HEADING form — the shape a human makes in the Docs UI', () => {
+    // Reading only `link.url` reported three of these as dead on 2026-09-08.
+    const a = anchorOf({
+      text: 'INCIDENT 8', form: 'heading', startIndex: 0, endIndex: 1, plainTextStartIndex: 0, plainTextEndIndex: 1,
+      link: { heading: { id: 'h.js0m56ksigiv', tabId: 't.6r0bmznlg6id' } },
+    })!;
+    expect(a.headingId).toBe('h.js0m56ksigiv');
+    // ⚠ Intra-document: it carries no document ID and must not invent one.
+    expect(a.documentId).toBeNull();
+  });
+
+  it('returns null for a link naming no heading', () => {
+    expect(anchorOf({ text: 'x', form: 'url', startIndex: 0, endIndex: 1, plainTextStartIndex: 0, plainTextEndIndex: 1, link: { url: 'https://example.com' } })).toBeNull();
+  });
+});
+
+describe('linksWithDeadAnchors', () => {
+  const anchors = new Map([['IDX', new Set(['h.self'])], ['DOC1', new Set(['h.alive'])]]);
+  const mk = (over: Partial<DocLink>): DocLink => ({ text: 't', form: 'url', startIndex: 0, endIndex: 1, plainTextStartIndex: 0, plainTextEndIndex: 1, link: {}, ...over }) as DocLink;
+  const run = (links: DocLink[]) => linksWithDeadAnchors({ tabTitle: 'GROUP: x', links, anchorsByDocument: anchors, ownDocumentId: 'IDX', ruleId: 'index-link-targets-resolve' });
+
+  it('passes a live anchor and fires on a dead one', () => {
+    expect(run([mk({ link: { url: 'https://docs.google.com/document/d/DOC1/edit#heading=h.alive' } })])).toHaveLength(0);
+    expect(run([mk({ link: { url: 'https://docs.google.com/document/d/DOC1/edit#heading=h.dead' } })])).toHaveLength(1);
+  });
+
+  it('⚠ resolves a HEADING-form link against its OWN document, not a guessed one', () => {
+    expect(run([mk({ form: 'heading', link: { heading: { id: 'h.self' } } })])).toHaveLength(0);
+    expect(run([mk({ form: 'heading', link: { heading: { id: 'h.nope' } } })])).toHaveLength(1);
+  });
+
+  it('⚠ REPORTS an unrecognised form rather than skipping it silently', () => {
+    const f = run([mk({ form: 'bookmark', link: {} })]);
+    expect(f).toHaveLength(1);
+    expect(f[0]!.detail).toContain('UNRECOGNISED LINK FORM');
+  });
+
+  it('reports a link into a document it has no anchors for', () => {
+    expect(run([mk({ link: { url: 'https://docs.google.com/document/d/UNKNOWN/edit#heading=h.a' } })])[0]!.detail).toContain('UNKNOWN DOCUMENT');
+  });
+});
+
+describe('provenanceFor — three states, and the one that must be observed', () => {
+  it('⚠ becomes `routine` ONLY when lines actually landed', () => {
+    expect(provenanceFor({ prior: null, referencedInIndex: false, wroteThisRun: true })).toBe('routine');
+    // The defect this fixes: a --no-llm run created nine rows saying `routine`
+    // having written no reference line at all.
+    expect(provenanceFor({ prior: null, referencedInIndex: false, wroteThisRun: false })).toBe('unindexed');
+  });
+
+  it('a new section already referenced by someone else is `hand`', () => {
+    expect(provenanceFor({ prior: null, referencedInIndex: true, wroteThisRun: false })).toBe('hand');
+  });
+
+  it('⚠ corrects a stored `routine` that nothing points at', () => {
+    expect(provenanceFor({ prior: 'routine', referencedInIndex: false, wroteThisRun: false })).toBe('unindexed');
+  });
+
+  it('keeps a genuine `routine` that is still referenced', () => {
+    expect(provenanceFor({ prior: 'routine', referencedInIndex: true, wroteThisRun: false })).toBe('routine');
+  });
+
+  it('promotes `unindexed` to `hand` when references appear that this run did not write', () => {
+    expect(provenanceFor({ prior: 'unindexed', referencedInIndex: true, wroteThisRun: false })).toBe('hand');
+  });
+
+  it('⚠ NEVER DEMOTES `hand`, even with nothing pointing at it', () => {
+    // Demoting opens a path back up to `routine` on a later run, letting the
+    // routine claim ownership of references a human wrote.
+    expect(provenanceFor({ prior: 'hand', referencedInIndex: false, wroteThisRun: false })).toBe('hand');
+  });
+});
+
+describe('parsePlanStateRow — three values', () => {
+  const row = (v: string) => parsePlanStateRow(['5.3', 'h.1', 'aaaa', '10', '0', v, '2026-09-08', '2026-09-08', ''])!.indexedBy;
+  it('recognises all three', () => {
+    expect(row('hand')).toBe('hand');
+    expect(row('routine')).toBe('routine');
+    expect(row('unindexed')).toBe('unindexed');
+  });
+  it('⚠ still reads anything unrecognised as `hand`, never `routine`', () => {
+    expect(row('')).toBe('hand');
+    expect(row('ROUTINE?')).toBe('hand');
+    expect(row('unindexed?')).toBe('hand');
   });
 });

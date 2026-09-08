@@ -3,7 +3,8 @@
  * findings. No I/O, no credentials, and nothing here can write.
  */
 
-import type { DocHeading } from '../../lib/docs.js';
+import { KNOWN_LINK_FORMS, anchorOf } from '../../lib/docs.js';
+import type { DocHeading, DocLink } from '../../lib/docs.js';
 
 export interface Finding {
   readonly ruleId: string;
@@ -270,4 +271,62 @@ export function missingByName(all: readonly string[], covered: ReadonlySet<strin
   // ⚠ BY NAME, NEVER AS A COUNT. "12 entries uncovered" tells a reader nothing
   // they can act on.
   return all.filter((x) => !covered.has(x)).map((x) => ({ ruleId, detail: x }));
+}
+
+// --- Link targets, by ANCHOR rather than by text -----------------------------
+
+/**
+ * ⚠ A DEAD-ANCHOR CHECK IS NOT A TEXT-MATCH CHECK, AND ONE DOES NOT IMPLY THE
+ * OTHER.
+ *
+ * `toc-entry-resolves-to-heading` compares ToC line text to heading text, which
+ * is all it could do before `includeLinks` shipped (2026-09-07). It passes
+ * `INCIDENT 2` today: same text, live heading, DEAD LINK. The paragraph was
+ * retyped during the 2026-09-07 cleanup and Docs minted a fresh ID
+ * (h.lagfoh7a5rp3 -> h.cmytyawr14t8) while every character stayed put.
+ *
+ * ⚠ A HEADING'S IDENTITY DIES WITH THE PARAGRAPH, NOT WITH ITS TEXT. So this
+ * resolves the stored anchor against the live heading IDs and never looks at
+ * text at all.
+ */
+export interface LinkCheckInput {
+  readonly tabTitle: string;
+  readonly links: readonly DocLink[];
+  /** documentId -> every heading ID that document currently has. */
+  readonly anchorsByDocument: ReadonlyMap<string, ReadonlySet<string>>;
+  /** The document the links live in — where a heading-form link must resolve. */
+  readonly ownDocumentId: string;
+  readonly ruleId: string;
+}
+
+export function linksWithDeadAnchors(input: LinkCheckInput): Finding[] {
+  const out: Finding[] = [];
+  for (const l of input.links) {
+    // ⚠ REPORTED, NEVER SKIPPED. Docs stores links in six shapes; a shape this
+    // cannot read must surface as a finding, because silently ignoring it
+    // reads as "no links here" — the exact wrong-zero this rule exists past.
+    if (!KNOWN_LINK_FORMS.includes(l.form)) {
+      out.push({ ruleId: input.ruleId, detail: `${input.tabTitle}: UNRECOGNISED LINK FORM "${l.form}" — ${l.text.slice(0, 70)}` });
+      continue;
+    }
+    const a = anchorOf(l);
+    if (!a) continue; // a plain external URL names no heading; not this rule's business
+
+    // A heading-form link carries no document ID because it cannot leave its
+    // own document. In the INDEX that means a link into itself, which is a
+    // different defect (index-no-self-reference) and is reported as such.
+    const docId = a.documentId ?? input.ownDocumentId;
+    const anchors = input.anchorsByDocument.get(docId);
+    if (!anchors) {
+      out.push({ ruleId: input.ruleId, detail: `${input.tabTitle}: link to UNKNOWN DOCUMENT ${docId} — ${l.text.slice(0, 60)}` });
+      continue;
+    }
+    if (!anchors.has(a.headingId)) {
+      out.push({
+        ruleId: input.ruleId,
+        detail: `${input.tabTitle}: DEAD ANCHOR ${a.headingId} (${a.form} form) — "${l.text.replace(/\s+/g, ' ').trim().slice(0, 80)}"`,
+      });
+    }
+  }
+  return out;
 }

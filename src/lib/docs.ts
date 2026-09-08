@@ -105,7 +105,77 @@ export interface ReadResult {
   readonly headings?: readonly DocHeading[];
   readonly headingCount?: number;
   readonly unlinkableHeadingCount?: number;
+  /** Present only when `includeLinks` was requested. */
+  readonly links?: readonly DocLink[];
+  readonly linkCount?: number;
+  /** Counts across Docs' six storable link shapes. */
+  readonly linkForms?: Readonly<Record<string, number>>;
 }
+
+/**
+ * One stored link, from `includeLinks: true`.
+ *
+ * ⚠ DOCS STORES A LINK IN SIX SHAPES AND THE TWO SEEN HERE ARE NOT
+ * INTERCHANGEABLE. `insertLink` writes `url`; a human linking through the Docs
+ * UI writes `heading`, carrying `{ id, tabId }` and NO DOCUMENT ID — a
+ * heading-form link is intra-document only.
+ *
+ * Reading one shape is wrong in both directions. Measured 2026-09-08 on the
+ * Plan's ToC (`linkForms: {url: 83, heading: 4}`): reading `url` alone reported
+ * three live hand-made links as DEAD and nearly filed them as findings; reading
+ * `heading` alone would miss the other 83.
+ */
+export interface DocLink {
+  readonly text: string;
+  readonly link: { readonly url?: string; readonly heading?: { readonly id: string; readonly tabId?: string } };
+  readonly form: string;
+  readonly startIndex: number;
+  readonly endIndex: number;
+  readonly plainTextStartIndex: number;
+  readonly plainTextEndIndex: number;
+}
+
+export interface LinkAnchor {
+  readonly headingId: string;
+  readonly tabId: string | null;
+  /** Null for heading form — the link cannot leave its own document. */
+  readonly documentId: string | null;
+  readonly form: string;
+}
+
+/**
+ * The anchor a link points at, whichever shape it is stored in.
+ *
+ * Returns null for a link that names no heading (a plain external URL, say).
+ * ⚠ AN UNRECOGNISED FORM MUST BE REPORTED, NEVER SKIPPED — a seventh shape
+ * read as "no links" is this trap's entire career.
+ */
+export function anchorOf(l: DocLink): LinkAnchor | null {
+  if (l.link?.heading?.id) {
+    return { headingId: l.link.heading.id, tabId: l.link.heading.tabId ?? null, documentId: null, form: l.form };
+  }
+  const url = l.link?.url ?? '';
+  const id = /#heading=([A-Za-z0-9._-]+)/.exec(url)?.[1];
+  if (!id) return null;
+  return {
+    headingId: id,
+    tabId: /[?&]tab=([A-Za-z0-9._-]+)/.exec(url)?.[1] ?? null,
+    documentId: /\/document\/d\/([A-Za-z0-9._-]+)/.exec(url)?.[1] ?? null,
+    form: l.form,
+  };
+}
+
+/**
+ * Forms this client knows how to resolve. Anything else is REPORTED.
+ *
+ * `tabId` names a TAB, not a heading — the index's SOURCES INDEXED tab uses it
+ * to link its own group tabs. `anchorOf` returns null for it, so it is skipped
+ * by a heading-anchor check rather than reported as unreadable. A DEAD TAB link
+ * is a real defect class, but none has been observed, and the manifest's
+ * standard is that a rule for an unobserved shape is speculative. The form is
+ * counted in `linkForms` so it stays visible.
+ */
+export const KNOWN_LINK_FORMS: readonly string[] = ['url', 'heading', 'tabId'];
 
 export interface FindResult {
   readonly matchCount: number;
@@ -215,12 +285,24 @@ export class DocsClient {
   }
 
   /** ⚠ `tabId` is not optional. See the header note. */
-  async read(documentId: string, tabId: string, includeHeadings = false): Promise<ReadResult> {
+  async read(documentId: string, tabId: string, includeHeadings = false, includeLinks = false): Promise<ReadResult> {
     const res = await this.call<ReadResult>(
-      // ⚠ OPT-IN. Heading extraction is only requested where a link is
-      // actually going to be built, so a source read that needs none does not
-      // pay for it.
-      { action: 'read', documentId, tabId, ...(includeHeadings ? { includeHeadings: true } : {}) },
+      // ⚠ OPT-IN, AND INDEPENDENT. Heading and link extraction are only
+      // requested where they are actually used, so a source read that needs
+      // neither does not pay for either.
+      //
+      // ⚠ THE CONTENT STRING NEVER CARRIES LINK MARKUP, in either format —
+      // the route says so and it is STILL TRUE after includeLinks shipped
+      // (2026-09-07). Links are out of band, in `links[]`. A zero read from
+      // `content` has TWICE been taken as evidence that link WRITING is
+      // broken. It never was.
+      {
+        action: 'read',
+        documentId,
+        tabId,
+        ...(includeHeadings ? { includeHeadings: true } : {}),
+        ...(includeLinks ? { includeLinks: true } : {}),
+      },
       `docs:read ${documentId}/${tabId}`,
     );
     if (res.truncated) {

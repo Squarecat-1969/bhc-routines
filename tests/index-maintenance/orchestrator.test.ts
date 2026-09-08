@@ -279,7 +279,7 @@ function planDoc(bodyChars: number) {
   return { content, headings };
 }
 
-async function fakePlan(opts: { bodyChars?: number } = {}) {
+async function fakePlan(opts: { bodyChars?: number; writesFail?: boolean } = {}) {
   const doc = planDoc(opts.bodyChars ?? 120);
   const readsOf: string[] = [];
   const writes: Record<string, unknown>[] = [];
@@ -325,6 +325,9 @@ async function fakePlan(opts: { bodyChars?: number } = {}) {
         case 'replaceRange':
         case 'insertLink':
           writes.push(b);
+          if (opts.writesFail) {
+            return send({ ok: true, verified: false, linkVerified: false, charsBefore: 1, charsAfter: 1, delta: 0, expectedDelta: 1, deltaVariance: 1 });
+          }
           return send({ ok: true, verified: true, linkVerified: true, charsBefore: 1, charsAfter: 2, delta: 1, expectedDelta: 1, deltaVariance: 0 });
         default:
           return send({ ok: false, error: 'unknown' });
@@ -378,13 +381,12 @@ describe('Plan indexing is ADDITIVE ONLY', () => {
     const r = await runIndexMaintenance({
       dryRun: true, docs, anthropic, logger: silentLogger, sourceLabels: [PLAN_LABEL], sheets: sheets.client,
     });
-    expect(r.planSections).toBe(2);
     expect(r.planAlreadyReferenced).toBe(1);
     // 5.9 is already referenced; only 5.3 is judged and only 5.3 is planned.
     expect(r.unindexed).toEqual(['5.3']);
     expect(r.planned.filter((w) => w.kind === 'insert-reference').every((w) => w.locator === '5.3')).toBe(true);
     // Its provenance is recorded as hand — the routine cannot prove otherwise.
-    expect(r.planDrift.find((d) => d.locator === '5.9')!.indexedBy).toBe('hand');
+    expect(r.planClasses.fresh.find((d) => d.locator === '5.9')!.indexedBy).toBe('hand');
   });
 
   it('⚠ still records a hash for the section it will not touch — that is the deliverable', async () => {
@@ -403,13 +405,13 @@ describe('Plan indexing is ADDITIVE ONLY', () => {
     const { docs } = await fakePlan();
     const sheets = fakeSheetsByRange({
       Index_Maintenance_State: [],
-      Plan_Index_State: [['5.9', 'h.0', 'staleHASH', '133', '0', 'hand', '2026-08-01', '2026-08-01']],
+      Plan_Index_State: [['5.9', 'h.0', 'staleHASH', '133', '0', 'hand', '2026-08-01', '2026-08-01', '']],
     });
     const r = await runIndexMaintenance({
       dryRun: true, docs, anthropic, logger: silentLogger, sourceLabels: [PLAN_LABEL], sheets: sheets.client,
     });
-    expect(r.planDrift.find((d) => d.locator === '5.9')!.verdict).toBe('CHANGED');
-    expect(renderReport(r)).toContain('REWRITTEN since they were indexed');
+    expect(r.planClasses.alive.find((d) => d.locator === '5.9')!.drift).toBe('CHANGED');
+    expect(renderReport(r)).toContain('ALIVE · text CHANGED since indexing');
     expect(r.planned.some((w) => w.kind !== 'update-count' && w.locator === '5.9')).toBe(false);
   });
 
@@ -451,5 +453,41 @@ describe('a partially-read section', () => {
     });
     expect(r.truncated).toHaveLength(0);
     expect(renderReport(r)).toContain('every unit reached the prompt in full');
+  });
+});
+
+
+describe('provenance is settled from what LANDED', () => {
+  const readState = (sheets: ReturnType<typeof fakeSheetsByRange>) =>
+    (sheets.written.find((w) => w.range.startsWith('Plan_Index_State'))!.values as unknown[][]);
+
+  it('marks a section `routine` when its reference lines are CONFIRMED', async () => {
+    const { docs } = await fakePlan();
+    const sheets = fakeSheetsByRange({ Index_Maintenance_State: [], Plan_Index_State: [] });
+    await runIndexMaintenance({ dryRun: false, docs, anthropic, logger: silentLogger, sourceLabels: [PLAN_LABEL], sheets: sheets.client });
+    const row = readState(sheets).find((r) => r[0] === '5.3')!;
+    expect(row[5]).toBe('routine');
+  });
+
+  it('⚠ marks it `unindexed` when every write came back UNVERIFIED', async () => {
+    // Counting what was attempted would record `routine` here, over an index
+    // that gained nothing — the same defect as a --no-llm run claiming routine.
+    const { docs } = await fakePlan({ writesFail: true });
+    const sheets = fakeSheetsByRange({ Index_Maintenance_State: [], Plan_Index_State: [] });
+    const r = await runIndexMaintenance({ dryRun: false, docs, anthropic, logger: silentLogger, sourceLabels: [PLAN_LABEL], sheets: sheets.client });
+    expect(r.writesConfirmed).toBe(0);
+    const row = readState(sheets).find((x) => x[0] === '5.3')!;
+    expect(row[5]).toBe('unindexed');
+    expect(r.unindexedSections).toContain('5.3');
+  });
+
+  it('reports unindexed sections by name, and prints a none line when there are none', async () => {
+    const { docs } = await fakePlan();
+    const sheets = fakeSheetsByRange({ Index_Maintenance_State: [], Plan_Index_State: [] });
+    const r = await runIndexMaintenance({ dryRun: false, docs, anthropic, logger: silentLogger, sourceLabels: [PLAN_LABEL], sheets: sheets.client });
+    const text = renderReport(r);
+    expect(text).toContain('UNINDEXED · tracked, and NOTHING in the index points at it');
+    expect(r.unindexedSections).toHaveLength(0);
+    expect(text).toMatch(/UNINDEXED[^\n]*\n\s+none/);
   });
 });

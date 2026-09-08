@@ -71,11 +71,15 @@ import {
   PLAN_STATE_RANGES,
   PLAN_STATE_TAB,
   contentHash,
-  driftOf,
+  nextStateFor,
   parsePlanStateRow,
+  provenanceFor,
+  reconcilePlanState,
   serializePlanStateRow,
   type DriftVerdict,
+  type LiveSection,
   type PlanSectionState,
+  type ReconciledSection,
 } from './plan-state.js';
 import {
   buildVocabulary,
@@ -140,10 +144,20 @@ export interface IndexMaintenanceReport {
   /** ⚠ Reported BY NAME on every run, whether or not anything else happened. */
   /** ⚠ Units the prompt did not see in full, by name and with both lengths. */
   readonly truncated: readonly { locator: string; fullLength: number; readChars: number }[];
-  readonly planSections: number;
   readonly planAlreadyReferenced: number;
-  readonly planDrift: readonly { locator: string; verdict: string; indexedBy: string; chars: number }[];
+  /** ⚠ CLASSES AND NAMES, NEVER A DOCUMENT TOTAL — the Plan moves under the run. */
+  readonly planClasses: {
+    readonly alive: readonly PlanClassRow[];
+    readonly renamed: readonly PlanClassRow[];
+    readonly anchorChanged: readonly PlanClassRow[];
+    readonly gone: readonly PlanClassRow[];
+    readonly fresh: readonly PlanClassRow[];
+  };
   readonly planStateActive: boolean;
+  /** Rows whose indexed_by changed this run, with both values. */
+  readonly provenanceChanges: readonly { locator: string; from: string; to: string }[];
+  /** ⚠ TRACKED AND NOTHING POINTS AT IT — reported by name, never as a count. */
+  readonly unindexedSections: readonly string[];
   readonly blocked: readonly { locator: string; failures: number; lastError: string }[];
   readonly newlyBlocked: readonly string[];
   readonly blockingActive: boolean;
@@ -197,10 +211,11 @@ export async function runIndexMaintenance(opts: IndexMaintenanceOptions): Promis
       llmCallsMade: 0,
       llmFailures: 0,
       truncated: [],
-      planSections: 0,
       planAlreadyReferenced: 0,
-      planDrift: [],
+      planClasses: { alive: [], renamed: [], anchorChanged: [], gone: [], fresh: [] },
       planStateActive: false,
+      provenanceChanges: [],
+      unindexedSections: [],
       blocked: [],
       newlyBlocked: [],
       blockingActive: false,
@@ -345,9 +360,7 @@ async function runInner(
   // still right about it. Both answers are recorded: the first gates the write,
   // the second is reported as drift.
   const planEntries = allEntries.filter((e) => e.sourceKind === 'Plan');
-  const planDrift: { locator: string; verdict: DriftVerdict; indexedBy: string; chars: number }[] = [];
-  const planStateRows: PlanSectionState[] = [];
-  const priorPlanState = new Map<string, PlanSectionState>();
+  const priorPlanState: PlanSectionState[] = [];
   let planStateActive = false;
 
   if (planEntries.length > 0) {
@@ -355,10 +368,10 @@ async function runInner(
       try {
         for (const r of await opts.sheets.read(PLAN_STATE_RANGES.data)) {
           const st = parsePlanStateRow(r);
-          if (st) priorPlanState.set(st.locator, st);
+          if (st) priorPlanState.push(st);
         }
         planStateActive = true;
-        logger.info(`  Plan state: ${priorPlanState.size} section(s) tracked`);
+        logger.info(`  Plan state: ${priorPlanState.length} section(s) tracked`);
       } catch (error) {
         const msg =
           `${PLAN_STATE_TAB} is unreadable (${error instanceof Error ? error.message : String(error)}) — ` +
@@ -371,6 +384,18 @@ async function runInner(
       warnings.push('no Sheets client supplied — Plan content hashes cannot be recorded and no drift can be reported');
     }
   }
+
+  const liveSections: LiveSection[] = planEntries.map((e) => ({
+    locator: e.locator,
+    headingId: e.headingUrl?.split('#heading=')[1] ?? '',
+    contentHash: contentHash(e.fullBody ?? e.body),
+    unitChars: e.fullLength ?? e.body.length,
+    truncatedTo: e.truncatedTo ?? 0,
+  }));
+
+  // ⚠ TWO KEYS, RECONCILED TOGETHER. See plan-state.ts — which key matches is
+  // itself the finding, and matching on the locator alone reports false deaths.
+  const recon = reconcilePlanState(priorPlanState, liveSections, planLocatorMatches);
 
   // Every Plan locator the index already carries, from ANY hand. These sections
   // are already indexed; the routine records their hash and adds nothing.
@@ -389,24 +414,26 @@ async function runInner(
     if (existingPlanLocators.some((l) => planLocatorMatches(l, e.locator))) alreadyReferenced.add(e.locator);
   }
 
-  for (const e of planEntries) {
-    const hash = contentHash(e.fullBody ?? e.body);
-    const prior = priorPlanState.get(e.locator);
-    const verdict = driftOf(prior, hash);
+  // ⚠ GONE ROWS ARE CARRIED FORWARD UNCHANGED, NEVER DROPPED. Their reference
+  // lines still exist in the index pointing at headings that do not; a row that
+  // vanished from the state tab would take the only record of that with it.
+  const planStateRows: PlanSectionState[] = [
+    ...[...recon.alive, ...recon.renamed, ...recon.anchorChanged, ...recon.gone].map((r) => nextStateFor(r, today)),
+  ];
+  for (const l of recon.fresh) {
     // ⚠ PROVENANCE IS DECIDED ONCE, ON FIRST SIGHT, AND NEVER UPGRADED.
     // A section already referenced when the routine first saw it was indexed
     // by a human — the routine cannot prove otherwise and must never claim it.
-    const indexedBy = prior ? prior.indexedBy : alreadyReferenced.has(e.locator) ? 'hand' : 'routine';
-    planDrift.push({ locator: e.locator, verdict, indexedBy, chars: e.fullLength ?? e.body.length });
     planStateRows.push({
-      locator: e.locator,
-      headingId: e.headingUrl?.split('#heading=')[1] ?? '',
-      contentHash: hash,
-      unitChars: e.fullLength ?? e.body.length,
-      truncatedTo: e.truncatedTo ?? 0,
-      indexedBy,
-      firstSeen: prior?.firstSeen || today,
+      locator: l.locator,
+      headingId: l.headingId,
+      contentHash: l.contentHash,
+      unitChars: l.unitChars,
+      truncatedTo: l.truncatedTo,
+      indexedBy: alreadyReferenced.has(l.locator) ? 'hand' : 'routine',
+      firstSeen: today,
       lastSeen: today,
+      liveAnchor: '',
     });
   }
 
@@ -417,8 +444,8 @@ async function runInner(
   const pending = pendingRaw.filter((e) => !(e.sourceKind === 'Plan' && alreadyReferenced.has(e.locator)));
   if (planEntries.length > 0) {
     logger.info(
-      `  Plan: ${planEntries.length} section(s), ${alreadyReferenced.size} already referenced (untouched), ` +
-        `${planEntries.length - alreadyReferenced.size} never indexed`,
+      `  Plan reconciliation — ALIVE ${recon.alive.length} · RENAMED ${recon.renamed.length} · ` +
+        `ANCHOR CHANGED ${recon.anchorChanged.length} · GONE ${recon.gone.length} · NEW ${recon.fresh.length}`,
     );
   }
   if (opts.ignoreWatermark) {
@@ -540,16 +567,6 @@ async function runInner(
     }
   }
 
-  if (planStateActive && opts.sheets && planStateRows.length > 0) {
-    if (!dryRun) {
-      const rows = planStateRows.map(serializePlanStateRow);
-      await opts.sheets.update(`${PLAN_STATE_TAB}!A2:H${1 + rows.length}`, rows);
-      logger.info(`  Plan state: ${rows.length} row(s) written`);
-    } else {
-      logger.info(`  DRY RUN — would write ${planStateRows.length} Plan state row(s)`);
-    }
-  }
-
   const byLocator = new Map(toCall.map((e) => [e.locator, e]));
   const assignments = outcomes
     .filter((o) => o.verdict !== null)
@@ -616,6 +633,46 @@ async function runInner(
     logger.info(`  ${linksConfirmed} of ${linkedPlanned} link(s) CONFIRMED on BOTH dimensions (contentVerified AND linkVerified)`);
   }
 
+  // ⚠ PROVENANCE IS SETTLED HERE, AFTER THE WRITE LOOP, FROM WHAT LANDED.
+  // Deciding it when the row is created records an INTENTION; a --no-llm run
+  // on 2026-09-08 created nine rows saying `routine` having written no
+  // reference line at all. Same distinction as counting confirmed writes
+  // rather than attempted ones.
+  const wroteThisRun = new Set(
+    writeOutcomes
+      .filter((o) => o.verified && o.write.kind === 'insert-reference')
+      .map((o) => (o.write as Extract<PlannedWrite, { kind: 'insert-reference' }>).locator),
+  );
+  // ⚠ AGAINST EVERY PLAN LOCATOR THE INDEX CARRIES, NOT `alreadyReferenced`.
+  // That set is restricted to sections that are still LIVE, so using it here
+  // marked all 17 GONE sections `unindexed` — while 65 reference lines point
+  // at them. "Nothing points at it" is a claim about the INDEX, and a section
+  // can be gone from the document and still be referenced.
+  const referencedInIndex = (locator: string): boolean =>
+    existingPlanLocators.some((l) => planLocatorMatches(l, locator)) || wroteThisRun.has(locator);
+  const settled = planStateRows.map((r) => ({
+    ...r,
+    indexedBy: provenanceFor({
+      prior: r.indexedBy,
+      referencedInIndex: referencedInIndex(r.locator),
+      wroteThisRun: wroteThisRun.has(r.locator),
+    }),
+  }));
+  const provenanceChanges = settled
+    .map((r, i) => ({ locator: r.locator, from: planStateRows[i]!.indexedBy, to: r.indexedBy }))
+    .filter((c) => c.from !== c.to);
+  const unindexedSections = settled.filter((r) => r.indexedBy === 'unindexed').map((r) => r.locator);
+
+  if (planStateActive && opts.sheets && settled.length > 0) {
+    if (!dryRun) {
+      const rows = settled.map(serializePlanStateRow);
+      await opts.sheets.update(`${PLAN_STATE_TAB}!A2:I${1 + rows.length}`, rows);
+      logger.info(`  Plan state: ${rows.length} row(s) written`);
+    } else {
+      logger.info(`  DRY RUN — would write ${settled.length} Plan state row(s)`);
+    }
+  }
+
   return {
     runId,
     dryRun,
@@ -632,10 +689,17 @@ async function runInner(
     llmCallsMade: outcomes.length,
     llmFailures: outcomes.filter((o) => o.error !== null).length,
     truncated,
-    planSections: planEntries.length,
     planAlreadyReferenced: alreadyReferenced.size,
-    planDrift,
+    planClasses: {
+      alive: recon.alive.map(classRow),
+      renamed: recon.renamed.map(classRow),
+      anchorChanged: recon.anchorChanged.map(classRow),
+      gone: recon.gone.map(classRow),
+      fresh: recon.fresh.map((l) => ({ locator: l.locator, headingId: l.headingId, drift: 'unseen', indexedBy: alreadyReferenced.has(l.locator) ? 'hand' : 'routine', chars: l.unitChars, note: '' })),
+    },
     planStateActive,
+    provenanceChanges,
+    unindexedSections,
     blocked: blockedNow.sort((a, b) => a.locator.localeCompare(b.locator)),
     newlyBlocked,
     blockingActive,
@@ -763,5 +827,33 @@ async function applyWrite(
       `linked · content=${String(link.contentVerified)} link=${String(link.linkVerified)} · ` +
       `deltas ${prefix.delta}/${link.delta}/${suffix.delta}`,
     linkConfirmed: link.contentVerified !== false && link.linkVerified === true,
+  };
+}
+
+/** One row of a reconciliation class, as the report prints it. */
+export interface PlanClassRow {
+  readonly locator: string;
+  readonly headingId: string;
+  readonly drift: DriftVerdict;
+  readonly indexedBy: string;
+  readonly chars: number;
+  /** For ANCHOR CHANGED and RENAMED: what moved. */
+  readonly note: string;
+}
+
+function classRow(r: ReconciledSection): PlanClassRow {
+  const note =
+    r.cls === 'ANCHOR_CHANGED'
+      ? `anchor ${r.prior.headingId} is DEAD — every index link to it points nowhere; live anchor is now ${r.live?.headingId ?? '?'}`
+      : r.cls === 'RENAMED'
+        ? `locator was "${r.prior.locator}"`
+        : '';
+  return {
+    locator: r.live?.locator ?? r.prior.locator,
+    headingId: r.prior.headingId,
+    drift: r.drift,
+    indexedBy: r.prior.indexedBy,
+    chars: r.live?.unitChars ?? r.prior.unitChars,
+    note,
   };
 }

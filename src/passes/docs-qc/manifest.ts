@@ -124,6 +124,24 @@ export const RULES: readonly Rule[] = [
     severity: 'finding',
   },
   {
+    id: 'index-link-targets-resolve',
+    document: 'Index',
+    statement:
+      'Every link in the index resolves to a heading that exists NOW, matched by ANCHOR ID — never by text.',
+    earnedBy:
+      'THE SAME DEFECT AS toc-entry-resolves-to-heading, in the population where nothing was checking it. ' +
+      '⚠ A DEAD-ANCHOR CHECK IS NOT A TEXT-MATCH CHECK: INCIDENT 2 passes toc-entry-resolves-to-heading ' +
+      'today — same text, live heading, dead link — because the paragraph was retyped on 2026-09-07 and ' +
+      'Docs minted a fresh ID (h.lagfoh7a5rp3 -> h.cmytyawr14t8) while every character stayed put. ' +
+      "A heading's identity dies with the PARAGRAPH, not with its text. Measured the same night: 65 of the " +
+      '133 reference lines written on 2026-09-07 already pointed at anchors that no longer exist. ' +
+      '⚠ MUST READ BOTH LINK FORMS. insertLink writes `url`; a human linking through the Docs UI writes ' +
+      '`heading` with no document ID. Reading `url` alone reported three live hand-made links as dead and ' +
+      'nearly filed them. An unrecognised form is reported, never skipped — a shape read as "no links" is ' +
+      "this trap's entire career.",
+    severity: 'finding',
+  },
+  {
     id: 'toc-covers-plan-headings',
     document: "Plan's ToC",
     statement: 'Every non-blank level-1 and level-2 heading in the Plan tab appears in the ToC.',
@@ -155,6 +173,21 @@ export const RULES: readonly Rule[] = [
     earnedBy:
       'A stale index fails silently and in the worst direction: a search returning nothing reads as "this ' +
       'was never discussed" when it means "this was never indexed." A count would hide which entries.',
+    severity: 'gap',
+  },
+  {
+    id: 'plan-section-unindexed',
+    document: 'Index',
+    statement:
+      'Every Plan section tracked in Plan_Index_State is referenced by the index. Reported BY NAME, with a none line.',
+    earnedBy:
+      'ENGINEERING GOTCHAS and 7.8 API ROUTE INVENTORY were indexed on 2026-09-07 and got ZERO reference lines, ' +
+      'because every term assigned to them was capped or high-frequency and those are never written. Both carried ' +
+      'a state row claiming indexed_by=routine while nothing in the index pointed at them. A --no-llm run the ' +
+      'next day created nine more the same way. ⚠ THIS IS NARROWER THAN index-covers-plan-headings AND THAT IS ' +
+      'THE POINT: that rule compares every Plan heading against the index and reports 13 level-1 chapter ' +
+      'headings the indexer deliberately never treats as units, so the actionable rows are buried. This one asks ' +
+      'only about sections the routine actually tracks, which is the set that can be acted on.',
     severity: 'gap',
   },
   {

@@ -1,6 +1,6 @@
 /** The console report. A dry run must be reviewable per tab before anything is written. */
 
-import type { IndexMaintenanceReport } from './index.js';
+import type { IndexMaintenanceReport, PlanClassRow } from './index.js';
 
 export function renderReport(r: IndexMaintenanceReport): string {
   const out: string[] = [];
@@ -43,22 +43,53 @@ export function renderReport(r: IndexMaintenanceReport): string {
     out.push('  Their index entries describe only the part that was read.');
   }
 
-  if (r.planSections > 0) {
-    out.push('', "THE DEVELOPER'S PLAN");
-    out.push(`  sections found        : ${r.planSections}`);
-    out.push(`  already referenced    : ${r.planAlreadyReferenced}  (UNTOUCHED — provenance unknown, add-only)`);
-    out.push(`  never indexed         : ${r.planSections - r.planAlreadyReferenced}`);
+  // ⚠ EVERY CLASS PRINTS ITS `none` LINE. A class that appears only when
+  // non-empty is indistinguishable from one that stopped running — the same
+  // reason the blocked-entries list carries one.
+  //
+  // ⚠ NAMES, NOT DOCUMENT TOTALS. The Plan moved 80 -> 82 sections between two
+  // reads twenty minutes apart on 2026-09-08; a total is a snapshot that is
+  // already wrong by the time it prints.
+  if (r.planStateActive || r.planClasses.fresh.length > 0 || r.planClasses.gone.length > 0) {
+    out.push('', "THE DEVELOPER'S PLAN — reconciled against Plan_Index_State on TWO keys");
+    out.push(`  already referenced, untouched (add-only) : ${r.planAlreadyReferenced}`);
     if (!r.planStateActive) {
-      out.push('  ⚠ NO CONTENT HASHES RECORDED — drift cannot be reported for any section this run.');
+      out.push('  ⚠ NO CONTENT HASHES RECORDED — no class below can be trusted this run.');
     }
-    const changed = r.planDrift.filter((d) => d.verdict === 'CHANGED');
-    const unseen = r.planDrift.filter((d) => d.verdict === 'unseen');
-    out.push(`  hashes: ${r.planDrift.length - changed.length - unseen.length} unchanged · ${changed.length} CHANGED · ${unseen.length} first seen`);
-    if (changed.length > 0) {
-      // The real deliverable: a stale index that says which parts are stale.
-      out.push(`  ⚠ ${changed.length} section(s) REWRITTEN since they were indexed — their references now describe older text:`);
-      for (const d of changed) out.push(`    ${d.locator}  (${d.chars} chars, indexed by ${d.indexedBy})`);
-      out.push('  Nothing is repaired automatically. Removing a superseded reference is a human act.');
+
+    const cls = (title: string, rows: readonly PlanClassRow[], detail: (x: PlanClassRow) => string): void => {
+      out.push('', `  ${title} — ${rows.length}`);
+      if (rows.length === 0) {
+        out.push('    none');
+        return;
+      }
+      for (const x of rows) out.push(`    ${detail(x)}`);
+    };
+
+    const changed = r.planClasses.alive.filter((x) => x.drift === 'CHANGED');
+    cls('ALIVE · text CHANGED since indexing', changed, (x) => `${x.locator}  (${x.chars} chars, indexed_by=${x.indexedBy})`);
+    cls('RENAMED · heading text edited, anchor intact', r.planClasses.renamed, (x) => `${x.locator}  — ${x.note}`);
+    // The class that no text-based check can see.
+    cls('⚠ ANCHOR CHANGED · paragraph retyped, EVERY LINK TO IT IS DEAD', r.planClasses.anchorChanged, (x) => `${x.locator}\n       ${x.note}`);
+    cls('⚠ GONE · section no longer exists; its index references point nowhere', r.planClasses.gone, (x) => `${x.locator}  (${x.chars} chars, indexed_by=${x.indexedBy}, dead anchor ${x.headingId})`);
+    cls('NEW · no state row on either key', r.planClasses.fresh, (x) => `${x.locator}  (${x.chars} chars)`);
+
+    // ⚠ TRACKED AND NOTHING POINTS AT IT. Invisible to every other line of this
+    // report: it is not drift, not a dead anchor, and not a missing section.
+    out.push('', `  ⚠ UNINDEXED · tracked, and NOTHING in the index points at it — ${r.unindexedSections.length}`);
+    if (r.unindexedSections.length === 0) out.push('    none');
+    else for (const l of r.unindexedSections) out.push(`    ${l}`);
+
+    out.push('', `  provenance corrected this run — ${r.provenanceChanges.length}`);
+    if (r.provenanceChanges.length === 0) out.push('    none');
+    else for (const c of r.provenanceChanges) out.push(`    ${c.locator}  ${c.from} -> ${c.to}`);
+
+    if (r.planClasses.anchorChanged.length > 0 || r.planClasses.gone.length > 0) {
+      out.push('');
+      out.push('  Nothing above is repaired automatically, by design: re-anchoring is a TRANSFORM and');
+      out.push('  insertLink cannot reach an existing character. Deletion is never attempted — a GONE');
+      out.push('  section is usually ABSORBED rather than removed, so its references still quote real');
+      out.push('  text and are wrong only about WHERE it lives.');
     }
   }
 

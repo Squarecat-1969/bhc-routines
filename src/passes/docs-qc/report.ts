@@ -26,7 +26,9 @@ export function renderQcReport(r: QcReport): string {
       // A passing rule says what it measured — silence is not evidence.
       out.push(`         measured: ${res.measured}`);
       if (res.fired) {
-        const show = res.findings.slice(0, sev === 'gap' ? 40 : 25);
+        // ⚠ NAMES, NOT TOTALS. A truncated list turns the tail into a count,
+        // which is the thing these rules exist to avoid reporting.
+        const show = res.findings.slice(0, res.ruleId === 'index-link-targets-resolve' ? 200 : sev === 'gap' ? 40 : 25);
         for (const f of show) out.push(`         → ${f.line ? `line ${f.line}: ` : ''}${f.detail}`);
         if (res.findings.length > show.length) out.push(`         → …and ${res.findings.length - show.length} more`);
         out.push(`         earned by: ${res.earnedBy.slice(0, 240)}`);
