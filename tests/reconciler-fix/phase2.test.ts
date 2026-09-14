@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { repairA3, type A3Candidate } from '../../src/passes/reconciler-fix/a3.js';
+import { a3RepointNote, repairA3, type A3Candidate } from '../../src/passes/reconciler-fix/a3.js';
 import { repairS4, s4OrphanNote, type S4Row } from '../../src/passes/reconciler-fix/s4.js';
 import { writeMasterCell } from '../../src/passes/reconciler-fix/master-write.js';
 import type { AttioPerson, AttioReadPort, Logger, MasterSheetPort } from '../../src/passes/reconciler-fix/ports.js';
@@ -367,5 +367,25 @@ describe('S4 - orphan clearing', () => {
     const note = s4OrphanNote('rec-shared', 'BHC-1', 'RECON-FIX-1');
     expect(note).toContain('belongs to BHC-1');
     expect(note).not.toMatch(/\brow \d+/); // the spec template says "at row N"; 6b forbids it
+  });
+});
+
+// ⚠ END TO END THROUGH A REAL CALL SITE. The unit tests prove the append helper;
+// the type change stops any pass reaching column F through the overwrite. This
+// proves a pass's KEY matches its own note text: a repoint appends onto real
+// history, and the same repoint on a later run writes nothing.
+describe('A3 notes are APPENDED to column F, and the same repoint is recorded once', () => {
+  it('appends onto existing history exactly, then skips on a re-run under a new run id', async () => {
+    const sheet = new FakeSheet([{ row: 10, a: 'BHC-1', c: 'BOTH', e: 'rec-dead', f: 'TNB staff.' }]);
+    const attio = new FakeAttio({ 'BHC-1': [person({ recordId: 'rec-live' })] });
+
+    const first = await repairA3([cand()], { sheets: sheet, attio, logger: silent, fixRunId: 'RECON-FIX-1' });
+    expect(first.rows[0]!.outcome).toBe('repointed');
+    const afterFirst = `TNB staff. | ${a3RepointNote('rec-dead', 'rec-live', 'RECON-FIX-1')}`;
+    expect(sheet.cells.get('F10')).toBe(afterFirst);
+
+    await repairA3([cand()], { sheets: sheet, attio, logger: silent, fixRunId: 'RECON-FIX-2' });
+    expect(sheet.cells.get('F10')).toBe(afterFirst);
+    expect(sheet.updates.filter((u) => u.range === 'F10')).toHaveLength(1);
   });
 });

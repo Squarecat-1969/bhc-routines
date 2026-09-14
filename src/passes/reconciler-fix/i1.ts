@@ -19,7 +19,7 @@
 
 import { buildEmailList } from './email-list.js';
 import { nameGate } from './name-gate.js';
-import { writeMasterCell, isHardStop, type MasterWriteResult } from './master-write.js';
+import { appendMasterNote, isHardStop, type MasterWriteResult, type NoteKey } from './master-write.js';
 import { fieldEqual } from '../../lib/name-match.js';
 import { emailEqual, normaliseEmail } from '../../lib/email-equal.js';
 import type { AttioIdentityWritePort, AttioWritableFields, Logger, MasterSheetPort } from './ports.js';
@@ -72,6 +72,23 @@ export function i1PointerMismatchNote(found: string, expected: string, field: I1
 }
 export function i1EmailConflictNote(email: string, fixRunId: string): string {
   return `I1-EMAIL-UNIQUE-CONFLICT: ${email} already on another record. Reconciler Fix ${fixRunId}.`;
+}
+/*
+ * ⚠ EVERY NOTE'S KEY LIVES BESIDE ITS TEXT, and tests/reconciler-fix/note-keys.test.ts
+ * checks each key against its own note. A key that does not match its note
+ * never skips, so that note is appended again on every run — growing a cell
+ * with a 50,000-character ceiling. Each `expected` is anchored on the text
+ * around the value (a colon, a quote, a following word), because a bare
+ * substring lets "2 Attio records found" match "12 Attio records found".
+ */
+export function i1NameMismatchKey(masterName: string, field: I1Field): NoteKey {
+  return { marker: 'I1-NAME-MISMATCH', field: `. ${field} not synced`, expected: `Master_ID shows "${masterName}".` };
+}
+export function i1PointerMismatchKey(expectedBhcId: string, field: I1Field): NoteKey {
+  return { marker: 'I1-POINTER-MISMATCH', field: `. ${field} not synced`, expected: `expected ${expectedBhcId}.` };
+}
+export function i1EmailConflictKey(email: string): NoteKey {
+  return { marker: 'I1-EMAIL-UNIQUE-CONFLICT', expected: `I1-EMAIL-UNIQUE-CONFLICT: ${email} already on another record.` };
 }
 
 const SLUG: Readonly<Record<Exclude<I1Field, 'Email'>, keyof AttioWritableFields>> = {
@@ -148,8 +165,9 @@ async function repairOne(
   const { sheets, attio, logger, fixRunId } = deps;
   const base = { bhcId: c.bhcId, field: c.field, attioWritten: false, notes: [] as MasterWriteResult[] };
 
-  const note = async (text: string): Promise<MasterWriteResult[]> => {
-    const w = await writeMasterCell(sheets, logger, { masterRow: c.masterRow, column: 'F', value: text, expectedBhcId: c.bhcId });
+  // Notes are APPENDED to col F, and a condition already recorded is not repeated.
+  const note = async (text: string, key: NoteKey): Promise<MasterWriteResult[]> => {
+    const w = await appendMasterNote(sheets, logger, { masterRow: c.masterRow, note: text, key, expectedBhcId: c.bhcId });
     if (isHardStop(w)) logger.warn(`  HARD STOP writing note for ${c.bhcId}: ${w.detail}`);
     return [w];
   };
@@ -171,7 +189,7 @@ async function repairOne(
     return {
       ...base,
       outcome: unavailable ? 'name_unavailable' : 'name_mismatch',
-      notes: await note(i1NameMismatchNote(record.name, c.fullName, c.field, fixRunId)),
+      notes: await note(i1NameMismatchNote(record.name, c.fullName, c.field, fixRunId), i1NameMismatchKey(c.fullName, c.field)),
       reason: gate.reason,
     };
   }
@@ -181,7 +199,7 @@ async function repairOne(
     return {
       ...base,
       outcome: 'pointer_mismatch',
-      notes: await note(i1PointerMismatchNote(record.bhcContactId, c.bhcId, c.field, fixRunId)),
+      notes: await note(i1PointerMismatchNote(record.bhcContactId, c.bhcId, c.field, fixRunId), i1PointerMismatchKey(c.bhcId, c.field)),
       reason: `bhc_contact_id ${JSON.stringify(record.bhcContactId)} != ${c.bhcId}`,
     };
   }
@@ -219,14 +237,14 @@ async function syncEmail(
   c: I1Candidate,
   base: { bhcId: string; field: I1Field; attioWritten: boolean; notes: MasterWriteResult[] },
   deps: I1Deps,
-  note: (text: string) => Promise<MasterWriteResult[]>,
+  note: (text: string, key: NoteKey) => Promise<MasterWriteResult[]>,
 ): Promise<I1RowResult> {
   const { attio, logger, fixRunId } = deps;
   const reorderWrites = deps.emailReorderWrites ?? I1_EMAIL_REORDER_WRITES;
 
   const conflict = await emailConflict(attio, c, logger);
   if (conflict) {
-    return { ...base, outcome: 'email_unique_conflict', notes: await note(i1EmailConflictNote(c.expected, fixRunId)), reason: conflict };
+    return { ...base, outcome: 'email_unique_conflict', notes: await note(i1EmailConflictNote(c.expected, fixRunId), i1EmailConflictKey(c.expected)), reason: conflict };
   }
 
   // ⚠ THE READ THE LIST IS BUILT FROM IS TAKEN HERE — immediately before the
@@ -244,7 +262,7 @@ async function syncEmail(
   if (fresh.bhcContactId !== c.bhcId) {
     return {
       ...base, outcome: 'pointer_mismatch',
-      notes: await note(i1PointerMismatchNote(fresh.bhcContactId, c.bhcId, c.field, fixRunId)),
+      notes: await note(i1PointerMismatchNote(fresh.bhcContactId, c.bhcId, c.field, fixRunId), i1PointerMismatchKey(c.bhcId, c.field)),
       reason: `bhc_contact_id changed to ${JSON.stringify(fresh.bhcContactId)} before the email write`,
     };
   }
@@ -279,7 +297,7 @@ async function syncEmail(
     // 2026-09-13). The pre-check should catch it first; this is the second line
     // of defence for a race or a holder the query could not see.
     if (/uniqu/i.test(msg)) {
-      return { ...base, outcome: 'email_unique_conflict', notes: await note(i1EmailConflictNote(c.expected, fixRunId)), reason: `write rejected: ${msg.slice(0, 120)}` };
+      return { ...base, outcome: 'email_unique_conflict', notes: await note(i1EmailConflictNote(c.expected, fixRunId), i1EmailConflictKey(c.expected)), reason: `write rejected: ${msg.slice(0, 120)}` };
     }
     return { ...base, outcome: 'write_failed', reason: `Attio email replace failed: ${msg.slice(0, 140)}` };
   }

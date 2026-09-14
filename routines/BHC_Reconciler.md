@@ -85,7 +85,7 @@ For each data row capture:
 - location (col C) — GOOGLE / ATTIO / BOTH / SUPERSEDED (SUPERSEDED rows are skipped, per above)
 - google_row (col D) — numeric or blank
 - attio_record_id (col E) — UUID string or blank
-- notes (col F)
+- notes (col F) — `Notes`: an accumulating record of whatever has happened to the row — human classifications, provenance, merge records, and routine findings alike, joined with ` | `, oldest first. Much of it exists nowhere else. Any writer APPENDS to it; nothing ever overwrites it (see BHC_Reconciler_Fix.md, "What col F is for").
 - master_row — the actual sheet row number (2-based)
 
 Hold the full set in memory. Also build two indexes:

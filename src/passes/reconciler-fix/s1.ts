@@ -24,7 +24,7 @@
  */
 
 import { chooseCanonical, groupByDuplicateBhcId, type CandidateRow } from './canonical.js';
-import { isHardStop, writeMasterCell, type MasterWriteResult } from './master-write.js';
+import { appendMasterNote, isHardStop, type MasterWriteResult, type NoteKey } from './master-write.js';
 import type { Logger, MasterSheetPort } from './ports.js';
 
 /** A candidate plus the Master_ID full_name the note needs to name the canonical. */
@@ -63,6 +63,17 @@ export interface S1Result {
 export function s1DuplicateNote(bhcId: string, canonicalName: string, fixRunId: string): string {
   const who = canonicalName.trim() !== '' ? canonicalName.trim() : '(unnamed row)';
   return `S1-DUPLICATE: BHC_ID ${bhcId} also appears on the row for ${who}. Flagged for review by Reconciler Fix ${fixRunId}. No BHC_ID or pointer changed - Notes only.`;
+}
+/*
+ * ⚠ EVERY NOTE'S KEY LIVES BESIDE ITS TEXT, and tests/reconciler-fix/note-keys.test.ts
+ * checks each key against its own note. A key that does not match its note
+ * never skips, so that note is appended again on every run — growing a cell
+ * with a 50,000-character ceiling. Each `expected` is anchored on the text
+ * around the value (a colon, a quote, a following word), because a bare
+ * substring lets "2 Attio records found" match "12 Attio records found".
+ */
+export function s1DuplicateKey(bhcId: string): NoteKey {
+  return { marker: 'S1-DUPLICATE', expected: `BHC_ID ${bhcId} also appears` };
 }
 
 export async function repairS1(
@@ -115,9 +126,10 @@ async function flagGroup(
 
   for (const orphan of scored.orphans) {
     // ONE write. Column F. Nothing else - not C, not D, not E, and never A.
-    const note = await writeMasterCell(sheets, logger, {
-      masterRow: orphan.masterRow, column: 'F',
-      value: s1DuplicateNote(bhcId, canonical.fullName, fixRunId),
+    const note = await appendMasterNote(sheets, logger, {
+      masterRow: orphan.masterRow,
+      note: s1DuplicateNote(bhcId, canonical.fullName, fixRunId),
+      key: s1DuplicateKey(bhcId),
       expectedBhcId: orphan.bhcId,
     });
     writes.push(note);
@@ -125,7 +137,8 @@ async function flagGroup(
       logger.warn(`  HARD STOP on ${bhcId} @ row ${orphan.masterRow}: ${note.detail}`);
       continue;
     }
-    if (note.outcome !== 'written') continue;
+    // Already recorded by an earlier run IS flagged - the row carries the note.
+    if (note.outcome !== 'written' && note.outcome !== 'already_present') continue;
     flagged.push(orphan.masterRow);
   }
 

@@ -10,7 +10,7 @@
  */
 
 import { chooseCanonical, groupBySharedAttioPointer, type CandidateRow } from './canonical.js';
-import { isHardStop, writeMasterCell, type MasterWriteResult } from './master-write.js';
+import { appendMasterNote, isHardStop, writeMasterCell, type MasterWriteResult, type NoteKey } from './master-write.js';
 import { sharesWord } from '../../lib/name-match.js';
 import type { AttioReadPort, Logger, MasterSheetPort } from './ports.js';
 
@@ -60,6 +60,17 @@ export interface S4Result {
  */
 export function s4OrphanNote(attioRecordId: string, canonicalBhcId: string, fixRunId: string): string {
   return `S4-ORPHAN: Attio_Record_ID ${attioRecordId} belongs to ${canonicalBhcId}. Pointer cleared by Reconciler Fix ${fixRunId}.`;
+}
+/*
+ * ⚠ EVERY NOTE'S KEY LIVES BESIDE ITS TEXT, and tests/reconciler-fix/note-keys.test.ts
+ * checks each key against its own note. A key that does not match its note
+ * never skips, so that note is appended again on every run — growing a cell
+ * with a 50,000-character ceiling. Each `expected` is anchored on the text
+ * around the value (a colon, a quote, a following word), because a bare
+ * substring lets "2 Attio records found" match "12 Attio records found".
+ */
+export function s4OrphanKey(attioRecordId: string, canonicalBhcId: string): NoteKey {
+  return { marker: 'S4-ORPHAN', expected: `Attio_Record_ID ${attioRecordId} belongs to ${canonicalBhcId}.` };
 }
 
 export async function repairS4(
@@ -177,8 +188,9 @@ async function repairGroup(
 
     // The note goes LAST and only after the clear was read back - note
     // discipline 1: never describe an action that was not performed and verified.
-    const note = await writeMasterCell(sheets, logger, {
-      masterRow: orphan.masterRow, column: 'F', value: s4OrphanNote(attioRecordId, canonical.bhcId, fixRunId), expectedBhcId: orphan.bhcId,
+    const note = await appendMasterNote(sheets, logger, {
+      masterRow: orphan.masterRow, note: s4OrphanNote(attioRecordId, canonical.bhcId, fixRunId),
+      key: s4OrphanKey(attioRecordId, canonical.bhcId), expectedBhcId: orphan.bhcId,
     });
     writes.push(note);
     cleared.push(orphan.bhcId);

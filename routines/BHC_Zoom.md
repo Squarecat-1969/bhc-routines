@@ -94,7 +94,7 @@ If no WRITE rows: log "no WRITE rows" and skip to PASS 2.
 3. Create Attio people record: `name: [{first_name, last_name, full_name}]`, `email_addresses: [{email_address}]` (omit if none), `bhc_contact_id: BHC_ID`, `description: title + company`.
 4. Capture `record_id`.
 5. Update Master_ID stub col E: `sheets("update", f"Master_ID!E{stub_row}", [[record_id]])`.
-6. On failure at steps 3–4: write `"MINT_FAILED — delete this row"` to col F.
+6. On failure at steps 3–4: **append** `MINT_FAILED — delete this row` to col F — read the cell first and write `{existing} | MINT_FAILED — delete this row`. Never overwrite it: the stub's own `Created by BHC Zoom {RUN_ID} — {meeting_title}` note is the only record of which run minted the row, which is exactly what is needed to work out why the mint failed. *(Changed 2026-09-13 from "write … to col F". No test covers this step — it is an instruction to an LLM session.)*
 
 **For Google-only contacts** (Location=GOOGLE in write_targets — known BHC_ID, no Attio record yet):
 

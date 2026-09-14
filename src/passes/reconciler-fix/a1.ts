@@ -8,7 +8,7 @@
  */
 
 import { nameGate } from './name-gate.js';
-import { writeMasterCell, isHardStop, type MasterWriteResult } from './master-write.js';
+import { appendMasterNote, isHardStop, type MasterWriteResult, type NoteKey } from './master-write.js';
 import type { AttioIdentityWritePort, Logger, MasterSheetPort } from './ports.js';
 
 export interface A1Candidate {
@@ -49,6 +49,20 @@ export function a1NameMismatchNote(attioName: string, masterName: string, expect
 export function a1NameUnavailableNote(expectedBhcId: string, fixRunId: string): string {
   return `A1-NEEDS-MANUAL: name unavailable for verification. Expected BHC_ID was ${expectedBhcId}. Reconciler Fix ${fixRunId}.`;
 }
+/*
+ * ⚠ EVERY NOTE'S KEY LIVES BESIDE ITS TEXT, and tests/reconciler-fix/note-keys.test.ts
+ * checks each key against its own note. A key that does not match its note
+ * never skips, so that note is appended again on every run — growing a cell
+ * with a 50,000-character ceiling. Each `expected` is anchored on the text
+ * around the value (a colon, a quote, a following word), because a bare
+ * substring lets "2 Attio records found" match "12 Attio records found".
+ */
+export function a1NameMismatchKey(expectedBhcId: string): NoteKey {
+  return { marker: 'A1-NAME-MISMATCH', expected: `Expected BHC_ID was ${expectedBhcId}.` };
+}
+export function a1NameUnavailableKey(expectedBhcId: string): NoteKey {
+  return { marker: 'A1-NEEDS-MANUAL', expected: `Expected BHC_ID was ${expectedBhcId}.` };
+}
 
 export async function repairA1(
   candidates: readonly A1Candidate[],
@@ -76,8 +90,9 @@ async function repairOne(
   const { sheets, attio, logger, fixRunId } = deps;
   const base = { bhcId: c.bhcId, masterRow: c.masterRow, attioWritten: false, notes: [] as MasterWriteResult[] };
 
-  const note = async (text: string): Promise<MasterWriteResult[]> => {
-    const w = await writeMasterCell(sheets, logger, { masterRow: c.masterRow, column: 'F', value: text, expectedBhcId: c.bhcId });
+  // Notes are APPENDED to col F, and a condition already recorded is not repeated.
+  const note = async (text: string, key: NoteKey): Promise<MasterWriteResult[]> => {
+    const w = await appendMasterNote(sheets, logger, { masterRow: c.masterRow, note: text, key, expectedBhcId: c.bhcId });
     if (isHardStop(w)) logger.warn(`  HARD STOP writing note for ${c.bhcId}: ${w.detail}`);
     return [w];
   };
@@ -105,7 +120,7 @@ async function repairOne(
     return {
       ...base,
       outcome: unavailable ? 'name_unavailable' : 'name_mismatch',
-      notes: await note(text),
+      notes: await note(text, unavailable ? a1NameUnavailableKey(c.expectedBhcId) : a1NameMismatchKey(c.expectedBhcId)),
       reason: gate.reason,
     };
   }

@@ -12,7 +12,7 @@
  *   D  lookup failed       -> manual list, continue
  */
 
-import { isHardStop, writeMasterCell, type MasterWriteResult } from './master-write.js';
+import { appendMasterNote, isHardStop, writeMasterCell, type MasterWriteResult, type NoteKey } from './master-write.js';
 import type { AttioReadPort, Logger, MasterSheetPort } from './ports.js';
 
 export interface A3Candidate {
@@ -66,6 +66,23 @@ export function a3GoogleOnlyNote(fixRunId: string): string {
 export function a3AmbiguousNote(n: number, fixRunId: string): string {
   return `A3-AMBIGUOUS: ${n} Attio records found. Manual review required. Reconciler Fix ${fixRunId}.`;
 }
+/*
+ * ⚠ EVERY NOTE'S KEY LIVES BESIDE ITS TEXT, and tests/reconciler-fix/note-keys.test.ts
+ * checks each key against its own note. A key that does not match its note
+ * never skips, so that note is appended again on every run — growing a cell
+ * with a 50,000-character ceiling. Each `expected` is anchored on the text
+ * around the value (a colon, a quote, a following word), because a bare
+ * substring lets "2 Attio records found" match "12 Attio records found".
+ */
+export function a3RepointKey(newId: string): NoteKey {
+  return { marker: 'A3-FIXED', expected: `to ${newId} by Reconciler Fix` };
+}
+export function a3GoogleOnlyKey(): NoteKey {
+  return { marker: 'A3-FIXED', expected: 'A3-FIXED: no Attio record found.' };
+}
+export function a3AmbiguousKey(n: number): NoteKey {
+  return { marker: 'A3-AMBIGUOUS', expected: `A3-AMBIGUOUS: ${n} Attio records found.` };
+}
 
 export async function repairA3(
   candidates: readonly A3Candidate[],
@@ -117,8 +134,9 @@ async function repairOne(
   if (matches.length > 1) {
     const reason = `${matches.length} Attio records carry ${c.bhcId} - ambiguous, manual review required`;
     logger.warn(`  ${c.bhcId}: ${reason}`);
-    const note = await writeMasterCell(sheets, logger, {
-      masterRow: c.masterRow, column: 'F', value: a3AmbiguousNote(matches.length, fixRunId), expectedBhcId: c.bhcId,
+    const note = await appendMasterNote(sheets, logger, {
+      masterRow: c.masterRow, note: a3AmbiguousNote(matches.length, fixRunId),
+      key: a3AmbiguousKey(matches.length), expectedBhcId: c.bhcId,
     });
     return { ...base, outcome: isHardStop(note) ? 'hard_stop' : 'ambiguous', matchCount: matches.length, newRecordId: null, writes: [note], reason };
   }
@@ -137,7 +155,10 @@ async function repairOne(
     if (clear.outcome !== 'written') return { ...base, outcome: 'write_failed', matchCount: 0, newRecordId: null, writes, reason: clear.detail };
 
     // Note last, only after both writes verified (note discipline 1).
-    writes.push(await writeMasterCell(sheets, logger, { masterRow: c.masterRow, column: 'F', value: a3GoogleOnlyNote(fixRunId), expectedBhcId: c.bhcId }));
+    writes.push(await appendMasterNote(sheets, logger, {
+      masterRow: c.masterRow, note: a3GoogleOnlyNote(fixRunId),
+      key: a3GoogleOnlyKey(), expectedBhcId: c.bhcId,
+    }));
     return { ...base, outcome: 'set_google_only', matchCount: 0, newRecordId: null, writes, reason: 'no Attio record found - contact is Google-only' };
   }
 
@@ -149,8 +170,9 @@ async function repairOne(
   if (isHardStop(repoint)) return { ...base, outcome: 'hard_stop', matchCount: 1, newRecordId: null, writes, reason: repoint.detail };
   if (repoint.outcome !== 'written') return { ...base, outcome: 'write_failed', matchCount: 1, newRecordId: null, writes, reason: repoint.detail };
 
-  writes.push(await writeMasterCell(sheets, logger, {
-    masterRow: c.masterRow, column: 'F', value: a3RepointNote(c.attioRecordId, newId, fixRunId), expectedBhcId: c.bhcId,
+  writes.push(await appendMasterNote(sheets, logger, {
+    masterRow: c.masterRow, note: a3RepointNote(c.attioRecordId, newId, fixRunId),
+    key: a3RepointKey(newId), expectedBhcId: c.bhcId,
   }));
   return { ...base, outcome: 'repointed', matchCount: 1, newRecordId: newId, writes, reason: `record moved to ${newId}` };
 }

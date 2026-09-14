@@ -155,3 +155,23 @@ describe('adapters expose ONLY the port surface', async () => {
     expect(Object.values(p).some((v) => typeof v !== 'function')).toBe(false);
   });
 });
+
+// ⚠ A RE-RUN. The orphan already carries this duplicate's note from an earlier
+// run. The row IS flagged — the note is there — so it must count as flagged,
+// and column F must not be written again. Without this test, treating
+// `already_present` as a failure drops the orphan from the flagged list silently.
+describe('S1 re-run - an orphan already noted stays flagged, and is not noted twice', () => {
+  it('counts the orphan as flagged, issues ZERO column F writes, leaves the cell identical', async () => {
+    const sheet = new FakeSheet([{ row: 10, a: 'BHC-1' }, { row: 20, a: 'BHC-1' }]);
+    const existing = `TNB staff. | ${s1DuplicateNote('BHC-1', 'Ada Lovelace', 'RECON-FIX-0')}`;
+    sheet.cells.set('F20', existing);
+    const dupes = [
+      row({ masterRow: 10, bhcId: 'BHC-1', fullName: 'Ada Lovelace', googleRow: 100, attioRecordId: 'rec-1' }),
+      row({ masterRow: 20, bhcId: 'BHC-1', fullName: 'Ada L', googleRow: null, attioRecordId: '' }),
+    ];
+    const r = await repairS1(dupes, deps(sheet));
+    expect(r.groups[0]!.orphansFlagged).toEqual([20]);
+    expect(sheet.updates.filter((u) => u.range === 'F20')).toHaveLength(0);
+    expect(sheet.cells.get('F20')).toBe(existing);
+  });
+});
