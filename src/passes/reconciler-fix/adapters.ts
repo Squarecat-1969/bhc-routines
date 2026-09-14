@@ -82,5 +82,9 @@ export function makeAttioIdentityWritePort(attio: AttioClient): AttioIdentityWri
     async updatePerson(recordId: string, values: AttioWritableFields): Promise<void> {
       await attio.updatePersonRecord(recordId, values as Record<string, unknown>);
     },
+
+    async replaceEmails(recordId: string, emails: readonly string[]): Promise<void> {
+      await attio.replacePersonEmailAddresses(recordId, emails);
+    },
   };
 }

@@ -483,6 +483,30 @@ export class AttioClient {
   }
 
   /**
+   * REPLACE a person's `email_addresses` with exactly this list, in this order.
+   *
+   * ⚠ PUT, NOT PATCH, AND THE DIFFERENCE WAS MEASURED (live, 2026-09-13, on
+   * scratch records). PATCH adds new addresses to the FRONT but never moves an
+   * address already present — so it cannot promote an existing secondary to
+   * primary, and it answers 200 while changing nothing. PUT stores exactly the
+   * list sent, in the order sent, and left the record's name untouched.
+   *
+   * ONLY `email_addresses` is sent. The measurement established that a PUT
+   * carrying just this attribute leaves the name alone; it did not establish
+   * that for every attribute, so nothing else is ever put in this payload.
+   *
+   * A cross-record conflict answers HTTP 400 `uniqueness_conflict` and stores
+   * nothing. Retrying a PUT is safe — repeating it changes nothing further —
+   * unlike `createTask`, whose retry can mint a duplicate.
+   */
+  async replacePersonEmailAddresses(recordId: string, emails: readonly string[]): Promise<void> {
+    await this.request(`/objects/people/records/${recordId}`, {
+      method: 'PUT',
+      body: JSON.stringify({ data: { values: { email_addresses: emails } } }),
+    });
+  }
+
+  /**
    * PATCH a person record. Only ever called with the three cadence attributes
    * (spec Non-negotiable #12 scopes PASS 4's writes to exactly those).
    */

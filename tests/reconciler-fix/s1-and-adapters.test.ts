@@ -143,9 +143,13 @@ describe('adapters expose ONLY the port surface', async () => {
     expect('updatePerson' in p).toBe(false);
   });
 
-  it('the write port exposes exactly one write, and no path back to the client', () => {
+  // Two writes since 2026-09-13, deliberately: `updatePerson` (PATCH, fields,
+  // cannot carry emails by type) and `replaceEmails` (PUT, the email list).
+  // PATCH cannot promote an existing address, so the email repair needs its
+  // own verb. Anything beyond these two is a new write surface and must fail here.
+  it('the write port exposes exactly two writes — fields and the email list — and no path back to the client', () => {
     const p = makeAttioIdentityWritePort({ marker: 'the-real-client' } as never);
-    expect(Object.keys(p).sort()).toEqual(['getByRecordId', 'queryByBhcContactId', 'queryByEmail', 'updatePerson']);
+    expect(Object.keys(p).sort()).toEqual(['getByRecordId', 'queryByBhcContactId', 'queryByEmail', 'replaceEmails', 'updatePerson']);
     // The wide client is captured in a closure, not reachable from the adapter.
     expect(JSON.stringify(p)).not.toContain('the-real-client');
     expect(Object.values(p).some((v) => typeof v !== 'function')).toBe(false);

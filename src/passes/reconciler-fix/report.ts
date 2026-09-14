@@ -111,6 +111,9 @@ export function summarize(report: ReconcilerFixReport): readonly CategorySummary
   const a3Superseded = a3.rows.filter((r) => r.outcome === 'skipped_superseded').length;
   const s4Nothing = s4.groups.filter((g) => g.outcome === 'nothing_to_do').length;
   const i1AlreadyCorrect = i1.rows.filter((r) => r.outcome === 'already_correct').length;
+  // Withheld on purpose (reorder writes off): no action was taken, so it sits
+  // with "no action" in the table and is NAMED in the held section below.
+  const i1Withheld = i1.rows.filter((r) => r.outcome === 'reorder_withheld').length;
 
   return [
     {
@@ -150,7 +153,7 @@ export function summarize(report: ReconcilerFixReport): readonly CategorySummary
       considered: i1.counts.considered,
       fixed: i1.counts.fixed,
       needsManual: i1.counts.needsManual,
-      noAction: i1AlreadyCorrect,
+      noAction: i1AlreadyCorrect + i1Withheld,
       failed: 0, // folded into needsManual by repairI1 - see header
     },
   ];
@@ -202,7 +205,8 @@ export function buildFixSlackMessage(report: ReconcilerFixReport): string {
   const totalConsidered = summaries.reduce((n, s) => n + s.considered, 0);
   const totalFixed = summaries.reduce((n, s) => n + (s.fixed ?? 0), 0);
   const totalNeedsManual = summaries.reduce((n, s) => n + s.needsManual, 0);
-  const held = report.excludedFromA1.length + report.excludedFromI1.length;
+  const withheldI1 = report.i1.rows.filter((r) => r.outcome === 'reorder_withheld');
+  const held = report.excludedFromA1.length + report.excludedFromI1.length + withheldI1.length;
   const outOfScope = Object.entries(report.outOfScope).filter(([, n]) => n > 0);
   const source = report.sourceRunId ?? '(no source run found)';
 
@@ -233,6 +237,15 @@ export function buildFixSlackMessage(report: ReconcilerFixReport): string {
     }
     if (report.excludedFromI1.length > 0) {
       lines.push(`  ${report.excludedFromI1.length} I1 candidate(s): BHC_ID is S1-disputed this run`);
+    }
+    // ⚠ NAMED, not counted. These are the records the first-position Email
+    // definition surfaced; they are reported and not rewritten until reorder
+    // writes are enabled, and the point is that someone SEES them first.
+    if (withheldI1.length > 0) {
+      lines.push(
+        `  ${withheldI1.length} I1 Email candidate(s): Google's primary is in Attio but NOT first - REPORT-ONLY, not rewritten: ` +
+          withheldI1.map((r) => r.bhcId).join(', '),
+      );
     }
   }
 

@@ -59,8 +59,11 @@ export type AttioWritableFields = Partial<{
   job_title: string;
   /** I1: Field == Company. The TEXT attribute, never the `company` record-reference. */
   company_name: string;
-  /** I1: Field == Email. Full list, primary at position 0. */
-  email_addresses: readonly string[];
+  // ⚠ `email_addresses` IS DELIBERATELY ABSENT, for the same reason `name` is.
+  // This type feeds `updatePerson`, which is a PATCH, and PATCH cannot express
+  // an email repair: measured 2026-09-13, it adds new addresses to the front
+  // but never moves one already present. Emails go through `replaceEmails`
+  // (PUT) only, and removing the key here makes the wrong verb unwritable.
 }>;
 
 /**
@@ -79,6 +82,12 @@ export interface AttioIdentityWritePort extends AttioReadPort {
    */
   queryByEmail(email: string): Promise<readonly AttioPerson[]>;
 
-  /** The one write. Throws on rejection (including a uniqueness conflict). */
+  /** The field write (PATCH). Throws on rejection. Cannot carry emails - see AttioWritableFields. */
   updatePerson(recordId: string, values: AttioWritableFields): Promise<void>;
+
+  /**
+   * The EMAIL write: replace the whole `email_addresses` list, in order (PUT).
+   * Throws on rejection, including Attio's 400 `uniqueness_conflict`.
+   */
+  replaceEmails(recordId: string, emails: readonly string[]): Promise<void>;
 }

@@ -216,6 +216,99 @@ Fail either → DO NOT write. Log `I1-NAME-MISMATCH` (mirroring the A1 note), ap
 **Step 2 — Write Google's value (Expected) into the one drifted Field.**
 - `Field == Title` → set `job_title` = Expected (text).
 - `Field == Company` → set `company_name` = Expected (the text attr — NOT the `company` record-reference).
+- `Field == Email` → set `email_addresses` **primary-first, unique-safe, whole-list verified** (rewritten 2026-09-13):
+  1. **Uniqueness pre-check.** Expected already belongs to a DIFFERENT Attio person → DO NOT write. Mark NEEDS_MANUAL, note `I1-EMAIL-UNIQUE-CONFLICT: {Expected} already on another record`, continue.
+  2. **Re-read the record's `email_addresses` IMMEDIATELY before writing** — after the pre-check. Never build the list from a read carried from earlier in the pass. Re-confirm `bhc_contact_id == BHC_ID` on this same read; if it changed → I1-POINTER-MISMATCH, no write.
+  3. Expected is already the **first** address → ALREADY_CORRECT, no write. (Compare addresses lowercase + trimmed only.)
+  4. Expected is on the record but **not first** → **REPORT-ONLY: outcome `reorder_withheld`, no write**, until reorder writes are deliberately enabled in code (`I1_EMAIL_REORDER_WRITES`). The first live exercise of the tightened definition (see BHC_Reconciler.md, "DECISION: the FIRST address is the primary") is observed, not automatic.
+  5. Build the new list: Expected first, then every existing address except a case-insensitive duplicate of Expected — order otherwise unchanged.
+  6. **Write it with PUT — replace the list — sending ONLY `email_addresses`. Never PATCH.** Measured 2026-09-13: PATCH adds new addresses to the front but never moves an address already present, so it cannot promote a secondary, and it answers 200 while changing nothing.
+  7. A write rejected with HTTP 400 `uniqueness_conflict` → NEEDS_MANUAL with the same note. Never force.
+
+  ⚠ **PUT removes anything it does not list.** The fresh read in step 2 shrinks the window to milliseconds, but if Attio's sync adds an address inside it, the PUT deletes it and the read-back matches exactly what was sent — the check passes and the loss goes unseen. A PUT carries no if-unchanged condition, so nothing fully prevents this.
+
+**Step 3 — QA read-back.**
+Re-fetch the Attio record and confirm:
+1. bhc_contact_id now equals the expected BHC_ID
+2. The person's name still matches (double-check — confirm you wrote to the right record)
+
+On any mismatch: retry once, re-read. If still wrong: mark NEEDS_MANUAL, do not mark FIXED.
+
+Batching: process A1 updates in groups of 10 with a 2-second pause between groups to avoid Attio rate limits. A failed lookup or update adds to the manual list and the run continues — never abort on a single failure.
+
+
+### PASS 5 — Fix A3 (dead Attio record IDs)
+
+For each A3 issue (including any that migrated from PASS 4):
+
+Query Attio people where bhc_contact_id == the BHC_ID from Master_ID.
+
+**Outcome A — Record found under new ID:**
+Exactly one live record returned → update Master_ID!E{master_row} with the live record_id. Append to Master_ID!F{master_row}: `A3-FIXED: Attio record_id updated from {old_id} to {new_id} by Reconciler Fix {FIX_RUN_ID}.`
+
+**Outcome B — No Attio record found:**
+Zero results → contact is Google-only. Write Master_ID!C{master_row} = GOOGLE, write Master_ID!E{master_row} = `` (blank). Append to Master_ID!F{master_row}: `A3-FIXED: no Attio record found. Location set to GOOGLE, Attio_Record_ID cleared by Reconciler Fix {FIX_RUN_ID}.`
+
+**Outcome C — Multiple records found:**
+Two or more results → ambiguous. Do NOT touch Master_ID. Append to Master_ID!F{master_row}: `A3-AMBIGUOUS: {N} Attio records found. Manual review required. Reconciler Fix {FIX_RUN_ID}.` Add to manual review list.
+
+**Outcome D — Lookup failed:**
+Add to manual review list with note "lookup failed." Continue.
+
+Process in groups of 10 with a 2-second pause between groups.
+
+
+### PASS 6 — Fix S4 (duplicate Attio pointers)
+
+Two or more Master_ID rows share the same Attio_Record_ID. Only one should point to it.
+
+**S4 considers ONLY rows with a POPULATED Attio_Record_ID. A blank is not a shared value.** This has always been the intent and has always been how it behaves in practice, but it was never written down — and it is load-bearing. 245 live rows have a blank col E, so a literal reading of "two or more rows share the same attio_record_id" produces one 245-row group and then "fixes" 244 of them.
+
+Superseded rows make that latent bug reachable rather than theoretical: every retirement has a blank col E by design, so they would all land in that same group, one would be picked canonical, and the rest would be written to — clearing col E again and appending an S4-ORPHAN note over the retirement's own audit line. Note that Step 3's third bullet below describes the superseded shape exactly ("no Google row and no valid Attio record") and prescribes overwriting Location, which is precisely the write that would silently undo a retirement. Superseded rows are excluded from the Reconciler's report in the first place, so no S4 issue should ever name one; this rule is the second line of defence.
+
+For each S4 issue:
+
+**Step 1 — Identify canonical vs orphan.**
+You have N master rows all pointing to the same Attio_Record_ID. Use the same scoring as PASS 3:
+- Has Google_Row populated → +2
+- Has Attio_Record_ID populated → +2 (all have it here, so this scores equally)
+- Tie → lower master row number wins
+
+The highest-scoring row is canonical — it legitimately owns the Attio record. All others are orphans.
+
+**Step 2 — Verify which contact the Attio record actually belongs to.**
+Fetch the Attio record by record_id, read its bhc_contact_id AND the person's name. The row whose BHC_ID matches the Attio record's bhc_contact_id is the true canonical, regardless of scoring. Additionally, the name should plausibly match that row's Master_ID full_name.
+
+If no row's BHC_ID matches AND no row's name matches the Attio person's name: flag the whole S4 group as NEEDS_MANUAL — the Attio record may belong to someone not represented in this S4 group.
+
+**Step 3 — Fix orphan rows.**
+For each orphan:
+- Write Master_ID!E{orphan_row} = `` (blank — clears the stale Attio pointer)
+- If orphan Location = BOTH: write Master_ID!C{orphan_row} = GOOGLE (it no longer has a valid Attio record)
+- If orphan Location = ATTIO: write Master_ID!C{orphan_row} = GOOGLE and also write Master_ID!E{orphan_row} = `` — this contact has no Google row and no valid Attio record; flag it as needing review
+- Append to Master_ID!F{orphan_row}: `S4-ORPHAN: Attio_Record_ID {record_id} belongs to {canonical_bhc_id} at row {canonical_row}. Pointer cleared by Reconciler Fix {FIX_RUN_ID}.`
+
+Do NOT modify the canonical row.
+
+
+### PASS 6.5 — Fix I1 (identity field drift → Attio)
+
+Syncs Google's authoritative Title / Company / Email onto the Attio mirror. This pass writes to Attio. **The Step 1.5 name-verification gate is mandatory before any write — reused verbatim from PASS 4.** Placed after S4 and before the QA pass so it does not renumber the existing passes.
+
+For each I1 issue (one drifted field per row — `Field` and `Expected` captured in PASS 1):
+
+**Step 1 — Verify the record exists.**
+Fetch the person record by Attio_Record_ID via the Attio MCP connector. 404 / not found → mark this I1 row NEEDS_MANUAL, write nothing, continue.
+
+**Step 1.5 — Name verification gate (mandatory, non-skippable — same as PASS 4).**
+Read the Attio person's name. Require BOTH:
+1. `bhc_contact_id == BHC_ID` (identity pointer confirmed), AND
+2. the name shares ≥1 significant word with Master_ID full_name (particles excluded).
+Fail either → DO NOT write. Log `I1-NAME-MISMATCH` (mirroring the A1 note), append to Master_ID!F{master_row}, mark report row NEEDS_MANUAL, add to manual list, continue.
+
+**Step 2 — Write Google's value (Expected) into the one drifted Field.**
+- `Field == Title` → set `job_title` = Expected (text).
+- `Field == Company` → set `company_name` = Expected (the text attr — NOT the `company` record-reference).
 - `Field == Email` → set `email_addresses` **primary-only, unique-safe**:
   1. Read the record's current `email_addresses` list.
   2. Build the new list: Expected first (the primary), then every existing address except a case-insensitive duplicate of Expected — secondaries are preserved, order otherwise unchanged.
@@ -224,7 +317,7 @@ Fail either → DO NOT write. Log `I1-NAME-MISMATCH` (mirroring the A1 note), ap
 
 **Step 3 — QA read-back.**
 Re-fetch the record and confirm BOTH:
-1. the written field now equals the Expected value (for Email: Expected is the primary / position 0), AND
+1. the written field now equals the Expected value — **for Email, the WHOLE stored list equals the list written, in order**, not just position 0 (a right first address with a lost secondary is a failure), AND
 2. the person's name still matches (confirm you wrote to the right record).
 On any mismatch: retry once, re-read. If still wrong → NEEDS_MANUAL, do not mark FIXED.
 

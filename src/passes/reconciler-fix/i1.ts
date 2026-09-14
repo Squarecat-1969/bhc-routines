@@ -21,6 +21,7 @@ import { buildEmailList } from './email-list.js';
 import { nameGate } from './name-gate.js';
 import { writeMasterCell, isHardStop, type MasterWriteResult } from './master-write.js';
 import { fieldEqual } from '../../lib/name-match.js';
+import { emailEqual, normaliseEmail } from '../../lib/email-equal.js';
 import type { AttioIdentityWritePort, AttioWritableFields, Logger, MasterSheetPort } from './ports.js';
 
 /** One I1 report row = one drifted field (Reconciler emits up to three per contact). */
@@ -46,7 +47,8 @@ export type I1Outcome =
   | 'record_not_found'
   | 'write_failed'
   | 'qa_failed'
-  | 'lookup_failed';
+  | 'lookup_failed'
+  | 'reorder_withheld';    // Email present but not first, and reorder writes are off: REPORT-ONLY
 
 export interface I1RowResult {
   readonly bhcId: string;
@@ -59,7 +61,7 @@ export interface I1RowResult {
 
 export interface I1Result {
   readonly rows: readonly I1RowResult[];
-  readonly counts: Readonly<Record<'considered' | 'fixed' | 'needsManual' | 'attioWrites', number>>;
+  readonly counts: Readonly<Record<'considered' | 'fixed' | 'needsManual' | 'withheld' | 'attioWrites', number>>;
 }
 
 export function i1NameMismatchNote(attioName: string, masterName: string, field: I1Field, fixRunId: string): string {
@@ -72,15 +74,45 @@ export function i1EmailConflictNote(email: string, fixRunId: string): string {
   return `I1-EMAIL-UNIQUE-CONFLICT: ${email} already on another record. Reconciler Fix ${fixRunId}.`;
 }
 
-const SLUG: Readonly<Record<I1Field, keyof AttioWritableFields>> = {
+const SLUG: Readonly<Record<Exclude<I1Field, 'Email'>, keyof AttioWritableFields>> = {
   Title: 'job_title',
   Company: 'company_name',
-  Email: 'email_addresses',
 };
+
+/**
+ * ⚠ REORDER WRITES ARE OFF. Changing this is a deliberate, reviewed act.
+ *
+ * On 2026-09-13 Reconciler's Email check tightened from "Google's primary
+ * appears anywhere in Attio's list" to "is Attio's FIRST address". That newly
+ * surfaces records where the address is present but not first — the first
+ * being Suzie Schofield (BHC-00103). Fix runs LIVE and unattended after every
+ * successful Reconciler run, so without this switch the first run after the
+ * change would rewrite a real person's address list with nobody having seen
+ * the finding.
+ *
+ * So a present-but-not-first address is REPORTED as `reorder_withheld` and
+ * NOT written. An address that is ABSENT from the record is still written, as
+ * it always was — that case is not new. Turn this on only after a live run's
+ * findings have been looked at.
+ *
+ * A switch in code rather than a "first run only" counter: a counter is state
+ * that can be lost, and it would start rewriting on run two whether or not
+ * anyone had looked.
+ */
+export const I1_EMAIL_REORDER_WRITES = false;
+
+interface I1Deps {
+  sheets: MasterSheetPort;
+  attio: AttioIdentityWritePort;
+  logger: Logger;
+  fixRunId: string;
+  /** Test seam only. Production never passes it, so I1_EMAIL_REORDER_WRITES governs. */
+  emailReorderWrites?: boolean;
+}
 
 export async function repairI1(
   candidates: readonly I1Candidate[],
-  deps: { sheets: MasterSheetPort; attio: AttioIdentityWritePort; logger: Logger; fixRunId: string },
+  deps: I1Deps,
 ): Promise<I1Result> {
   const rows: I1RowResult[] = [];
   // One field at a time, each isolated: a Title failure must not stop the
@@ -102,7 +134,8 @@ export async function repairI1(
     counts: {
       considered: rows.length,
       fixed: rows.filter((r) => r.outcome === 'fixed').length,
-      needsManual: rows.filter((r) => r.outcome !== 'fixed' && r.outcome !== 'already_correct').length,
+      needsManual: rows.filter((r) => r.outcome !== 'fixed' && r.outcome !== 'already_correct' && r.outcome !== 'reorder_withheld').length,
+      withheld: rows.filter((r) => r.outcome === 'reorder_withheld').length,
       attioWrites: rows.filter((r) => r.attioWritten).length,
     },
   };
@@ -110,7 +143,7 @@ export async function repairI1(
 
 async function repairOne(
   c: I1Candidate,
-  deps: { sheets: MasterSheetPort; attio: AttioIdentityWritePort; logger: Logger; fixRunId: string },
+  deps: I1Deps,
 ): Promise<I1RowResult> {
   const { sheets, attio, logger, fixRunId } = deps;
   const base = { bhcId: c.bhcId, field: c.field, attioWritten: false, notes: [] as MasterWriteResult[] };
@@ -153,45 +186,108 @@ async function repairOne(
     };
   }
 
-  // Step 2 - build the one field's value.
-  let values: AttioWritableFields;
-  if (c.field === 'Email') {
-    const conflict = await emailConflict(attio, c, logger);
-    if (conflict) {
-      return { ...base, outcome: 'email_unique_conflict', notes: await note(i1EmailConflictNote(c.expected, fixRunId)), reason: conflict };
-    }
-    const current = record.emails ?? [];
-    if (fieldEqual(current[0] ?? '', c.expected)) {
-      return { ...base, outcome: 'already_correct', reason: `${c.expected} is already the primary` };
-    }
-    values = { email_addresses: buildEmailList(current, c.expected) };
-  } else {
-    const currentValue = (c.field === 'Title' ? record.jobTitle : record.companyName) ?? '';
-    if (fieldEqual(currentValue, c.expected)) {
-      return { ...base, outcome: 'already_correct', reason: `${c.field} already matches` };
-    }
-    values = { [SLUG[c.field]]: c.expected } as AttioWritableFields;
+  // Step 2 - Email has its own path: different verb, different verification.
+  if (c.field === 'Email') return syncEmail(c, base, deps, note);
+
+  const currentValue = (c.field === 'Title' ? record.jobTitle : record.companyName) ?? '';
+  if (fieldEqual(currentValue, c.expected)) {
+    return { ...base, outcome: 'already_correct', reason: `${c.field} already matches` };
   }
+  const values = { [SLUG[c.field]]: c.expected } as AttioWritableFields;
 
   try {
     await attio.updatePerson(c.attioRecordId, values);
   } catch (e) {
-    const msg = String(e);
-    // The spec's own fallback: a rejection on the workspace-unique constraint is
-    // NEEDS_MANUAL, never a forced overwrite. The pre-check above should catch
-    // this first; this is the second line of defence for a race or a conflict
-    // the query could not see.
-    if (c.field === 'Email' && /uniqu/i.test(msg)) {
-      return { ...base, outcome: 'email_unique_conflict', notes: await note(i1EmailConflictNote(c.expected, fixRunId)), reason: `write rejected: ${msg.slice(0, 120)}` };
-    }
-    return { ...base, outcome: 'write_failed', reason: `Attio update failed: ${msg.slice(0, 140)}` };
+    return { ...base, outcome: 'write_failed', reason: `Attio update failed: ${String(e).slice(0, 140)}` };
   }
 
   // Step 3 - QA read-back, one retry.
-  const qa = await verifyI1(attio, c, logger);
+  const qa = await verifyI1(attio, c, logger, null);
   if (!qa.ok) return { ...base, outcome: 'qa_failed', attioWritten: true, reason: qa.reason };
 
   return { ...base, outcome: 'fixed', attioWritten: true, reason: `${c.field} synced to ${JSON.stringify(c.expected)}` };
+}
+
+/**
+ * The Email repair: fresh read, PUT the whole list, verify the whole list.
+ *
+ * "Correct" means Google's primary is Attio's FIRST address — the decision
+ * recorded in routines/BHC_Reconciler.md, which Reconciler's detector now
+ * applies too, so the two sides of the chain agree.
+ */
+async function syncEmail(
+  c: I1Candidate,
+  base: { bhcId: string; field: I1Field; attioWritten: boolean; notes: MasterWriteResult[] },
+  deps: I1Deps,
+  note: (text: string) => Promise<MasterWriteResult[]>,
+): Promise<I1RowResult> {
+  const { attio, logger, fixRunId } = deps;
+  const reorderWrites = deps.emailReorderWrites ?? I1_EMAIL_REORDER_WRITES;
+
+  const conflict = await emailConflict(attio, c, logger);
+  if (conflict) {
+    return { ...base, outcome: 'email_unique_conflict', notes: await note(i1EmailConflictNote(c.expected, fixRunId)), reason: conflict };
+  }
+
+  // ⚠ THE READ THE LIST IS BUILT FROM IS TAKEN HERE — immediately before the
+  // write, after the uniqueness query, and NEVER the gate's read from earlier
+  // in this function. A PUT replaces the whole list, so a list built from an
+  // older read silently deletes any address added since it was taken.
+  let fresh;
+  try {
+    fresh = await attio.getByRecordId(c.attioRecordId);
+  } catch (e) {
+    return { ...base, outcome: 'lookup_failed', reason: `read immediately before the email write failed: ${String(e).slice(0, 120)}` };
+  }
+  if (!fresh) return { ...base, outcome: 'record_not_found', reason: `Attio record ${c.attioRecordId} disappeared before the email write` };
+  // The identity pointer is re-confirmed on the SAME read the list comes from.
+  if (fresh.bhcContactId !== c.bhcId) {
+    return {
+      ...base, outcome: 'pointer_mismatch',
+      notes: await note(i1PointerMismatchNote(fresh.bhcContactId, c.bhcId, c.field, fixRunId)),
+      reason: `bhc_contact_id changed to ${JSON.stringify(fresh.bhcContactId)} before the email write`,
+    };
+  }
+
+  const current = fresh.emails ?? [];
+  if (emailEqual(current[0], c.expected)) {
+    return { ...base, outcome: 'already_correct', reason: `${c.expected} is already the first address` };
+  }
+  const at = current.findIndex((e) => emailEqual(e, c.expected));
+  if (at > 0 && !reorderWrites) {
+    return {
+      ...base, outcome: 'reorder_withheld',
+      reason: `${c.expected} is on the record at position ${at + 1} of ${current.length}, not first — REPORT-ONLY (I1_EMAIL_REORDER_WRITES is off)`,
+    };
+  }
+
+  const list = buildEmailList(current, c.expected);
+
+  // ⚠ THE PUT WINDOW — A LOSS NO CHECK HERE CAN SEE.
+  // A PUT removes every address it does not list. The fresh read above shrinks
+  // the gap between reading the list and replacing it to milliseconds — but if
+  // Attio's email sync adds an address INSIDE that gap, this PUT deletes it,
+  // and the read-back below matches exactly what was sent. The verification
+  // passes and the loss is unseen. Attio's PUT carries no if-unchanged
+  // condition, so nothing in this code fully prevents it; the fresh read only
+  // makes it unlikely.
+  try {
+    await attio.replaceEmails(c.attioRecordId, list);
+  } catch (e) {
+    const msg = String(e);
+    // Attio's real rejection is HTTP 400 `uniqueness_conflict` (measured
+    // 2026-09-13). The pre-check should catch it first; this is the second line
+    // of defence for a race or a holder the query could not see.
+    if (/uniqu/i.test(msg)) {
+      return { ...base, outcome: 'email_unique_conflict', notes: await note(i1EmailConflictNote(c.expected, fixRunId)), reason: `write rejected: ${msg.slice(0, 120)}` };
+    }
+    return { ...base, outcome: 'write_failed', reason: `Attio email replace failed: ${msg.slice(0, 140)}` };
+  }
+
+  const qa = await verifyI1(attio, c, logger, list);
+  if (!qa.ok) return { ...base, outcome: 'qa_failed', attioWritten: true, reason: qa.reason };
+
+  return { ...base, outcome: 'fixed', attioWritten: true, reason: `Email list replaced, ${c.expected} first (${list.length} address(es))` };
 }
 
 /**
@@ -225,6 +321,8 @@ async function verifyI1(
   attio: AttioIdentityWritePort,
   c: I1Candidate,
   logger: Logger,
+  /** Email only: the exact list written. Null for Title / Company. */
+  writtenEmails: readonly string[] | null,
 ): Promise<{ ok: boolean; reason: string }> {
   for (let attempt = 0; attempt < 2; attempt++) {
     let after;
@@ -235,8 +333,23 @@ async function verifyI1(
     }
     if (!after) return { ok: false, reason: 'record disappeared between write and QA read-back' };
 
-    const got = c.field === 'Email' ? (after.emails?.[0] ?? '') : (c.field === 'Title' ? after.jobTitle : after.companyName) ?? '';
-    const valueOk = fieldEqual(got, c.expected);
+    let got: string;
+    let want: string;
+    let valueOk: boolean;
+    if (c.field === 'Email') {
+      // ⚠ THE WHOLE LIST, IN ORDER — never just position 0. A read-back that
+      // only checks the first address passes over a lost secondary, and passed
+      // over a PATCH that changed nothing when the address was already there.
+      const stored = (after.emails ?? []).map(normaliseEmail);
+      const expectedList = (writtenEmails ?? [c.expected]).map(normaliseEmail);
+      got = stored.join(', ');
+      want = expectedList.join(', ');
+      valueOk = stored.length === expectedList.length && stored.every((e, i) => e === expectedList[i]);
+    } else {
+      got = (c.field === 'Title' ? after.jobTitle : after.companyName) ?? '';
+      want = c.expected;
+      valueOk = fieldEqual(got, c.expected);
+    }
     const nameOk = nameGate(after.name, c.fullName).decision === 'PROCEED';
     if (valueOk && nameOk) return { ok: true, reason: 'verified' };
 
@@ -244,7 +357,7 @@ async function verifyI1(
     return {
       ok: false,
       reason: !valueOk
-        ? `QA: ${c.field} reads ${JSON.stringify(got)}, expected ${JSON.stringify(c.expected)}`
+        ? `QA: ${c.field} reads ${JSON.stringify(got)}, expected ${JSON.stringify(want)}`
         : `QA: name no longer matches after write (${JSON.stringify(after.name)})`,
     };
   }

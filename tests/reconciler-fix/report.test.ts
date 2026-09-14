@@ -28,7 +28,7 @@ function emptyReport(over: Partial<ReconcilerFixReport> = {}): ReconcilerFixRepo
     a1: { rows: [], counts: { considered: 0, fixed: 0, needsManual: 0, attioWrites: 0 } },
     a3: { rows: [], counts: { considered: 0, repointed: 0, setGoogleOnly: 0, ambiguous: 0, lookupFailed: 0, writeFailed: 0, hardStops: 0 } },
     s4: { groups: [], counts: { groups: 0, repaired: 0, needsManual: 0, lookupFailed: 0, orphansCleared: 0, hardStops: 0 } },
-    i1: { rows: [], counts: { considered: 0, fixed: 0, needsManual: 0, attioWrites: 0 } },
+    i1: { rows: [], counts: { considered: 0, fixed: 0, needsManual: 0, withheld: 0, attioWrites: 0 } },
     excludedFromA1: [], excludedFromI1: [], outOfScope: {}, wouldWrite: [], warnings: [],
     ...over,
   } as ReconcilerFixReport;
@@ -80,7 +80,7 @@ describe('every category reconciles: considered === fixed + needsManual + noActi
       rows: [
         { bhcId: 'BHC-4', field: 'Title', outcome: 'already_correct', attioWritten: false, notes: [], reason: '' },
       ],
-      counts: { considered: 4, fixed: 2, needsManual: 1, attioWrites: 2 },
+      counts: { considered: 4, fixed: 2, needsManual: 1, withheld: 0, attioWrites: 2 },
     },
   } as Partial<ReconcilerFixReport>);
 
@@ -203,5 +203,30 @@ describe('clean run', () => {
 
   it('states plainly when no source run was found', () => {
     expect(buildFixSlackMessage(emptyReport({ sourceRunId: null }))).toContain('(no source run found)');
+  });
+});
+
+// ⚠ SEEN, NOT COUNTED. The first-position Email definition surfaces records
+// Fix deliberately does not rewrite yet. The point of withholding them is that
+// someone reads the finding first — so the post must NAME them, not fold them
+// into a number.
+describe('Slack names I1 Email candidates that were withheld', () => {
+  it('lists the BHC_ID under "held by design" and says it is report-only', () => {
+    const report = emptyReport({
+      candidates: { S1: 0, A1: 0, A3: 0, S4: 0, I1: 1 },
+      i1: {
+        rows: [{
+          bhcId: 'BHC-00103', field: 'Email', outcome: 'reorder_withheld', attioWritten: false, notes: [],
+          reason: 'suzie@suzieschofield.com is on the record at position 2 of 2, not first',
+        }],
+        counts: { considered: 1, fixed: 0, needsManual: 0, withheld: 1, attioWrites: 0 },
+      },
+    });
+    const msg = buildFixSlackMessage(report);
+    expect(msg).toContain('Held by design');
+    expect(msg).toContain('BHC-00103');
+    expect(msg).toContain('REPORT-ONLY');
+    // Withheld is not a failure and not "needs you".
+    expect(msg).toContain('0 still need you');
   });
 });

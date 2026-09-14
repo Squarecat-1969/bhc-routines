@@ -20,12 +20,19 @@ describe('dry run cannot reach a real write, even with candidates present', () =
     ['RECON-9', '', 'BHC-2', 'Bo Geddes', '3', '', 'rec-dead', 'BOTH', 'A3', '', '', '', '', ''],
     ['RECON-9', '', 'BHC-1', 'Ada Lovelace', '2', '', 'rec-1', 'BOTH', 'I1', '', '', 'New Title', '', 'Title'],
     ['RECON-9', '', 'BHC-3', 'Cy Rand', '4', '', '', 'BOTH', 'S1', '', '', '', '', ''],
+    // ⚠ I1 candidates whose gate PASSES, so the write paths are genuinely reached.
+    // BHC-1's I1 row above stops at pointer_mismatch (its record carries
+    // BHC-WRONG) and never reaches a write — on its own it proved nothing about
+    // I1's containment. BHC-4's Email is ABSENT from its record, so I1 would PUT.
+    ['RECON-9', '', 'BHC-4', 'Dee Vance', '5', '', 'rec-4', 'BOTH', 'I1', '', '', 'new@x.com', '', 'Email'],
+    ['RECON-9', '', 'BHC-4', 'Dee Vance', '5', '', 'rec-4', 'BOTH', 'I1', '', '', 'New Title', '', 'Title'],
   ];
   const master = [
     ['BHC-1', 'Ada Lovelace', 'BOTH', '100', 'rec-1', ''],
     ['BHC-2', 'Bo Geddes', 'BOTH', '101', 'rec-dead', ''],
     ['BHC-3', 'Cy Rand', 'BOTH', '102', '', ''],
     ['BHC-3', 'Cy R', 'BOTH', '', '', ''],
+    ['BHC-4', 'Dee Vance', 'BOTH', '103', 'rec-4', ''],
   ];
 
   const sheets = {
@@ -41,10 +48,16 @@ describe('dry run cannot reach a real write, even with candidates present', () =
   const attio = {
     async getPersonRecord(recordId: string) {
       if (recordId === 'rec-dead') throw new Error('404 not found');
+      if (recordId === 'rec-4') {
+        return { recordId, values: { bhc_contact_id: [{ value: 'BHC-4' }], name: [{ full_name: 'Dee Vance' }], job_title: [{ value: 'Old' }], email_addresses: [{ email_address: 'old@x.com' }] } };
+      }
       return { recordId, values: { bhc_contact_id: [{ value: 'BHC-WRONG' }], name: [{ full_name: 'Ada Lovelace' }], job_title: [{ value: 'Old' }] } };
     },
     async queryPeople() { return []; },
     async updatePersonRecord() { throw new Error('REAL ATTIO WRITE REACHED — dry run is not contained'); },
+    // ⚠ A PUT removes every address it does not list: the most destructive write
+    // this routine has. It must be rigged to throw like every other write.
+    async replacePersonEmailAddresses() { throw new Error('REAL ATTIO EMAIL REPLACE REACHED — dry run is not contained'); },
   };
 
   it('completes without touching a real client, and records what it would have written', async () => {
@@ -54,7 +67,10 @@ describe('dry run cannot reach a real write, even with candidates present', () =
     });
 
     expect(r.dryRun).toBe(true);
-    expect(r.candidates).toEqual({ S1: 1, A1: 1, A3: 1, S4: 0, I1: 1 });
+    expect(r.candidates).toEqual({ S1: 1, A1: 1, A3: 1, S4: 0, I1: 3 });
+    // The I1 writes were REACHED and intercepted — not skipped by a failing gate.
+    expect(r.wouldWrite).toContain('ATTIO rec-4 email_addresses <- PUT ["new@x.com","old@x.com"]');
+    expect(r.wouldWrite.some((w) => w.startsWith('ATTIO rec-4 <- ') && w.includes('New Title'))).toBe(true);
     // The write logic ran: real work was computed and intercepted.
     expect(r.wouldWrite.length).toBeGreaterThan(0);
     // And nothing reached a real client — either throw would have failed the run.

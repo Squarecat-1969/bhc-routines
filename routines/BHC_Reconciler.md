@@ -175,11 +175,27 @@ A row can produce both an A1 flag AND an A5 flag if both conditions are present.
 
 - **Title:** Google `title` vs Attio `job_title`.
 - **Company:** Google `company` vs Attio `company_name` (the text attr, NOT the `company` record-reference).
-- **Email:** Google `primary_email` vs Attio `email_addresses` — a match means Google's primary appears **anywhere** in Attio's multi-value set (avoids false positives when Attio simply holds several addresses). Drift = Google's primary is ABSENT from the Attio set.
+- **Email:** Google `primary_email` vs Attio `email_addresses` — a match means Google's primary is Attio's **FIRST** address. Drift = Google's primary is ABSENT from the Attio set, **or present but not first**. Compare addresses lowercase + trimmed and nothing else — never with `field_equal`, which turns every punctuation mark into a space and so reads `john.smith@x.com` and `john-smith@x.com` — two mailboxes — as the same address. For a present-but-not-first address, report `Found` as `present at position N of M, not first: <list>`. *Changed 2026-09-13 from "appears anywhere" — see the DECISION and the KNOWN LOOP below.*
 
 For each drifted field → one **Reconciler_Report I1 row** (see PASS 5). Rules:
 - Blank Google value → skip that field (nothing authoritative to sync).
 - Attio blank + Google present → I1 (Attio is missing the value).
+
+> **DECISION (2026-09-13): the FIRST address in Attio's `email_addresses` is the primary.**
+>
+> **Attio does not guarantee this.** Neither Attio's email-address attribute page nor its People object page mentions a primary email or any ordering of addresses — checked 2026-09-13. It is a convention this system sets, and **several components already depend on it**: the Contacts Triage queue's `primaryEmail` (Attio `emails[0]`), Aida's Contacts Triage display, and Reconciler Fix I1's read-back. What *is* measured (live, 2026-09-13, on scratch records): a PUT stores addresses in exactly the order sent, and a PATCH puts new addresses first without ever moving an existing one. Position is real and controllable; only its meaning is ours.
+>
+> **Why it had to be written down.** Before this date, this check accepted Google's primary *anywhere* in the list (chosen to avoid false positives on multi-address records), while Reconciler Fix's read-back required position 0. A present-but-not-first address was therefore a Reconciler match and an I1 `qa_failed` at the same time — the chain could not agree with itself, and the condition stayed invisible. Position now governs both sides. The first record the change surfaced was **Suzie Schofield (BHC-00103)**: Google's primary `suzie@suzieschofield.com` sits second in Attio, behind `suzieschofield@comcast.net`; both were added by Attio's sync. Reconciler Fix reports that case as `reorder_withheld` and does not rewrite it until reorder writes are deliberately enabled.
+>
+> **Re-derive this only if Attio starts documenting a primary email.** If it does and it disagrees with position, this decision is the thing to revisit — not the detector.
+
+> **⚠ KNOWN LOOP — Attio's sync can undo this repair.**
+>
+> Attio's email sync puts newly learned addresses **first**. On 2026-09-13, 92 of the 232 multi-address people had their newest address in position 0, and 90 of those were added by the sync (`created_by_actor: system`). Under the first-position definition that reads as drift: Reconciler flags it, Reconciler Fix rewrites Google's primary to the front, and the next sync can put a new address back in front. Repeat.
+>
+> **Barely live when recorded:** on BOTH records, no sync-added address had arrived in the previous 90 days, 3 had in 180, and none sat in front of a Google primary.
+>
+> **If a BHC_ID reappears as I1 Email drift run after run, with a different address in front each time, it is this loop — not a Fix bug.** The remedy is a decision, not a code change: stop treating position as authoritative for that contact, or stop the sync learning addresses for it.
 - NOT segment, NOT stage — those are out of scope.
 - **Name is never an I1 field** — name drift is the Name_Conflicts enqueue above.
 

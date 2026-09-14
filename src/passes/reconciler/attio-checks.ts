@@ -4,6 +4,7 @@
  */
 
 import { fieldEqual, namesExact, sharesWord } from '../../lib/name-match.js';
+import { emailEqual } from '../../lib/email-equal.js';
 import type { Finding, GoogleIdentity, MasterRow, NameConflictCandidate } from './types.js';
 
 /** What one Attio lookup produced. */
@@ -131,11 +132,28 @@ function identityDrift(
     out.push({ code: 'I1', row, expected: g.company, found: look.companyName || '(blank)', notes: 'Company' });
   }
   if (g.primaryEmail !== '') {
-    // A match means Google's primary appears ANYWHERE in Attio's multi-value
-    // set - Attio legitimately holds several addresses.
-    const present = look.emails.some((e) => fieldEqual(e, g.primaryEmail));
-    if (!present) {
-      out.push({ code: 'I1', row, expected: g.primaryEmail, found: look.emails.join(', ') || '(blank)', notes: 'Email' });
+    // ⚠ FIRST POSITION, NOT "ANYWHERE" — changed 2026-09-13.
+    //
+    // A match means Google's primary is Attio's FIRST address: the decision
+    // recorded in routines/BHC_Reconciler.md ("the first address is the
+    // primary"). This check used to accept the address anywhere in the list
+    // while Reconciler Fix's read-back required position 0, so one record could
+    // be a Reconciler match and an I1 qa_failed at the same time — the chain
+    // could not agree with itself. Both sides now use position, and both
+    // compare with emailEqual (lowercase + trim only). fieldEqual turns every
+    // punctuation mark into a space, so it reads john.smith@x.com and
+    // john-smith@x.com — two mailboxes — as the same address.
+    //
+    // ⚠ Attio's own sync puts newly learned addresses first, so under this
+    // definition a sync can reintroduce drift that Fix has repaired. See the
+    // KNOWN LOOP note beside the decision before diagnosing a contact that
+    // keeps reappearing.
+    const at = look.emails.findIndex((e) => emailEqual(e, g.primaryEmail));
+    if (at !== 0) {
+      const found = at === -1
+        ? (look.emails.join(', ') || '(blank)')
+        : `present at position ${at + 1} of ${look.emails.length}, not first: ${look.emails.join(', ')}`;
+      out.push({ code: 'I1', row, expected: g.primaryEmail, found, notes: 'Email' });
     }
   }
 

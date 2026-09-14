@@ -117,6 +117,12 @@ function dryRunPorts(real: { sheets: MasterSheetPort; attio: AttioIdentityWriteP
       async updatePerson(recordId: string, values) {
         sink.push(`ATTIO ${recordId} <- ${JSON.stringify(values)}`);
       },
+      // ⚠ Records the list replace and issues NOTHING. A PUT removes every
+      // address it does not list, so a dry run that passed this through would
+      // be the most destructive leak in the routine.
+      async replaceEmails(recordId: string, emails: readonly string[]) {
+        sink.push(`ATTIO ${recordId} email_addresses <- PUT ${JSON.stringify(emails)}`);
+      },
     },
   };
 }
@@ -234,7 +240,7 @@ export async function runReconcilerFix(opts: {
       a1: { rows: [], counts: { considered: 0, fixed: 0, needsManual: 0, attioWrites: 0 } },
       a3: { rows: [], counts: { considered: 0, repointed: 0, setGoogleOnly: 0, ambiguous: 0, lookupFailed: 0, writeFailed: 0, hardStops: 0 } },
       s4: { groups: [], counts: { groups: 0, repaired: 0, needsManual: 0, lookupFailed: 0, orphansCleared: 0, hardStops: 0 } },
-      i1: { rows: [], counts: { considered: 0, fixed: 0, needsManual: 0, attioWrites: 0 } },
+      i1: { rows: [], counts: { considered: 0, fixed: 0, needsManual: 0, withheld: 0, attioWrites: 0 } },
       excludedFromA1: [], excludedFromI1: [], outOfScope: {}, wouldWrite: [], warnings,
     };
   }

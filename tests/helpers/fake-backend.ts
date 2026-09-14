@@ -9,6 +9,7 @@
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { ATTIO_UNIQUENESS_CONFLICT_BODY, AttioEmailModel, AttioUniquenessConflict } from './attio-email-model.js';
 import type { AddressInfo } from 'node:net';
 
 import { RANGES } from '../../src/config/constants.js';
@@ -264,8 +265,23 @@ export class FakeBackend {
    * a read-back check.
    */
   readonly contactsRowStore = new Map<number, Map<number, string>>();
+  /**
+   * ⚠ `email_addresses` STATE LIVES IN THE MEASURED CONTRACT MODEL. The generic
+   * `patched` overlay above REPLACES a value on every write, which is PUT
+   * behaviour; for a multiselect like email_addresses that would model the wrong
+   * verb and let a PATCH look like it reordered a list. See attio-email-model.ts.
+   */
+  readonly emailModel: AttioEmailModel;
 
-  constructor(readonly config: FakeBackendConfig) {}
+  constructor(readonly config: FakeBackendConfig) {
+    this.emailModel = new AttioEmailModel(
+      Object.fromEntries(
+        Object.entries(config.people)
+          .filter(([, p]) => p.emailAddresses !== undefined)
+          .map(([id, p]) => [id, p.emailAddresses!]),
+      ),
+    );
+  }
 
   private personToValues(person: FakePerson): Record<string, unknown> {
     const values: Record<string, unknown> = {};
@@ -681,7 +697,37 @@ export class FakeBackend {
 
       if (req.method === 'PATCH') {
         const values = ((body as { data?: { values?: Record<string, unknown> } })?.data?.values) ?? {};
-        this.patched.set(id, values);
+        const { email_addresses: emails, ...rest } = values;
+        if (emails !== undefined) {
+          // PATCH semantics for the multiselect: new addresses to the front,
+          // existing never moved or removed. A conflict rejects the WHOLE request.
+          try {
+            this.emailModel.patch(id, emails as string[]);
+          } catch (e) {
+            if (e instanceof AttioUniquenessConflict) return send(400, ATTIO_UNIQUENESS_CONFLICT_BODY);
+            throw e;
+          }
+          if (Object.keys(rest).length > 0) this.patched.set(id, rest);
+        } else {
+          this.patched.set(id, values);
+        }
+        return send(200, { data: { id: { record_id: id }, values: {} } });
+      }
+
+      if (req.method === 'PUT') {
+        const values = ((body as { data?: { values?: Record<string, unknown> } })?.data?.values) ?? {};
+        // Only the email replace is modelled. A PUT carrying any other attribute
+        // is refused loudly rather than guessed at: what PUT does to other
+        // attribute types was not measured.
+        if (Object.keys(values).length !== 1 || values['email_addresses'] === undefined) {
+          return send(400, { error: `fake PUT models email_addresses only; got ${JSON.stringify(Object.keys(values))}` });
+        }
+        try {
+          this.emailModel.put(id, values['email_addresses'] as string[]);
+        } catch (e) {
+          if (e instanceof AttioUniquenessConflict) return send(400, ATTIO_UNIQUENESS_CONFLICT_BODY);
+          throw e;
+        }
         return send(200, { data: { id: { record_id: id }, values: {} } });
       }
 
@@ -694,6 +740,10 @@ export class FakeBackend {
           if (person.readBackOverride !== undefined) {
             values['next_check_in_date'] = [{ value: person.readBackOverride }];
           }
+        }
+        // Reads return the model's list: lowercase, stored order.
+        if (this.emailModel.has(id)) {
+          values['email_addresses'] = this.emailModel.read(id).map((e) => ({ email_address: e }));
         }
         return send(200, { data: { id: { record_id: id }, values } });
       }

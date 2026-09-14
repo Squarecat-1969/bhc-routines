@@ -199,9 +199,41 @@ describe('PASS 4 - I1 gating', () => {
     expect(r.findings.filter((f) => f.notes === 'Company')).toHaveLength(1);
   });
 
-  it('email matches ANYWHERE in Attio multi-value, not just first', () => {
+  // ⚠ INVERTED 2026-09-13. This test used to pin "matches ANYWHERE in the
+  // list". The decision is now that Attio's FIRST address is the primary, so a
+  // present-but-not-first address IS drift — that is exactly Suzie Schofield's
+  // record, invisible while this test held the old rule in place.
+  it('email must be Attio\'s FIRST address — present but second IS drift', () => {
     const r = attioChecks([row()], new Map([['rec-1', ok({ emails: ['other@x.com', 'ada@x.com'] })]]), new Map([[3, gid()]]));
+    const email = r.findings.filter((f) => f.notes === 'Email');
+    expect(email).toHaveLength(1);
+    expect(email[0]!.expected).toBe('ada@x.com');
+    expect(email[0]!.found).toContain('present at position 2 of 2, not first');
+  });
+
+  it('email first in Attio is a match, with other addresses after it', () => {
+    const r = attioChecks([row()], new Map([['rec-1', ok({ emails: ['ada@x.com', 'other@x.com'] })]]), new Map([[3, gid()]]));
     expect(r.findings.filter((f) => f.notes === 'Email')).toHaveLength(0);
+  });
+
+  it('email ABSENT from Attio is drift, reported with the list that is there', () => {
+    const r = attioChecks([row()], new Map([['rec-1', ok({ emails: ['other@x.com'] })]]), new Map([[3, gid()]]));
+    const email = r.findings.filter((f) => f.notes === 'Email');
+    expect(email).toHaveLength(1);
+    expect(email[0]!.found).toBe('other@x.com');
+  });
+
+  it('email comparison ignores case and surrounding space, and NOTHING ELSE', () => {
+    const same = attioChecks([row()], new Map([['rec-1', ok({ emails: ['  ADA@X.COM '] })]]), new Map([[3, gid()]]));
+    expect(same.findings.filter((f) => f.notes === 'Email')).toHaveLength(0);
+    // fieldEqual turns punctuation into spaces, so it reads these two different
+    // mailboxes as the same "john smith x com" and would call this a match.
+    const hyphen = attioChecks(
+      [row()],
+      new Map([['rec-1', ok({ emails: ['john-smith@x.com'] })]]),
+      new Map([[3, gid({ primaryEmail: 'john.smith@x.com' })]]),
+    );
+    expect(hyphen.findings.filter((f) => f.notes === 'Email')).toHaveLength(1);
   });
 
   it('NEVER emits Name as an I1 field - it becomes a conflict candidate instead', () => {
