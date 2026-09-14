@@ -236,6 +236,80 @@ describe('writeRow — 4d Attio + task creation', () => {
   });
 });
 
+describe('writeRow — 4e column P, the Attio twin, aligned to the tasks', () => {
+  const ALICE = { 'rec-alice': { name: 'Alice Nguyen', bhcContactId: 'BHC-1' } };
+  const attioPrimary = { primary: { bhc_id: 'BHC-1', attio: { record_id: 'rec-alice', fields: { last_meeting_summary: 'x' } } } };
+  const taskRows = () =>
+    backend.sheetsWrites
+      .filter((w) => (w.body as { range?: string }).range === 'Tasks_Log!A1')
+      .map((w) => (w.body as { values: unknown[][] }).values[0]!);
+
+  it('writes each task its OWN Attio ID in P', async () => {
+    const { sheets, attio, masterId } = await setup({
+      entries: [], people: ALICE, masterId: MASTER_ID_ROWS, contactsHeader: [], contacts: [],
+    });
+    await writeRow(sheets, attio, masterId, baseInput({
+      tasks: [
+        { description: 'Task one', due_date: '2026-07-25', priority: 'High' },
+        { description: 'Task two', due_date: '2026-07-26', priority: 'Medium' },
+      ],
+    }, attioPrimary));
+
+    const byContent = new Map(backend.createdTasks.map((t) => [t.content, t.taskId]));
+    const rows = taskRows();
+    expect(rows).toHaveLength(2);
+    for (const row of rows) expect(row[15]).toBe(byContent.get(row[6] as string));
+  });
+
+  // ⚠ THE ALIGNMENT TRAP. 4d pushes an ID only on success, so with a failed
+  // MIDDLE task the success list is [id1, id3]. Pairing it with the rows by
+  // position would put task three's real Attio ID on task two's row — every
+  // other test here would still pass, and nothing downstream could tell.
+  it('⚠ a failed MIDDLE task leaves THAT row\'s P blank without shifting later IDs', async () => {
+    const { sheets, attio, masterId } = await setup({
+      entries: [], people: ALICE, masterId: MASTER_ID_ROWS, contactsHeader: [], contacts: [],
+      taskCreateFailOnContent: ['Task two'],
+    });
+    const result = await writeRow(sheets, attio, masterId, baseInput({
+      tasks: [
+        { description: 'Task one', due_date: '2026-07-25', priority: 'High' },
+        { description: 'Task two', due_date: '2026-07-26', priority: 'Medium' },
+        { description: 'Task three', due_date: '2026-07-27', priority: 'Low' },
+      ],
+    }, attioPrimary));
+
+    // Two Attio tasks exist; the success list is shorter than the task list.
+    expect(result.taskIds).toHaveLength(2);
+    const id1 = backend.createdTasks.find((t) => t.content === 'Task one')!.taskId;
+    const id3 = backend.createdTasks.find((t) => t.content === 'Task three')!.taskId;
+
+    const rows = taskRows();
+    expect(rows.map((r) => r[6])).toEqual(['Task one', 'Task two', 'Task three']);
+    expect(rows[0]![15]).toBe(id1);
+    expect(rows[1]![15]).toBe(''); // its own creation failed — no twin
+    expect(rows[2]![15]).toBe(id3); // NOT shifted into row two
+    expect(rows[1]![15]).not.toBe(id3);
+    // Every Tasks_Log row still lands: an Attio failure never withholds the sheet row.
+    expect(result.tasksLogRowsWritten).toBe(3);
+  });
+
+  it('leaves P blank on every row when Attio task creation fails outright', async () => {
+    const { sheets, attio, masterId } = await setup({
+      entries: [], people: ALICE, masterId: MASTER_ID_ROWS, contactsHeader: [], contacts: [],
+      // 400, not 500: a 500 is retried with backoff, and two retried failures
+      // exceed the test timeout without testing anything about column P.
+      taskCreateFailWith: 400,
+    });
+    await writeRow(sheets, attio, masterId, baseInput({
+      tasks: [
+        { description: 'Task one', due_date: '2026-07-25', priority: 'High' },
+        { description: 'Task two', due_date: '2026-07-26', priority: 'Medium' },
+      ],
+    }, attioPrimary));
+    expect(taskRows().map((r) => r[15])).toEqual(['', '']);
+  });
+});
+
 describe('writeRow — 4b.5 personal context', () => {
   it('appends to existing Google Personal_Notes (AI) rather than overwriting', async () => {
     const { sheets, attio, masterId } = await setup({
@@ -350,8 +424,8 @@ describe('writeRow — 4e append target', () => {
   });
 });
 
-describe('writeRow — 4e Tasks_Log (live 15-col A-O shape)', () => {
-  it('appends one row per task with exactly 13 columns', async () => {
+describe('writeRow — 4e Tasks_Log (live 16-col A-P shape)', () => {
+  it('appends one row per task with exactly 16 columns', async () => {
     const { sheets, attio, masterId } = await setup({
       entries: [], people: {}, masterId: MASTER_ID_ROWS, contactsHeader: [], contacts: [],
     });
@@ -361,9 +435,10 @@ describe('writeRow — 4e Tasks_Log (live 15-col A-O shape)', () => {
     const append = backend.sheetsWrites.find((w) => (w.body as { range?: string }).range === 'Tasks_Log!A1');
     expect(append).toBeDefined();
     const row = (append!.body as { values: unknown[][] }).values[0]!;
-    expect(row).toHaveLength(15); // A-O, the live schema
+    expect(row).toHaveLength(16); // A-P, the live schema (re-read 2026-09-13)
     expect(row[13]).toBe(''); // N Company — no source in Part D
     expect(row[14]).toBe(''); // O Title — no source in Part D
+    expect(row[15]).toBe(''); // P Attio_Task_ID — blank: this row has no Attio half, so no twin
     expect(row[0]).toMatch(/^TASK-\d+-[a-z0-9]+$/);
     expect(row[6]).toBe('Send follow-up'); // G
     expect(row[7]).toBe('2026-07-25'); // H

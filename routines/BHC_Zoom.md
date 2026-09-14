@@ -224,9 +224,12 @@ Personal context write failures are non-blocking — log the error and continue 
 `Entry_Date` is the **WRITE time** — the moment this row is created, i.e. now, in ISO-Z. It is **NOT** the meeting's own time. Decided explicitly 2026-08-21; the field name invites the other reading, so do not re-derive it. The interaction's own time is `Activity_Log`'s `Interaction_Date`, column V.
 
 **3d. Attio.** Only if ATTIO or BOTH. Update `last_meeting_summary` + `key_commitments`. Create tasks (`content`, `format: plaintext`, `linked_records`, `assignees: [ATTIO_BOBBY_MEMBER]`). If exactly one task: write ID to Activity_Log col T.
+Keep a list **aligned to the tasks** — one slot per task, in task order, holding that task's Attio ID or **blank if its creation failed**. ⚠ Do NOT collect successful IDs into a list and pair them with tasks by position: with three tasks and a failed middle one, that list is `[id1, id3]`, and pairing by position writes task three's Attio ID onto task two's Tasks_Log row. The ID is real, just the wrong task's, and nothing downstream can detect it. If Attio is skipped (GOOGLE-only), every slot stays blank.
 
 **3e. Tasks_Log (append, one row per task, primary only).**
-`TASK-`+unix ms · Created_At · BHC_ID · LinkedIn_URL · Contact_Name · Task_Type · Task_Description · Due_Date · "Open" · Priority · "Bobby" · blank · Activity_ID · Company · Title`
+`TASK-`+unix ms · Created_At · BHC_ID · LinkedIn_URL · Contact_Name · Task_Type · Task_Description · Due_Date · "Open" · Priority · "Bobby" · blank · Activity_ID · Company · Title · Attio_Task_ID`
+
+Sixteen columns, A–P. **P = Attio_Task_ID** is this task's own slot from the 3d aligned list — blank when Attio was skipped or this task's creation failed (there is no twin). P sits outside Tasks_Open's `A2:N` FILTER spill, so writing it cannot break that view.
 
 **Secondaries** get 3a + 3b + 3b.2 (AN clear) + 3c + 3d only. No personal context writes for secondaries. Secondary failure does not block the primary.
 

@@ -461,12 +461,8 @@ export class AttioClient {
    * whole object, so zero-on-a-miss is the discriminating result. The returned
    * record also carries `bhc_contact_id` directly, making resolution ONE hop.
    *
-   * This matters because parameter discipline is not uniform across Attio:
-   * `GET /v2/tasks` was measured 2026-08-31 to silently ignore every parameter
-   * except `is_completed` and `limit`/`offset`, while `POST /v2/tasks/query`
-   * honours its `linked_records` filter and validates the record ID. Two
-   * endpoints on one resource, opposite behaviour — so a filter is unproven
-   * until a miss returns nothing.
+   * A filter is unproven until a miss returns nothing — and until a HIT returns
+   * exactly the right set, which is the half this note used to skip.
    *
    * Returns [] on zero matches (a miss, not an error) or if the response shape
    * doesn't parse as expected — never throws for "no results," so callers can
@@ -497,6 +493,46 @@ export class AttioClient {
     });
   }
 
+  /*
+   * ⚠ LISTING TASKS — CORRECTED 2026-09-13. BOTH HALVES OF THE 2026-08-31
+   * CLAIM WERE WRONG. (This note used to sit on searchPeopleByEmail, which has
+   * nothing to do with tasks; it lives beside the only task code in the file.)
+   *
+   * The old claim: `GET /v2/tasks` ignores every parameter except
+   * `is_completed` and `limit`/`offset`, and `POST /v2/tasks/query` honours a
+   * `linked_records` filter and rejects a nonexistent record ID.
+   *
+   * Re-measured 2026-09-13, read-only, with a positive AND a negative control:
+   *
+   *   GET /v2/tasks?linked_object=people&linked_record_id=<id>
+   *     -> 200, 28 tasks — exactly the 28 the unfiltered 250 show linked to
+   *        that person, every one genuinely linked. A nonexistent ID -> 200, 0.
+   *        THE FILTER WORKS.
+   *   POST /v2/tasks/query
+   *     -> 404 "Could not find endpoint", for a real ID AND a nonexistent one.
+   *        THE ENDPOINT DOES NOT EXIST.
+   *
+   * WHY THE OLD CHECK COULD BE FOOLED — two ways, both reproduced today:
+   *
+   *   1. THE NEGATIVE CONTROL PASSED VACUOUSLY. "Rejects a nonexistent record
+   *      ID loudly" is exactly what a 404 looks like — but the 404 comes for
+   *      EVERY input, real IDs included. A control that cannot fail proves
+   *      nothing, and this one read as the strongest evidence of all.
+   *   2. THE LINK FIELD HAS A DIFFERENT NAME ON READ. Tasks come back with
+   *      `linked_records[].target_object_id`, never `target_object`. Measured
+   *      today: 241 of 250 tasks carry `target_object_id`; 0 carry
+   *      `target_object: "people"`. A check that looks for `target_object`
+   *      sees no person link on any task, filtered or not, so the GET filter
+   *      appears to change nothing — the filter was working and the check was
+   *      blind.
+   *
+   * The 2026-08-31 "4 tasks rather than 134" result is NOT reproduced by
+   * either mechanism — a 404 returns no tasks at all — and is not explained
+   * here rather than explained away.
+   *
+   * `createTask` below still WRITES `target_object: 'people'`. That is the
+   * create shape, not the read shape, and it is not changed by this note.
+   */
   /**
    * Create an Attio task linked to a person record. Built for Part D's STEP
    * 4d ("create Attio task: content, format: plaintext, linked_records:

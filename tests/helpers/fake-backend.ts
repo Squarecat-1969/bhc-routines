@@ -93,6 +93,16 @@ export interface FakeBackendConfig {
   emailSearchResults?: Record<string, FakePerson[]>;
   /** When set, Attio task creation fails with this status — for testing write-row.ts's failure handling. */
   taskCreateFailWith?: number;
+  /**
+   * Fail ONLY the task-create calls whose content is listed, with a 400 —
+   * NON-retryable on purpose. AttioClient retries 500s (including on this
+   * create), so a 500 here would make a test measure retry backoff rather than
+   * alignment, and time out once more than one call fails.
+   * `taskCreateFailWith` fails every task, which can never expose the
+   * alignment trap: it needs a success AFTER a failure, so that a list of
+   * successes and a list of tasks disagree about which index is which.
+   */
+  taskCreateFailOnContent?: readonly string[];
 
   // --- Contacts Triage ---
   /** Existing Contacts_Triage_Queue!A2:V rows. Mutated in place by writes, so a read-back sees them. */
@@ -653,6 +663,9 @@ export class FakeBackend {
     if (path === '/tasks' && req.method === 'POST') {
       const data = (body as { data?: { content?: string; linked_records?: unknown[] } })?.data;
       if (this.config.taskCreateFailWith) return send(this.config.taskCreateFailWith, { error: 'forced task-create failure' });
+      if (this.config.taskCreateFailOnContent?.includes(data?.content ?? '')) {
+        return send(400, { error: `forced task-create failure for "${data?.content}"` });
+      }
       const taskId = `fake-task-${this.requests.length}`;
       this.createdTasks.push({ taskId, content: data?.content ?? '', body: data });
       return send(200, { data: { id: { workspace_id: 'ws', task_id: taskId } } });

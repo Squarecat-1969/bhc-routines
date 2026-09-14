@@ -56,9 +56,11 @@
  *     inferring it: FIFTEEN columns, A-O — Task_ID · Created_At · Contact_ID ·
  *     LinkedIn_URL · Contact_Name · Task_Type · Task_Description · Due_Date ·
  *     Status · Priority · Owner · Closed_At · Related_Activity_ID · Company ·
- *     Title. The FILTER pulls only A2:N, which is why the view looks 14 wide.
- *     BHC_Zoom.md's P1-STEP 3e appends the same 15 fields in the same order
- *     and is the reference implementation.
+ *     Title. RE-VERIFIED 2026-09-13 reading Tasks_Log!A1:R1: SIXTEEN, A-P —
+ *     P is Attio_Task_ID, the Attio twin, written from a list ALIGNED TO THE
+ *     TASKS (see 4d). The FILTER pulls only A2:N, which is why the view looks
+ *     14 wide and why P cannot disturb it. BHC_Zoom.md's P1-STEP 3e appends
+ *     the same 16 fields in the same order.
  *
  *     Part D sources 13 of the 15. Company (N) and Title (O) have no source
  *     here and are written blank — a TRAILING gap, so nothing shifts; every
@@ -460,6 +462,19 @@ export async function writeRow(
   }
 
   // ── 4d. Attio (connector) ────────────────────────────────────────────────
+  /**
+   * ⚠ ONE SLOT PER TASK, BLANK WHERE CREATION FAILED — NEVER `taskIds[i]`.
+   *
+   * `taskIds` only receives an ID on success, so it is a list of SUCCESSES, not
+   * a list aligned to `tasks`. With three tasks and a failed middle one it
+   * holds [id1, id3]: pairing it by position with the Tasks_Log rows would put
+   * task three's Attio ID on task two's row, and nothing downstream could
+   * detect it — the ID is real, it is just the wrong task's. This list keeps
+   * each ID at its own task's index, so a failure leaves its own slot blank
+   * and shifts nothing after it. Stays all-blank when Attio is skipped: there
+   * is no twin to point at.
+   */
+  const attioTaskIdByTask: string[] = tasks.map(() => '');
   if (attioOk && primary.attio) {
     try {
       await attio.updatePersonRecord(primary.attio.record_id, primary.attio.fields);
@@ -468,7 +483,7 @@ export async function writeRow(
       warnings.push(`Attio field update failed: ${String(e)}`);
     }
 
-    for (const task of tasks) {
+    for (const [i, task] of tasks.entries()) {
       try {
         const { taskId } = await attio.createTask({
           content: task.description,
@@ -477,6 +492,7 @@ export async function writeRow(
           assigneeId: ATTIO_BOBBY_MEMBER_ID,
         });
         taskIds.push(taskId);
+        attioTaskIdByTask[i] = taskId;
         writes.push(`Attio task ${taskId} created`);
       } catch (e) {
         warnings.push(`Attio task creation failed for "${task.description}": ${String(e)} — UNVERIFIED shape, see AttioClient.createTask's doc comment`);
@@ -489,11 +505,12 @@ export async function writeRow(
     }
   }
 
-  // ── 4e. Tasks_Log (append, one row per task) — live 15-col A-O shape ────
-  // Padded to the full 15 rather than stopping at M: the table is 15 wide and
+  // ── 4e. Tasks_Log (append, one row per task) — live 16-col A-P shape ────
+  // Padded to the full 16 rather than stopping at M: the table is 16 wide and
   // an explicit shape is what makes a future column insertion visible instead
-  // of silently shifting everything after it.
-  for (const task of tasks) {
+  // of silently shifting everything after it. P verified live 2026-09-13 by
+  // reading Tasks_Log!A1:R1 — header "Attio_Task_ID", width 16.
+  for (const [i, task] of tasks.entries()) {
     const taskId = makeTaskId(now);
     const taskRow: unknown[] = [
       taskId, // A Task_ID
@@ -511,6 +528,10 @@ export async function writeRow(
       activityId, // M Related_Activity_ID
       '', // N Company — no source in Part D
       '', // O Title — no source in Part D
+      // P Attio_Task_ID — the Attio twin, BY THIS TASK'S OWN INDEX. Blank when
+      // Attio was skipped or this task's creation failed. Tasks_Open reads only
+      // A2:N, so this column is outside its FILTER spill and cannot break it.
+      attioTaskIdByTask[i] ?? '',
     ];
     // Outcome, not intent: confirm.ts reports the sheet-side task count from
     // this, so it has to mean "landed". The Attio task count is a separate

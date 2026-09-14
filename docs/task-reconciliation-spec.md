@@ -288,11 +288,21 @@ Probe results below measured **2026-08-31** unless stated.
 
 3. **The concrete definition of "coverage"** — settled 2026-08-31. See §8.
 
-4. **Does `POST /v2/tasks/query` honour its `linked_records` filter?** **Yes — verified.** Filtering to a single person record returned **4 tasks rather than all 134**. It also **validates the record ID**, rejecting a nonexistent one rather than silently ignoring the filter — so a typo fails loudly instead of quietly returning everything.
+4. **~~Does `POST /v2/tasks/query` honour its `linked_records` filter? Yes — verified.~~** ⚠ **CORRECTED 2026-09-13 — BOTH HALVES OF THIS ANSWER WERE WRONG.**
 
-   This is **the opposite of `GET /v2/tasks`**, which discards every parameter except `is_completed` and `limit`/`offset` (`deadline_at_lte`, assignee and sort all silently ignored). Two endpoints on the same resource with opposite parameter discipline: use `POST /query` for anything filtered, and never assume a `GET` parameter was applied.
+   Re-measured read-only with a positive and a negative control:
 
-   ⚠ The caller still matters: `attioListOpenTasksForRecord` returns `[]` on any non-OK response, so a failure there is silent regardless of whether the filter works.
+   - **`GET /v2/tasks?linked_object=people&linked_record_id=<id>` works.** It returned **28 of 250** tasks for one person — exactly the 28 the unfiltered list shows linked to them, every one genuinely linked — and **0** for a nonexistent ID.
+   - **`POST /v2/tasks/query` does not exist.** It returns **HTTP 404, "Could not find endpoint"**, for a real record ID and a nonexistent one alike.
+
+   **Why the original check could be fooled, both reproduced 2026-09-13:**
+
+   - **The negative control passed vacuously.** "Rejects a nonexistent record ID rather than silently ignoring the filter" is exactly what a 404 looks like — but the 404 arrives for *every* input. A control that cannot fail read as the strongest evidence in the finding.
+   - **The link field is named differently on read.** Tasks return `linked_records[].target_object_id`, never `target_object`: 241 of 250 carry the former, 0 carry `target_object: "people"`. A check looking for `target_object` sees no person link on any task, so the working GET filter appears to change nothing.
+
+   The original "4 tasks rather than 134" figure is **not reproduced** by either mechanism — a 404 returns no tasks — and is left unexplained rather than explained away.
+
+   **Use `GET /v2/tasks` with `linked_object` + `linked_record_id` for anything per-person.** `bhc-aida`'s Attio twin close now does exactly that, and a failed lookup reports HTTP 502 rather than reading as "nothing to close" — which retires the caveat this item used to carry about `attioListOpenTasksForRecord` returning `[]` on any non-OK response.
 
 5. **⚠ Connected mailboxes are excluded from Attio's email search scope.** Filtering by a workspace member's own address, or by the company's own domain, returns **no results**. Filters are for **EXTERNAL participants only**. Worth stating loudly: a filter built the intuitive way — "find emails involving Bobby" — returns nothing and looks like a broken query or an empty dataset rather than a scope rule.
 
